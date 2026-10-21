@@ -5,6 +5,7 @@
 
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
+#include "../lib/textparse.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -3289,14 +3290,6 @@ static void sdio_prepare_tx_control_join_payload(sdio_probe_result_t *probe_resu
    sdio_store_u32_le(&probe_result->tx_control_template_payload_bytes[name_length + 64u], 0u);
 }
 
-static int sdio_hex_nibble(char value)
-{
-   if (value >= '0' && value <= '9') return value - '0';
-   if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-   if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-   return -1;
-}
-
 static void sdio_prepare_wep_key_payload(sdio_probe_result_t *probe_result)
 {
    const wifi_config_t *config = wifi_get_config();
@@ -3313,8 +3306,8 @@ static void sdio_prepare_wep_key_payload(sdio_probe_result_t *probe_result)
    sdio_store_u32_le(&payload[4], (uint32_t)key_length);
    if (hexadecimal) {
       for (size_t i = 0u; i < key_length; i++) {
-         int high = sdio_hex_nibble(config->password[i * 2u]);
-         int low = sdio_hex_nibble(config->password[i * 2u + 1u]);
+         int high = text_hex_nibble(config->password[i * 2u]);
+         int low = text_hex_nibble(config->password[i * 2u + 1u]);
          payload[WSEC_KEY_DATA_OFFSET + i] = (uint8_t)((high << 4) | low);
       }
    } else {

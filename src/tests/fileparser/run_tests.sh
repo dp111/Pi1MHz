@@ -13,8 +13,10 @@ mkdir -p "$B/rpi"
 cp "$SRC"/rpi/fileparser.c "$SRC"/rpi/fileparser.h "$B/rpi/"
 cp -r "$HERE"/stubs/. "$B/"
 cp "$HERE"/test_fileparser.c "$B/"
+mkdir -p "$B/lib"
+cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
 
 gcc -std=gnu2x -Wall -Wextra -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/t" "$B/test_fileparser.c" "$B/rpi/fileparser.c"
+    -I"$B" -o "$B/t" "$B/test_fileparser.c" "$B/rpi/fileparser.c" "$B/lib/textparse.c"
 "$B/t"

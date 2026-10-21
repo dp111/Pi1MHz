@@ -66,3 +66,14 @@ bool text_parse_ipv4_str(const char *s, uint8_t oct[4])
 
    return end != NULL && *end == '\0';
 }
+
+int text_hex_nibble(int c)
+{
+   if (c >= '0' && c <= '9')
+      return c - '0';
+   if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+   if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+   return -1;
+}

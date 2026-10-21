@@ -1,6 +1,7 @@
 /* textparse.h - the small text parsers several services share: a TCP/UDP
  * port number and a dotted-quad IPv4 address, as they appear in Pi1MHz.cfg
- * values and in the URLs the Beeb hands the network services.
+ * values and in the URLs the Beeb hands the network services, and one hex
+ * digit.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -37,5 +38,8 @@ const char *text_parse_ipv4(const char *s, uint8_t oct[4]);
 
 /* The whole NUL-terminated string is a dotted quad (oct may be NULL). */
 bool text_parse_ipv4_str(const char *s, uint8_t oct[4]);
+
+/* The value of one hex digit (either case), or -1 if c is not one. */
+int text_hex_nibble(int c);
 
 #endif /* PI1MHZ_TEXTPARSE_H */

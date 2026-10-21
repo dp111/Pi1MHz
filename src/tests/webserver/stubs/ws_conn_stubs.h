@@ -4,6 +4,7 @@
    framebuffer export descriptor (its real fields, which conn_pump reads).
    struct tcp_pcb stays an incomplete type - ws_conn_t only holds a
    pointer to it. */
+#include "lib/textparse.h"   /* text_hex_nibble, which the extracted code calls */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

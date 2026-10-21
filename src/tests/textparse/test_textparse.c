@@ -79,10 +79,25 @@ static void test_ipv4(void)
    ok(end != NULL && strcmp(end, ":8080") == 0 && o[3] == 2u, "stops at the port");
 }
 
+static void test_hex(void)
+{
+   int good = 1;
+
+   for (int c = -1; c < 256; c++) {
+      int want = (c >= '0' && c <= '9') ? c - '0'
+               : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+               : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+      if (text_hex_nibble(c) != want)
+         good = 0;
+   }
+   ok(good, "hex nibble: every byte, EOF included");
+}
+
 int main(void)
 {
    test_port();
    test_ipv4();
+   test_hex();
    if (failures != 0) {
       printf("textparse: %d failure(s)\n", failures);
       return 1;

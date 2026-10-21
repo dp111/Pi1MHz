@@ -53,6 +53,7 @@
 #include "../usb_mouse.h"
 #include "../usb_storage.h"
 #include "../smb/smb_client.h"
+#include "../lib/textparse.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -760,17 +761,6 @@ static const char *ws_strcasestr(const char *hay, const char *needle)
    return NULL;
 }
 
-static int ws_hexval(char c)
-{
-   if (c >= '0' && c <= '9')
-      return c - '0';
-   if (c >= 'a' && c <= 'f')
-      return c - 'a' + 10;
-   if (c >= 'A' && c <= 'F')
-      return c - 'A' + 10;
-   return -1;
-}
-
 /* Decode percent-escapes (%XX) into raw bytes.  Control characters
    (incl. NUL) decoded from %XX would let a client inject a string
    terminator past a length check or smuggle CR/LF into a header
@@ -791,8 +781,8 @@ static bool ws_url_decode(const char *src, char *dst, size_t dstsz)
    while (*src != '\0' && o + 1u < dstsz) {
       unsigned char c;
       if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
-         int hi = ws_hexval(src[1]);
-         int lo = ws_hexval(src[2]);
+         int hi = text_hex_nibble(src[1]);
+         int lo = text_hex_nibble(src[2]);
          if (hi >= 0 && lo >= 0) {
             c = (unsigned char)((hi << 4) | lo);
             dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
@@ -1526,10 +1516,8 @@ static void ws_digest_refresh_nonce(void)
 {
    uint32_t now;
    uint8_t  seed[12];
-   md5_ctx_t ctx;
-   uint8_t  digest[MD5_DIGEST_LEN];
-   static const char hex[] = "0123456789abcdef";
-   unsigned int i;
+   const void *parts[1] = { seed };
+   size_t      lens[1]  = { sizeof seed };
 
    now = RPI_GetSystemTime();
 
@@ -1556,14 +1544,7 @@ static void ws_digest_refresh_nonce(void)
    seed[10] = (uint8_t)(g_ws_nonce_counter >> 16);
    seed[11] = (uint8_t)(g_ws_nonce_counter >> 24);
 
-   md5_init(&ctx);
-   md5_update(&ctx, seed, sizeof seed);
-   md5_final(&ctx, digest);
-
-   for (i = 0u; i < MD5_DIGEST_LEN; ++i) {
-      g_ws_nonce[(i * 2u)     ] = hex[(digest[i] >> 4) & 0x0Fu];
-      g_ws_nonce[(i * 2u) + 1u] = hex[ digest[i]       & 0x0Fu];
-   }
+   md5_hex_cat(g_ws_nonce, parts, lens, 1u);
    g_ws_nonce[MD5_HEX_LEN] = '\0';
    g_ws_nonce_issued_us = now;
 }
@@ -5697,13 +5678,13 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
                size_t   i;
                for (i = 0u; !bad && i < n; i++) {
                   char     h = c->dav_chunk_linebuf[i];
+                  int      nib;
                   uint32_t d;
                   if (h == ';')
                      break;                    /* chunk-ext: ignore the rest */
-                  if (h >= '0' && h <= '9')      d = (uint32_t)(h - '0');
-                  else if (h >= 'a' && h <= 'f') d = (uint32_t)(h - 'a' + 10);
-                  else if (h >= 'A' && h <= 'F') d = (uint32_t)(h - 'A' + 10);
-                  else { bad = true; break; }
+                  nib = text_hex_nibble(h);
+                  if (nib < 0) { bad = true; break; }
+                  d = (uint32_t)nib;
                   if (size > (0x7FFFFFFFu - d) / 16u) { bad = true; break; }
                   size = size * 16u + d;
                }

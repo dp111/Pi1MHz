@@ -1,6 +1,6 @@
 #!/bin/sh -e
 # Host tests for the shared text parsers (src/lib/textparse.h): the port and
-# strict dotted-quad parsers several services use.  Run under ASan/UBSan.
+# strict dotted-quad parsers several services use, and the hex digit.  Run under ASan/UBSan.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../cflags.sh"

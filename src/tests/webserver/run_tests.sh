@@ -19,12 +19,14 @@ cp "$SRC"/wifi/webserver.c "$SRC"/wifi/md5.h "$SRC"/wifi/lwip_util.c "$B/"
 cp "$HERE"/test_parsers.c "$HERE"/test_chunked.c "$HERE"/fuzz_parsers.c \
    "$HERE"/test_kn_lifecycle.c "$HERE"/test_routes.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
+mkdir -p "$B/lib"
+cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
 
 # The pure text parsers: HTTP request line / header block, multipart
 # Content-Type fields, URL decoding, SD path normalisation + traversal
 # checks, Digest-auth fields, WebDAV Destination and RFC1123 dates.
 PARSER_FNS="ws_lc,ws_prefix,ws_prefix_ci,ws_prefix_ci_str,\
-ws_strcasestr,ws_hexval,ws_url_decode,ws_memfind,ws_find_header_end,\
+ws_strcasestr,ws_url_decode,ws_memfind,ws_find_header_end,\
 ws_basename,ws_parse_request_line,ws_find_header,ws_extract_boundary,\
 ws_extract_filename,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_resolve_aliases,ws_parent_path,\
 ws_is_root,ws_digest_field,ws_hex_eq_ci,ws_digest_uri_matches,\
@@ -52,7 +54,7 @@ awk -v fns="$KN_FNS" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_kn.inc"
 # What a response puts on the wire (HEAD), and MOVE/COPY's preconditions,
 # with the path parsers those run through.
-ROUTE_FNS="ws_prefix_ci,ws_prefix_ci_str,ws_hexval,ws_url_decode,\
+ROUTE_FNS="ws_prefix_ci,ws_prefix_ci_str,ws_url_decode,\
 ws_find_header,ws_find_header_end,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_resolve_aliases,ws_is_root,\
 dav_url_to_sdpath,dav_destination_sdpath,conn_pump,\
 route_dav_move_or_copy"
@@ -66,31 +68,31 @@ grep -q 'lwip_tcp_write_some' "$B/ws_lwip_util.inc"
 echo "== unit: HTTP / path / digest / date parsers =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/tp" "$B/test_parsers.c"
+    -I"$B" -o "$B/tp" "$B/test_parsers.c" "$B/lib/textparse.c"
 "$B/tp"
 
 echo "== unit: chunked transfer-encoding state machine =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/tc" "$B/test_chunked.c"
+    -I"$B" -o "$B/tc" "$B/test_chunked.c" "$B/lib/textparse.c"
 "$B/tc"
 
 echo "== unit: per-request resources (kernel.now buffer, teardown) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/tk" "$B/test_kn_lifecycle.c"
+    -I"$B" -o "$B/tk" "$B/test_kn_lifecycle.c" "$B/lib/textparse.c"
 "$B/tk"
 
 echo "== unit: responses on the wire, MOVE/COPY preconditions =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/tr" "$B/test_routes.c"
+    -I"$B" -o "$B/tr" "$B/test_routes.c" "$B/lib/textparse.c"
 "$B/tr"
 
 echo "== fuzz: hostile inputs through every parser (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$B" -o "$B/fp" "$B/fuzz_parsers.c"
+    -I"$B" -o "$B/fp" "$B/fuzz_parsers.c" "$B/lib/textparse.c"
 "$B/fp"
 
 echo "WEBSERVER PARSER TESTS PASSED"

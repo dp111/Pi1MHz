@@ -3,6 +3,7 @@
    ws_resolve_aliases asks f_stat for the long name behind an 8.3 alias.
    The "card" is a table of alias paths and the long names FatFs would
    report for them; anything else does not exist. */
+#include "lib/textparse.h"   /* text_hex_nibble, which the extracted code calls */
 #include <string.h>
 #include <strings.h>
 
