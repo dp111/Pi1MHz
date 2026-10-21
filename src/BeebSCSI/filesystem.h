@@ -191,6 +191,10 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 #if BEEBSCSI_UCD_USER_CODE
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 #endif
+/* A side's LaserDisc video: its presence marks a VFS volume */
+#define VFS_VIDEO_FILENAME "video.pvf"
+/* /BeebVFS<dir>/<name> on the Beeb's storage, for any side */
+void filesystemVFSFilePath(uint8_t dir, const char *name, char *buf, size_t size);
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
 void filesystemConfigToLunGeometry(uint8_t lunNumber);
 void filesytemdattoconfigGeometry(uint8_t lunNumber);

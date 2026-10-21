@@ -227,7 +227,7 @@ static uint8_t adfs_map_cksum(const uint8_t *sec)
 
 NOINIT_SECTION static FIL fileObjectFAT;
 
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber);
+static bool filesystemCheckLunDirectory(uint8_t lunNumber);
 
 static void filesystemPrintfserror(FRESULT fsResult)
 {
@@ -696,7 +696,8 @@ static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort 
 // /BeebSCSI<n>/scsi<lun>.<ext> in the SCSI jukebox directory, LUN 8-15 are
 // /BeebVFS<n>/scsi<lun&7>.<ext> in the read-only VFS jukebox directory.
 // Every open of a .dat/.dsc/.cfg goes through here, so the VFS masking and
-// directory choice cannot be forgotten at a call site.
+// directory choice cannot be forgotten at a call site.  A look into a VFS
+// side by its directory number (not a LUN) goes through filesystemVFSFilePath.
 // root is the volume prefix: filesystemStorageRoot() for the Beeb's own
 // access, "" for the host-side names (WebDAV and MTP see the SD card).
 static void fsLunDirPathOn(const char *root, uint8_t lunNumber, char *buf, size_t size)
@@ -719,6 +720,13 @@ static void fsLunFilePathOn(const char *root, uint8_t lunNumber, const char *ext
 static void fsLunFilePath(uint8_t lunNumber, const char *ext, char *buf, size_t size)
 {
    fsLunFilePathOn(filesystemStorageRoot(), lunNumber, ext, buf, size);
+}
+
+// A named file in /BeebVFS<dir> - any side, not only the jukeboxed one: the
+// disc menu and the video player look into a side without mounting it.
+void filesystemVFSFilePath(uint8_t dir, const char *name, char *buf, size_t size)
+{
+   snprintf(buf, size, "%s/BeebVFS%u/%s", filesystemStorageRoot(), dir, name);
 }
 
 static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
@@ -855,7 +863,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
       // descriptor to ensure everything is up to date
 
       // Check that the currently selected LUN directory exists (and, if not, create it)
-      if (!filesystemCheckLunDirectory(filesystemState.lunDirectory, lunNumber)) {
+      if (!filesystemCheckLunDirectory(lunNumber)) {
          // Failed!
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemSetLunStatus(): ERROR: Could not access LUN image directory!\r\n"));
          return false;
@@ -971,7 +979,7 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 }
 
 // Check that the currently selected LUN directory exists (and, if not, create it)
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
+static bool filesystemCheckLunDirectory(uint8_t lunNumber)
 {
    FRESULT fsResult;
    DIR dirObject;
@@ -983,13 +991,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
    // Does a directory exist for the currently selected LUN directory - if not, create it
    // (VFS is a read-only filesystem: check its directory but never create it)
-   if (lunNumber < 8 )
-      snprintf(fileName, sizeof(fileName), "%s/BeebSCSI%d", filesystemStorageRoot(), lunDirectory);
-   else
-      // VFS LUNs live under the VFS jukebox directory (this must match
-      // where filesystemCheckLunImage/CheckExtAttributes open the images)
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d", filesystemStorageRoot(),
-               filesystemState.lunDirectoryVFS);
+   fsLunDirPathOn(filesystemStorageRoot(), lunNumber, fileName, sizeof(fileName));
 
    fsResult = fsr_opendir(&dirObject, fileName);
 
@@ -1051,8 +1053,7 @@ bool filesystemVFSVolumePresent(void)
    }
    if (stale) {
       FILINFO fno;
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/video.pvf",
-               filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
+      filesystemVFSFilePath(filesystemState.lunDirectoryVFS, VFS_VIDEO_FILENAME, fileName, sizeof(fileName));
       vfs_vol_present = (fsr_stat(fileName, &fno) == FR_OK);
       vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
    }
@@ -1065,8 +1066,7 @@ bool filesystemVFSVolumePresent(void)
 bool filesystemVFSDatPresent(void)
 {
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/scsi0.dat",
-            filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
+   filesystemVFSFilePath(filesystemState.lunDirectoryVFS, "scsi0.dat", fileName, sizeof(fileName));
    return fsr_stat(fileName, &fno) == FR_OK;
 }
 
@@ -1077,10 +1077,10 @@ bool filesystemVFSDatPresent(void)
 uint8_t filesystemVFSDirType(uint8_t dir)
 {
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.dat", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, "scsi0.dat", fileName, sizeof(fileName));
    if (fsr_stat(fileName, &fno) == FR_OK)
       return 2;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/video.pvf", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, VFS_VIDEO_FILENAME, fileName, sizeof(fileName));
    if (fsr_stat(fileName, &fno) == FR_OK)
       return 1;
    return 0;
@@ -1477,7 +1477,7 @@ bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *o
    }
    bool found = false;
    parserkeyvalue values[NUM_KEYS] = {0};
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, "scsi0.cfg", fileName, sizeof(fileName));
    if (parse_readfile(fileName, 0, scsiattributes, values)) {
       if (values[key].v.integer && values[key].length) {
          *out = *values[key].v.integer;
@@ -1527,7 +1527,7 @@ bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
       vfs_cfg_dir = (int16_t)dir;
       vfs_cfg_title[0] = '\0';
       vfs_cfg_desc[0]  = '\0';
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
+      filesystemVFSFilePath(dir, "scsi0.cfg", fileName, sizeof(fileName));
       if (parse_readfile(fileName, 0, scsiattributes, values)) {
          if (values[TITLE].v.string && values[TITLE].length) {
             uint32_t n = values[TITLE].length < sizeof(vfs_cfg_title) - 1 ?

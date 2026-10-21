@@ -686,6 +686,20 @@ static void test_vfs_mode_select_discarded(void)
    stop_all();
 }
 
+/* Code quality 2026-10-21: the helpers that name files and pick mode-page
+   fields apart. */
+static void test_cq_helpers(void)
+{
+   static char why[200];
+   char path[64];
+   filesystemVFSFilePath(3, "scsi0.cfg", path, sizeof path);
+   snprintf(why, sizeof why, "'%s'", path);
+   check("CQ-S1 filesystemVFSFilePath names /BeebVFS<dir>/<name> on the storage",
+         !strcmp(path, "/BeebVFS3/scsi0.cfg"), why);
+   filesystemVFSFilePath(12, VFS_VIDEO_FILENAME, path, sizeof path);
+   check("CQ-S1 ... any side, the video too", !strcmp(path, "/BeebVFS12/video.pvf"), path);
+}
+
 /* A drive with its own controller keeps its sense across REQUEST SENSE:
    the FileStore MOS asks for it after a CHECK CONDITION, then a tool asks
    again and still sees sense key 5 (measured on a real drive).  The next
@@ -2966,6 +2980,7 @@ int main(int argc, char **argv)
    test_sense_set();
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_vfs_mode_select_discarded();
+   test_cq_helpers();
    test_reset_abandons();
    test_filestore_mode_select();
    test_fservfmt_page3_masked();
