@@ -102,6 +102,8 @@ bool filesystemPathOnCard(const char *path);
 /* The path ("Pi1MHz/...", leading '/'s or none) is in the Pi's own folder,
    which stays on the card whatever the storage. */
 bool filesystemPiFolder(const char *path);
+/* The path names its own FatFs volume ("0:...", "1:...", "2:..."). */
+bool filesystemNamesVolume(const char *path);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);

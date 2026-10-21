@@ -11,7 +11,6 @@
 #define fsr_read     f_read
 #define fsr_write    f_write
 #define fsr_lseek    f_lseek
-#define fsr_truncate f_truncate
 #define fsr_sync     f_sync
 #define fsr_expand   f_expand
 #define fsr_opendir  f_opendir

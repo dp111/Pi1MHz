@@ -925,15 +925,6 @@ static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
     return  (1<<30) + (scale << 8 ) + ( uint32_t) phase;
 }
 
-#if 0
-static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
-{
-    uint32_t tpz = (src << 16) / scl;
-    *ptr++ = tpz <<8;
-    *ptr   = 0xffffffff / tpz
-}
-#endif
-
 /* 4:2:0 3-plane plane (HVS pixel format 8) for the hardware H264 decoder,
    whose output is I420: a full-size Y plane followed by quarter-size Cb
    then Cr planes. Scaler channel 0 is chroma and channel 1 luma, so the

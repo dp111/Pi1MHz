@@ -140,7 +140,7 @@ bool   tnd_in_ahead_esc_end(const tnd_ahead_t *a);
 
 #define TND_OUT_MAX    640u    /* most bytes one VDU byte can expand to (a teletext row redrawn) */
 #define TND_COPY_MAX   512u    /* most bytes tnd_out_copyflush writes (a redraw's line attributes) */
-#define TND_REPAINT_MAX 900u   /* most bytes tnd_out_repaint writes (a teletext row of mosaics) */
+#define TND_REPAINT_MAX 900u   /* most bytes tnd_out_dirty_row writes (a teletext row of mosaics) */
 #define TND_COLS_MAX   80u
 #define TND_ROWS_MAX   32u
 
@@ -245,12 +245,8 @@ void   tnd_out_at(tnd_out_t *s, uint8_t x, uint8_t y);
 size_t tnd_out_byte(tnd_out_t *s, uint8_t c, uint8_t dst[TND_OUT_MAX]);
 
 /* A new terminal is connected to a model that has been following the Beeb all
-   along: forget what belonged to the last one.  tnd_out_repaint then draws the
-   model's screen on it, a row at a time, from the first row that has anything on
-   it, as plain lines under whatever the terminal already shows (no clear; one
-   row past the last puts the cursor and colours right).  It returns the bytes for
-   that row, 0 for a row it does not draw.  The terminal's rows are then no longer
-   the Beeb's, so tnd_out_origin_lost: until the Beeb next clears the screen the
+   along: forget what belonged to the last one.  The terminal's rows are not the
+   Beeb's, so tnd_out_origin_lost: until the Beeb next clears the screen the
    translator sends only relative moves, and clears once before an absolute one. */
 void   tnd_out_session(tnd_out_t *s);
 void   tnd_out_origin_lost(tnd_out_t *s);
@@ -263,7 +259,6 @@ bool   tnd_out_blank(const tnd_out_t *s);   /* the model knows of no character o
    not know every cell of it, or there is nothing to show. */
 size_t tnd_out_cursor_line(const tnd_out_t *s, char *dst, size_t max);
 size_t tnd_out_colours(const tnd_out_t *s, uint8_t dst[16]);
-size_t tnd_out_repaint(const tnd_out_t *s, unsigned row, uint8_t dst[TND_REPAINT_MAX]);
 
 /* A text window narrower than the screen cannot be scrolled or cleared on a terminal, which
    scrolls and clears whole lines.  The model does it, and marks the window as drawn wrong;

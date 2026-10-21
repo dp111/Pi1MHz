@@ -844,38 +844,11 @@ static void cc_key(tnd_out_t *s, uint8_t k)
    (void)tnd_out_copyflush(s, 100000000u, cb);
 }
 
-static void test_repaint(void)
+static void test_session(void)
 {
    tnd_out_t s;
    char out[2048];
    uint8_t d[TND_REPAINT_MAX];
-   size_t n;
-
-   tnd_out_reset(&s, true);
-   FEED_OUT(&s, "\x16\x01" "HI\r\n\x11\x01YO", out);      /* MODE 1, HI, a new line, then YO in red */
-   n = tnd_out_repaint(&s, 0u, d);
-   d[n] = 0;
-   CHECK(strcmp((char *)d, "\x1b[0mHI\x1b[0m\r\n") == 0, "repaint draws row 0 as a plain line, with no clear and no positioning"); if (strcmp((char *)d, "\x1b[0mHI\x1b[0m\r\n")) printf("    got [%s]\n", d);
-   n = tnd_out_repaint(&s, 1u, d);
-   d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[31mYO") != NULL && strstr((char *)d, "\r\n") == NULL,
-         "row 1, the last, comes back in its colour with no line end"); if (!strstr((char *)d, "\x1b[31mYO")) printf("    got [%s]\n", d);
-   CHECK(tnd_out_repaint(&s, 5u, d) == 0u, "a row with nothing on it needs nothing");
-   n = tnd_out_repaint(&s, s.rows, d);
-   d[n] = 0;
-   CHECK(strstr((char *)d, "\r\x1b[2C") != NULL && strstr((char *)d, "\x1b[1A") == NULL, "after the last row the cursor goes to the Beeb's column"); if (!strstr((char *)d, "\r\x1b[2C")) printf("    got [%s]\n", d);
-
-   /* A screen with something below the cursor: the cursor is moved back up to its row. */
-   tnd_out_reset(&s, true);
-   FEED_OUT(&s, "\x0c" "A\r\nB\r\nC\x1f\x01\x00", out);   /* the cursor is on row 0 again, at column 1 */
-   n = tnd_out_repaint(&s, s.rows, d);
-   d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[2A") != NULL && strstr((char *)d, "\r\x1b[1C") != NULL, "the cursor is moved up to its row and across"); if (!strstr((char *)d, "\x1b[2A")) printf("    got [%s]\n", d);
-
-   /* Blank rows above the first thing on the screen are not drawn. */
-   tnd_out_reset(&s, true);
-   FEED_OUT(&s, "\x0c\x1f\x00\x0a" "Z", out);
-   CHECK(tnd_out_repaint(&s, 3u, d) == 0u && tnd_out_repaint(&s, 10u, d) > 0u, "the empty rows at the top are skipped");
 
    /* Is a line on the screen? */
    tnd_out_reset(&s, true);
@@ -959,7 +932,7 @@ static void test_repaint(void)
    FEED_OUT(&s, "\x0c" ">HI\r\n>", out);
    tnd_out_touch(&s, 100u);
    tnd_out_copykey(&s, 143);
-   n = tnd_out_copyflush(&s, 100000u, d);
+   (void)tnd_out_copyflush(&s, 100000u, d);
    CHECK(s.hl_on, "the copy cursor is marked");
    tnd_out_session(&s);
    CHECK(!s.hl_on && !s.cc_on && s.npend == 0, "a new session starts with no mark");
@@ -974,9 +947,6 @@ static void test_repaint(void)
       cb[cn] = 0;
       CHECK(strcmp((char *)cb, "\x1b[0m\x1b[37m") == 0, "a new terminal is brought to COLOUR 3, which is white in MODE 1's own palette");
    }
-   n = tnd_out_repaint(&s, s.rows, d);
-   d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[37m") != NULL, "and so is the last step of a repaint"); if (!strstr((char *)d, "\x1b[37m")) printf("    got [%s]\n", d);
 
    /* The palette: logical colours are not the terminal's colours outside MODE 7. */
    tnd_out_reset(&s, true);
@@ -999,11 +969,6 @@ static void test_repaint(void)
    tnd_out_at(&s, 5u, 24u);
    FEED_OUT(&s, "x\n", out);
    CHECK(strstr(out, "\x1b[1;25r\x1b[25;1H\x1b" "D\x1b[r") != NULL, "from a known cursor on the last row an LF scrolls the terminal too"); if (!strstr(out, "\x1b" "D")) printf("    got [%s]\n", out);
-
-   /* Not synced: nothing is known, so nothing is drawn. */
-   tnd_out_reset(&s, true);
-   FEED_OUT(&s, "abc", out);
-   CHECK(tnd_out_repaint(&s, 0u, d) == 0u, "an unsynced model draws nothing");
 }
 
 /* Full review 2026-10-20: teletext colour codes only in MODE 7, and a reset ends a VDU 21 or a
@@ -1202,7 +1167,6 @@ static void test_output_teletext_chip(void)
 {
    tnd_out_t s;
    char out[4096];
-   uint8_t d[TND_REPAINT_MAX];
    size_t n;
 
    TTX("\x97\xff");
@@ -1252,12 +1216,6 @@ static void test_output_teletext_chip(void)
    TTX("AB\x7f");
    CHECK(strstr(out, "\b \r\x1b[1C") != NULL, "DELETE draws the cell as a space and the cursor stays on it"); if (!strstr(out, "\b \r\x1b[1C")) printf("    got [%s]\n", out);
 
-   TTX("\x81R\x8dZ");
-   n = tnd_out_repaint(&s, 0u, d);
-   d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b#3") != NULL && strstr((char *)d, "\x1b[0;31mR") != NULL,
-         "a repainted MODE 7 row has its line attribute and colours"); if (!strstr((char *)d, "\x1b[0;31mR")) printf("    got [%s]\n", d);
-
    TTX_ASCII("`");
    CHECK(strchr(out, '\xa3') != NULL, "no UTF-8: the pound is Latin-1");
    TTX_ASCII("\x97!");
@@ -1277,11 +1235,6 @@ static void test_output_teletext_chip(void)
          n = tnd_out_byte(&s, c, b);
          if (n > worst) worst = n;
          if (n > TND_OUT_MAX) break;
-         if ((i & 4095u) == 0u) {
-            uint8_t r[TND_REPAINT_MAX];
-            for (unsigned y = 0; y <= s.rows; y++)
-               if (tnd_out_repaint(&s, y, r) > TND_REPAINT_MAX) worst = 99999u;
-         }
       }
       CHECK(worst <= TND_OUT_MAX, "MODE 7 noise: no byte's output exceeds TND_OUT_MAX (worst %u)", (unsigned)worst);
    }
@@ -1658,7 +1611,7 @@ int main(void)
    test_output_robustness();
    test_model_wrap_scroll();
    test_copy_cursor();
-   test_repaint();
+   test_session();
    test_scan_merge();
    test_cursor_line();
    test_banner();

@@ -21,12 +21,18 @@ bool filesystemPiFolder(const char *path)
    return strncasecmp(path, "Pi1MHz/", 7) == 0;
 }
 
+/* "N:..." - a FatFs volume prefix. */
+bool filesystemNamesVolume(const char *path)
+{
+   return path[0] >= '0' && path[0] <= '9' && path[1] == ':';
+}
+
 bool filesystemStoragePath(const char *path, char *buf, size_t size)
 {
    /* A path naming its own volume ("0:...") is left as it is, and so is
       one in the Pi's own folder - without asking for the root, so neither
       ever waits for the power-on decision. */
-   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') || filesystemPiFolder(path))
+   const char *root = (filesystemNamesVolume(path) || filesystemPiFolder(path))
                     ? "" : filesystemStorageRoot();
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;

@@ -11,7 +11,7 @@ SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
-cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$B/"
+cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$SRC"/fnv1a.h "$B/"
 cp "$SRC"/M5000_emulator.h "$B/"
 cp "$SRC"/fujibus_service.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"

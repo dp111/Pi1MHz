@@ -20,6 +20,7 @@
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
+#include "fnv1a.h"
 #include "fsroute.h"			/* f_* by path: the card, the USB drive or the share */
 #include "wifi/webserver.h"			/* cached SD free space - see case 13 */
 
@@ -106,7 +107,7 @@ static void fat_open_record(unsigned int handle, const char *name)
    const char *path = name;
 
    fat_open_valid[handle] = false;
-   if (name[0] >= '0' && name[0] <= '9' && name[1] == ':') {
+   if (filesystemNamesVolume(name)) {
       /* names its own volume: recorded as it is */
    } else if (!filesystemPathOnCard(name)) {
       /* On the drive or the share (as fat_beeb_path opened it): its volume
@@ -210,22 +211,25 @@ static bool fat_off_card(void)
    return filesystemStorageRoot()[0] != '\0';
 }
 
-static bool fat_names_volume(const char *name)
+/* The storage-rooted name FatFs opens for a Beeb path (the path itself
+   if that does not fit). */
+static const char *fat_storage(const char *path, char *buf, size_t size)
 {
-   return name[0] >= '0' && name[0] <= '9' && name[1] == ':';
+   return filesystemStoragePath(path, buf, size) ? buf : path;
 }
 
 static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
 {
    const char *name = (const char *)&Pi1MHz->JIM_ram[off];
-   if (fat_on_share() && name[0] != '/' && !fat_names_volume(name) &&
+   if (fat_on_share() && name[0] != '/' && !filesystemNamesVolume(name) &&
        !filesystemPiFolder(name)) {
       char abs[DISC_MAX_PATH + 3];
       if (!fat_join(abs, sizeof abs, fat_cwd, name))
          return name;                    /* too long: fails on the card's FatFs */
+      /* not fat_storage: its fallback would be abs, which is this frame's */
       return filesystemStoragePath(abs, buf, size) ? buf : name;
    }
-   return filesystemStoragePath(name, buf, size) ? buf : name;
+   return fat_storage(name, buf, size);
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
@@ -246,7 +250,7 @@ static FRESULT fat_getcwd(char *buf, UINT len)
    FRESULT result = f_getcwd(buf, len);
    if (usb)
       (void)f_chdrive("0:");
-   if (result == FR_OK && buf[0] >= '0' && buf[0] <= '9' && buf[1] == ':')
+   if (result == FR_OK && filesystemNamesVolume(buf))
       memmove(buf, buf + 2, strlen(buf + 2) + 1u);
    return result;
 }
@@ -505,12 +509,6 @@ static bool fat_join(char *out, size_t size, const char *dir, const char *name)
    return true;
 }
 
-/* The storage-rooted name FatFs opens for an absolute Beeb path. */
-static const char *fat_storage(const char *abs, char *buf, size_t size)
-{
-   return filesystemStoragePath(abs, buf, size) ? buf : abs;
-}
-
 /* The 8.3 name the Beeb's filing system sees for an entry, "NAME.EXT":
    FatFs's own short name on a FAT volume, which opens as it is; exFAT has
    none, so one is made - the long name when it is a valid 8.3 name, else
@@ -539,9 +537,7 @@ static void fat_short_name(const FILINFO *fi, char out[13])
       for (size_t i = 0; i < base_len; i++)
          out[o++] = (char)toupper((unsigned char)name[i]);
    } else {
-      uint32_t h = 2166136261u;          /* FNV-1a */
-      for (const char *c = name; *c; c++)
-         h = (h ^ (unsigned char)*c) * 16777619u;
+      uint32_t h = fnv1a_str(FNV1A_BASIS, name);
       for (const char *c = name; *c && o < 4u && c != dot; c++)
          if (isalnum((unsigned char)*c))
             out[o++] = (char)toupper((unsigned char)*c);
@@ -718,12 +714,12 @@ static void fat_put_dirent(uint8_t *e, const char *short83, BYTE attr, uint32_t 
 
 static uint32_t fat_name_id(const char *dir, const char *name)
 {
-   uint32_t h = 2166136261u;
+   uint32_t h = FNV1A_BASIS;
    for (const char *c = dir; *c; c++)
-      h = (h ^ (unsigned char)tolower((unsigned char)*c)) * 16777619u;
-   h = (h ^ '/') * 16777619u;
+      h = fnv1a_step(h, (uint8_t)tolower((unsigned char)*c));
+   h = fnv1a_step(h, '/');
    for (const char *c = name; *c; c++)
-      h = (h ^ (unsigned char)tolower((unsigned char)*c)) * 16777619u;
+      h = fnv1a_step(h, (uint8_t)tolower((unsigned char)*c));
    h &= 0xFFFFFu;
    return h ? h : 1u;
 }
@@ -1078,7 +1074,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         const char *name = (const char *)&Pi1MHz->JIM_ram[command_pointer + 1];
-        if (fat_on_share() && !fat_names_volume(name)) {
+        if (fat_on_share() && !filesystemNamesVolume(name)) {
             Pi1MHz_MemoryWrite(addr, fat_share_chdir(name));
             break;
         }

@@ -496,17 +496,6 @@ FRESULT fsr_lseek(FIL *fp, FSIZE_t ofs)
    return FR_OK;
 }
 
-FRESULT fsr_truncate(FIL *fp)
-{
-   net_file_t *f = net_file(fp);
-   if (f == NULL)
-      return f_truncate(fp);
-   FRESULT r = usable(fp, f, FA_WRITE);
-   if (r != FR_OK)
-      return r;
-   return fr_of(set_size(f, fp->fptr));
-}
-
 FRESULT fsr_sync(FIL *fp)
 {
    net_file_t *f = net_file(fp);

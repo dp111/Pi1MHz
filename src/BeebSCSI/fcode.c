@@ -1060,37 +1060,6 @@ void fcodeReadBuffer(void)
     for (uint16_t byteCounter = 0; byteCounter < 7; byteCounter++) {
 		FCdebugStringInt8Hex_P(PSTR(" "), scsiFcodeBufferRX[byteCounter], false);
     }
-#if 0
-	uint16_t byteCounter = 0;
-	uint16_t availableBytes = 0;
-
-	// Clear the F-code buffer
-	for (byteCounter = 0; byteCounter < 256; byteCounter++) scsiFcodeBuffer[byteCounter] = 0;
-
-	// Get the number of available bytes in the UART Rx buffer
-	availableBytes = uartAvailable();
-
-	if (debugFlag_scsiFcodes) debugStringInt16_P(PSTR("F-Code: Serial UART bytes waiting =  "), availableBytes, true);
-
-	// Ensure we have a full F-code response terminated with
-	// 0x0D (CR) before we send it to the host
-	if (uartPeekForString()) {
-		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("F-Code: Transmitting F-Code bytes: "));
-
-		// Copy the UART Rx buffer to the F-Code buffer
-		for (byteCounter = 0; byteCounter < availableBytes; byteCounter++) {
-			scsiFcodeBuffer[byteCounter] = (char)(uartRead() & 0xFF);
-			if (debugFlag_scsiFcodes) debugStringInt8Hex_P(PSTR(" "), scsiFcodeBuffer[byteCounter], false);
-		}
-		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("\r\n"));
-	}
-	// If there is nothing to send we should reply with only a CR according
-	// to page 40 of the VP415 operating instructions (C8H Read F-code reply)
-	else {
-		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("F-Code: No response from host; sending empty CR terminated response.\r\n"));
-		scsiFcodeBuffer[0] = 0x0D;
-	}
-#endif
 }
 
 void fcodeClearBuffer(void)

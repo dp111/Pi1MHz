@@ -1925,85 +1925,8 @@ static void cursor(int n) {
    const uint8_t cmd[] = { 23, 1, (uint8_t)n, 0, 0, 0, 0, 0, 0, 0 };
    fb_writen(cmd, sizeof cmd);
 }
-#if 0
-static void plot(int n, int x, int y) {
-   fb_writec(25);
-   fb_writec((char)n);
-   fb_writec((char)x);
-   fb_writec((char)(x >> 8));
-   fb_writec((char)y);
-   fb_writec((char)(y >> 8));
-}
 
-static void owl(int x0, int y0, int r, int col) {
-   const int data[] = {
-      0, 2, 4, 6, 8, 10, 12, 14, 16, -1,
-      1, 7, 9, 15, -1,
-      0, 4, 8, 12, 16, -1,
-      3, 5, 11, 13, -1,
-      0, 4, 8, 12, 16, -1,
-      1, 7, 9, 15, -1,
-      0, 2, 8, 14, 16, -1,
-      1, 3, 13, -1,
-      0, 2, 4, 6, 8, 10, 12, 16, -1,
-      1, 3, 5, 7, -1,
-      0, 2, 4, 6, 8, 16, -1,
-      1, 3, 5, 7, -1,
-      2, 4, 6, 8, 16, -1,
-      3, 5, 7, 9, -1,
-      4, 6, 8, 10, 16, -1,
-      5, 7, 9, 11, -1,
-      6, 8, 10, 12, 16, -1,
-      7, 11, 13, -1,
-      6, 10, 14, 16, -1,
-      1, 3, 5, 7, 9, 11, 15, -1,
-      16
-   };
-   int y = 0;
-
-
-   // 256-colour GCOL but numbering
-   // Bits 0..1 = Tint (0x00, 0x11, 0x22, 0x33) added
-   // Bits 3..2 = R    (0x00, 0x44, 0x88, 0xCC)
-   // Bits 5..4 = G    (0x00, 0x44, 0x88, 0xCC)
-   // Bits 7..6 = B    (0x00, 0x44, 0x88, 0xCC)
-
-   uint8_t cols[] = {
-             //         RRGGBBTT
-      0x0F,  // Red     00001111
-      0x1F,  // Orange  00011111
-      0x3F,  // Yellow  00111111
-      0x20,  // Green   00100000
-      0xC3,  // Blue    11000011
-      0x84,  // Indigo  10000100
-      0x9A   // Violet  10011010
-   };
-
-   // Save graphics colour
-   pixel_t old_col = prim_get_fg_col();
-   plotmode_t old_mode = prim_get_fg_plotmode();
-   for (unsigned int i = 0; i < sizeof(data) / sizeof(int); i++) {
-      int x = data[i];
-      if (x >= 0) {
-         int xc = x0 + x * r;
-         int yc = y0 - y * r;
-         int d = y / 3;
-         prim_set_fg_plotmode(screen, PM_NORMAL);
-         prim_set_fg_col(screen, screen->get_colour(screen, cols[d]));
-         plot(  4, xc, yc);
-         plot(157, xc, yc + r * 5 / 7);
-      } else {
-         y++;
-      }
-   }
-   // Restore graphics colour
-   prim_set_fg_plotmode(screen, old_mode);
-   prim_set_fg_col(screen, old_col);
-}
-#endif
 void fb_show_splash_screen(void) {
-
-#if 1
    // Select the default screen mode
    { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; fb_writen(c, sizeof c); }
    // Turn of the cursor (as there are some bugs when changing fonts)
@@ -2024,10 +1947,6 @@ void fb_show_splash_screen(void) {
    size_t infolen = helpers_screen_setup(screeninfo, sizeof(screeninfo));
    fb_writen((const uint8_t *)screeninfo, (unsigned int)infolen);
   // cursor(1);
-#else
-   { const uint8_t c[] = { 22, 1 }; fb_writen(c, sizeof c); }
-   cursor(0);
-#endif
 }
 
 static void fb_initialize(void) {
@@ -2051,19 +1970,6 @@ static void fb_initialize(void) {
    screen_set_vsync(true);
 }
 
-#if 0
-void fb_destroy(void) {
-
-   // Disable the VSync Interrupt
-    screen_set_vsync(false);
-
-   // Disable the timer interrupts (flashing colours, cursor, etc)
-   RPI_GetIrqController()->Disable_Basic_IRQs = RPI_BASIC_ARM_TIMER_IRQ;
-
-   // Disable the frame buffer
-   screen_release_buffer ( handle);
-}
-#endif
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
    screen_mode_t *new_screen;
 #if 0 /* Unreachable (review 2026-10-06 V10): the only caller takes the colour

@@ -47,6 +47,7 @@
 #include "../rpi/exceptions.h"
 #include "../wifi/webserver.h"   /* webserver_sd_space: cached FAT free-space sweep */
 #include "../chainboot.h"
+#include "../fnv1a.h"
 
 //--------------------------------------------------------------------+
 // Dataset
@@ -440,12 +441,7 @@ static bool fs_make_path(const char* base, const char* name, char path[], size_t
 /* FNV-1a hash, but seeded so callers can ask for an alternate
  * hash when the primary one collides with an existing entry. */
 static uint32_t fs_hash_path_seeded(const char* path, uint32_t seed) {
-  uint32_t hash = seed;
-  const uint8_t* p = (const uint8_t*) path;
-  while (*p != 0u) {
-    hash ^= *p++;
-    hash *= 16777619u;
-  }
+  uint32_t hash = fnv1a_str(seed, path);
   if (hash == 0u || hash == 0xFFFFFFFFu) {
     hash ^= 0xA5A5A5A5u;
   }
@@ -453,7 +449,7 @@ static uint32_t fs_hash_path_seeded(const char* path, uint32_t seed) {
 }
 
 static uint32_t fs_handle_from_path(const char* path) {
-  return fs_hash_path_seeded(path, 2166136261u);
+  return fs_hash_path_seeded(path, FNV1A_BASIS);
 }
 
 /* Cap descent depth on tree walks so a pathological filesystem
@@ -927,7 +923,7 @@ static void fs_cache_repair_collisions(void) {
       if (g_fs_cache.entries[i].handle == g_fs_cache.entries[i - 1u].handle) {
         g_fs_cache.entries[i].handle =
           fs_hash_path_seeded(g_fs_cache.entries[i].path,
-                              2166136261u + (attempt * 0x9E3779B9u));
+                              FNV1A_BASIS + (attempt * 0x9E3779B9u));
         collided = true;
       }
     }

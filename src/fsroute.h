@@ -29,7 +29,6 @@ FRESULT fsr_close(FIL *fp);
 FRESULT fsr_read(FIL *fp, void *buff, UINT btr, UINT *br);
 FRESULT fsr_write(FIL *fp, const void *buff, UINT btw, UINT *bw);
 FRESULT fsr_lseek(FIL *fp, FSIZE_t ofs);
-FRESULT fsr_truncate(FIL *fp);
 FRESULT fsr_sync(FIL *fp);
 FRESULT fsr_expand(FIL *fp, FSIZE_t fsz, BYTE opt);
 FRESULT fsr_opendir(DIR *dp, const TCHAR *path);
