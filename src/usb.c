@@ -266,6 +266,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
      auto    host when the OTG ID pin is grounded - an OTG adapter - and
              device when it is not. */
 static bool s_usb_host;
+bool BP_usb_host_polled;            /* usb/broadcom/interrupts.h: the USB IRQ stays off */
 static bool s_usb_initialised;     /* usb_init has posted the power-up */
 static bool s_usb_started;         /* usb_boot_task has started the stack */
 
@@ -351,6 +352,7 @@ static void usb_boot_task(void)
   RPI_PropertySettle();            /* the answer is here; this will not block */
 
   s_usb_host = usb_choose_host();
+  BP_usb_host_polled = PI1MHZ_TUH_POLLED && s_usb_host;
   tusb_rhport_init_t port_init = {
     .role = s_usb_host ? TUSB_ROLE_HOST : TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_AUTO
@@ -360,7 +362,7 @@ static void usb_boot_task(void)
   if (s_usb_host) {
     /* Polled - see usb_host_task.  hcd_init never enabled the controller's
        output (usb/tinyusb-hcd-polled.patch), and TinyUSB's hcd_int_enable
-       on every tuh_task leaves the ARM's IRQ 9 alone (dwc2_int_set in
+       on every tuh_task leaves the ARM's IRQ 9 alone (BP_EnableIRQ in
        usb/broadcom/interrupts.h), so this stays as set here: */
     USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;
     RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);

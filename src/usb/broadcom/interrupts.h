@@ -8,13 +8,21 @@
 #ifndef BROADCOM_INTERRUPTS_H
 #define BROADCOM_INTERRUPTS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "../../rpi/interrupts.h"
 #include "../../rpi/arm-start.h"
+#include "defines.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* usb.c: the controller is a polled host (PI1MHZ_TUH_POLLED).  The ARM's USB IRQ then stays
+   off whatever TinyUSB asks: IRQHandler_main neither services nor masks it in host mode, and
+   TinyUSB's hcd_int_enable runs on every tuh_task (osal_spin_unlock) through upstream's
+   dwc2_int_set, which enables it for either role. */
+extern bool BP_usb_host_polled;
 
 /**
  * @brief Enable a specific IRQ line
@@ -22,6 +30,8 @@ extern "C" {
  */
 static inline void BP_EnableIRQ(uint32_t irqn)
 {
+    if (irqn == USB_IRQn && BP_usb_host_polled)
+        return;
     if (irqn < 32) {
         RPI_GetIrqController()->Enable_IRQs_1 = (1u << irqn);
     } else if (irqn < 64) {
@@ -41,23 +51,6 @@ static inline void BP_DisableIRQ(uint32_t irqn)
         RPI_GetIrqController()->Disable_IRQs_2 = (1u << (irqn - 32));
     }
 }
-
-/* TinyUSB's dwc2 host driver (hcd_dwc2.c, usb_mode=host) asks the port for
-   this; upstream's dwc2_bcm.h only provides the device pair.  A macro, so
-   this header needs no TinyUSB types: it expands where USB_IRQn,
-   TUSB_ROLE_HOST and tusb_config.h's PI1MHZ_TUH_POLLED are known.
-
-   A polled host never wants the ARM's USB IRQ: IRQHandler_main neither
-   services nor masks it in host mode.  TinyUSB still calls hcd_int_enable
-   on every tuh_task (osal_spin_unlock), which re-enabled it each pass -
-   safe only while the controller's own output stayed off - so for the
-   host role this does nothing. */
-#define dwc2_int_set(_rhport, _role, _enabled) \
-    do { \
-        (void)(_rhport); \
-        if (PI1MHZ_TUH_POLLED && (_role) == TUSB_ROLE_HOST) break; \
-        if (_enabled) BP_EnableIRQ(USB_IRQn); else BP_DisableIRQ(USB_IRQn); \
-    } while (0)
 
 /**
  * @brief Set priority for an IRQ (no-op on BCM283x as it has no priority levels)
