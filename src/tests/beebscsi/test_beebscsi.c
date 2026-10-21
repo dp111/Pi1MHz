@@ -1943,6 +1943,99 @@ static void test_scsi_drive(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+static bool cfg_has(const char *path, const char *text);
+
+/* The second review's BeebSCSI fixes (2026-10-21); each check failed on 4d96b12. */
+static void test_review_fixes_2(void)
+{
+   static char why[240];
+   static char cfg[1024];
+   int st, sense;
+   uint32_t bs, spt, il, rcbs, blocks;
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   f_mkdir("/BeebSCSI9");
+   filesystemSetLunDirectory(1, 9);
+
+   /* SCSI drive, .cfg without ModePage4: a page 4 sent before FORMAT is saved by it */
+   {
+      const char *p4 = strstr(ro652_cfg, "ModePage4=");
+      size_t n = (size_t)(p4 - ro652_cfg);
+      memcpy(cfg, ro652_cfg, n);
+      cfg[n] = '\0';
+   }
+   put_file("/BeebSCSI9/scsi0.cfg", cfg, (UINT)strlen(cfg));
+   put_file("/BeebSCSI9/scsi0.dat", "image", 5);
+   scsiClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+   const uint8_t ms10[6] = { 0x15, 0, 0, 0, 10, 0 };
+   const uint8_t d4[10] = { 0, 0, 0, 0,  0x04, 4, 0, 0, 30, 3 };
+   int sel = run_cmd(1, ms10, 6, d4, sizeof d4);
+   st = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   /* 30 cylinders; the heads through MaskPage4's 0F: the made-up page's 20 (14) becomes 13, 19 heads */
+   snprintf(why, sizeof why, "select %d format %d, ModePage4 line %d, %lu blocks (want %u), image %ld",
+            sel, st, cfg_has("/BeebSCSI9/scsi0.cfg", "ModePage4=040400001E13"), (unsigned long)blocks,
+            30u * 19u * 61u, size_of("/BeebSCSI9/scsi0.dat"));
+   check("SCSI FORMAT, .cfg with no ModePage4: the page 4 sent is saved, and the image is its size",
+         sel == 0 && st == 0 && cfg_has("/BeebSCSI9/scsi0.cfg", "ModePage4=040400001E13") && blocks == 30u * 19u * 61u
+         && size_of("/BeebSCSI9/scsi0.dat") == 30L * 19 * 61 * 256, why);
+
+   /* SCSI drive, LBADescriptor 512 set by hand, page 3 saying 256: FORMAT with no MODE SELECT keeps 512 */
+   strcpy(cfg, ro652_cfg);
+   {
+      char *l = strstr(cfg, "LBADescriptor=0000000000000100");
+      memcpy(l, "LBADescriptor=0000000000000200", 30);
+   }
+   put_file("/BeebSCSI9/scsi0.cfg", cfg, (UINT)strlen(cfg));
+   scsiClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+   st = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "format %d, block size %lu (page 3 %lu), LBADescriptor line %s",
+            st, (unsigned long)rcbs, (unsigned long)bs,
+            cfg_has("/BeebSCSI9/scsi0.cfg", "LBADescriptor=0000000000000200") ? "512" : "CHANGED");
+   check("SCSI FORMAT with no MODE SELECT: the .cfg's LBADescriptor (512) wins over page 3's 256, page 3 made to match",
+         st == 0 && rcbs == 512 && bs == 512 && cfg_has("/BeebSCSI9/scsi0.cfg", "LBADescriptor=0000000000000200"), why);
+   f_unlink("/BeebSCSI9/scsi0.cfg");
+   stop_all();
+
+   /* Adaptec, DriveGeometry=CFG, a .cfg with page 4 and no page 0: the list from page 4 */
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   scsiSetGeometryFromCfgOnly(true);
+   static const char p4only[] =
+      "ModeParamHeader=10000008\nLBADescriptor=0000000000000100\n"
+      "ModePage4=0416000064020000000000000000000000000000000000\n";
+   put_file("/BeebSCSI9/scsi0.cfg", p4only, sizeof p4only - 1);
+   filesystemSetLunStatus(0, true);
+   const uint8_t sf[6] = { 0x1A, 0, 0, 0, 0x16, 0 };
+   st = run_cmd(1, sf, 6, NULL, 0);
+   unsigned got = bus_out_len;
+   uint8_t c1 = got > 13 ? bus_out[13] : 0, c2 = got > 14 ? bus_out[14] : 0, hd = got > 15 ? bus_out[15] : 0;
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 0), %u bytes, cylinders %02X%02X heads %02X (want 0064, 02)",
+            st, sense, got, c1, c2, hd);
+   check("DriveGeometry=CFG on an Adaptec board: a .cfg with page 4 but no page 0 is not 'blown format'",
+         st == 0 && got == 22 && c1 == 0x00 && c2 == 0x64 && hd == 2, why);
+   scsiSetGeometryFromCfgOnly(false);
+   f_unlink("/BeebSCSI9/scsi0.cfg");
+   stop_all();
+
+   /* A refused FORMAT of a LUN with no image leaves no image behind */
+   f_unlink("/BeebSCSI9/scsi3.dat");
+   f_unlink("/BeebSCSI9/scsi3.cfg");
+   const uint8_t fm40[6] = { 0x04, 3 << 5, 0x6C, 0, 40, 0 };
+   st = run_cmd(1, fm40, 6, NULL, 0);
+   sense = sense_of(3);
+   long left = size_of("/BeebSCSI9/scsi3.dat");
+   snprintf(why, sizeof why, "FORMAT %d sense %02X (want 2, 24), image left %ld (want none, -1)", st, sense, left);
+   check("ACB FORMAT refused on a LUN with no image: no empty .dat is left", st == 2 && sense == 0x24 && left < 0, why);
+   f_unlink("/BeebSCSI9/scsi3.cfg");
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* A SCSI drive's pending pages (MODE SELECT before FORMAT) last while the
    drives are the same ones: a STOP/START UNIT keeps them; a jukebox to
    another ADFS directory and back, or a remount (a BREAK), drops them, so a
@@ -2853,6 +2946,7 @@ int main(int argc, char **argv)
    test_review_fixes_40_41();
    test_block_size_fallback();
    test_review_fixes_full();
+   test_review_fixes_2();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */

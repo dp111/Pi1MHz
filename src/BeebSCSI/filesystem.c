@@ -1390,6 +1390,19 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
    return true;
 }
 
+// A FORMAT the controller refused, of a LUN that had no image: the empty .dat made for it
+// goes again, so a refused command leaves nothing behind.  Only an empty one is removed.
+void filesystemRemoveEmptyLunImage(uint8_t lunNumber)
+{
+   FILINFO fno;
+
+   if (lunNumber >= 8 || config_beeb_write_protected())
+      return;
+   fsLunFilePath(lunNumber, "dat", fileName, sizeof(fileName));
+   if ((fsr_stat(fileName, &fno) == FR_OK) && (fno.fsize == 0))
+      (void)fsr_unlink(fileName);
+}
+
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
@@ -1690,7 +1703,7 @@ bool filesystemStartLunForFormat(uint8_t lunNumber)
 // read-only image is left alone.  Returns false if the .cfg cannot be
 // saved.
 bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
-                                  uint16_t interleave)
+                                  uint16_t interleave, bool page4)
 {
    parserkeyvalue *page3 = &filesystemState.keyvalues[lunNumber][MODEPAGE3];
    bool append[sizeof scsiattributes / sizeof scsiattributes[0]] = { false };
@@ -1727,6 +1740,10 @@ bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, u
       filesystemSetLunBlockSize(lunNumber, blockSize);
       append[LBADESCRIPTOR] = true;
    }
+   // A page 4 the host sent (SCSI drive: made current at FORMAT) is saved too, added if the
+   // .cfg had none: the FORMAT's restart reads the .cfg, and would size the image from the old one
+   if (page4 && (filesystemState.keyvalues[lunNumber][MODEPAGE4].v.string != NULL))
+      append[MODEPAGE4] = true;
    filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
    return filesystemWriteAttributesAdding(lunNumber, append);
 }

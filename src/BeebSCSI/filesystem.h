@@ -218,7 +218,8 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteAttributes(uint8_t lunNumber);
 bool filesystemStartLunForFormat(uint8_t lunNumber);
 bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
-                                  uint16_t interleave);
+                                  uint16_t interleave, bool page4);
+void filesystemRemoveEmptyLunImage(uint8_t lunNumber);
 bool filesystemGetLunTrackFormat(uint8_t lunNumber, uint32_t *track, uint32_t *overhead, uint32_t *spare);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 

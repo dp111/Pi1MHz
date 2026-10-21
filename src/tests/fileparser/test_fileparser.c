@@ -236,6 +236,21 @@ int main(void)
       set_file("Title=Old\n");
       (void)parse_rewritefile_adding("f", "f", keys, v, NULL);
       ok(strcmp(written(), "Title=New\n") == 0, "no list: as parse_readfile");
+      /* a key line with no value (hand-edited): the value goes into it, nothing lost or doubled */
+      set_file("Title=\nInquiry= # bytes\nSize=20\n");
+      (void)parse_rewritefile_adding("f", "f", keys, v, append);
+      ok(strcmp(written(), "Title=New\nInquiry= DEAD# bytes\nSize=20\n") == 0,
+         "an empty value is filled in, not skipped (and not added again)"); if (strcmp(written(), "Title=New\nInquiry= DEAD# bytes\nSize=20\n")) printf("    got [%s]\n", written());
+      set_file("Title\r\n");
+      (void)parse_rewritefile_adding("f", "f", keys, v, NULL);
+      ok(strcmp(written(), "Title=New\r\n") == 0, "a bare key gets its = and value"); if (strcmp(written(), "Title=New\r\n")) printf("    got [%s]\n", written());
+      {
+         parserkeyvalue r[K_COUNT] = {0};
+         set_file("Title=\nSize=20\n");
+         ok(parse_readfile("f", 0, keys, r) != 0 && r[K_TITLE].length == 0 && *r[K_SIZE].v.integer == 20,
+            "reading: an empty value stays unset, the next line still read");
+         parse_releasekeyvalues(r, K_COUNT);
+      }
    }
    {
       parserkeyvalue v[K_COUNT] = {0};

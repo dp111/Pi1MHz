@@ -411,6 +411,7 @@ static uint32_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
    uint16_t sectorsPerTrack = now;
    uint16_t interleaveUsed = interleave ? interleave : 2u;
    uint16_t pageInterleave = 0;               // SCSI: kept in page 3
+   bool     savePage4 = false;                // SCSI: a page 4 the host sent
    uint32_t error = NO_ERROR;
 
    switch (scsiController) {
@@ -450,11 +451,17 @@ static uint32_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
       case SCSI_CONTROLLER_SCSI: {
          uint32_t track, overhead, spare, limit;
          size_t length = 0;
+         scsiPendingCheck(lun);
+         bool hostPage3 = scsiPending[lun].valid[0];
+         savePage4 = scsiPending[lun].valid[1];
          scsiApplyPendingPages(lun);
          filesystemConfigToLunGeometry(lun);
          blockSize = filesystemGetLunBlockSize(lun);
+         // The block size is the .cfg's LBADescriptor (or a MODE SELECT's), and page 3's
+         // bytes 12-13 only when the host sent a page 3: a .cfg's own page 3 can disagree
+         // with a hand-set LBADescriptor, which wins (page 3 is then saved to match)
          const char *page3 = filesystemGetModePageData(lun, 3, &length);
-         if ((page3 != NULL) && (length >= 14)) {
+         if (hostPage3 && (page3 != NULL) && (length >= 14)) {
             uint32_t pageBlockSize = ((uint32_t)(uint8_t)page3[12] << 8) | (uint8_t)page3[13];
             if (pageBlockSize != 0)
                blockSize = pageBlockSize;
@@ -485,7 +492,7 @@ static uint32_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
 
    // Mixed saves the .cfg only when the sectors per track change, as before
    if ((error == NO_ERROR) && ((scsiController != SCSI_CONTROLLER_MIXED) || (sectorsPerTrack != now))) {
-      if (filesystemSaveFormatGeometry(lun, sectorsPerTrack, newBlockSize, pageInterleave))
+      if (filesystemSaveFormatGeometry(lun, sectorsPerTrack, newBlockSize, pageInterleave, savePage4))
          scsiClearPendingPages(lun);
       else
          error = BAD_FORMAT;
@@ -1253,9 +1260,11 @@ static uint8_t scsiCommandFormat(void)
    }
 
    // Make sure the target LUN is started
+   bool noImage = false;                        // the image is made for this FORMAT (if not refused)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // If the LUN is unavailable we need to create the LUN image on the file system
       // before formatting it.
+      noImage = true;
       if (!filesystemCreateLunImage(commandDataBlock.targetLUN)) {
          // Could not create LUN image... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: ERROR: Could not create new LUN image for LUN #"), commandDataBlock.targetLUN, true);
@@ -1330,7 +1339,10 @@ static uint8_t scsiCommandFormat(void)
       // A parameter the controller refuses: the .cfg and the image are left
       // as they were, and so is the drive - scsiFormatGeometry stopped it,
       // and the restart reads its .cfg afresh (pending MODE SELECT pages
-      // stay pending) rather than leaving it "not ready" until START UNIT
+      // stay pending) rather than leaving it "not ready" until START UNIT.
+      // An image made just now for it goes again: a refused FORMAT leaves nothing
+      if (noImage)
+         filesystemRemoveEmptyLunImage(commandDataBlock.targetLUN);
       filesystemSetLunStatus(commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND;
       requestSenseData[commandDataBlock.targetLUN] = error;
@@ -2405,8 +2417,9 @@ static uint8_t scsiAdaptecModeSense(const char *header, size_t headerLength,
    memcpy(&list[4], extent, (extentLength < 8) ? extentLength : 8);
    if ((drive != NULL) && (pageLength > 0)) {
       memcpy(&list[12], drive, (pageLength < 10) ? pageLength : 10);
-   } else if (scsiGeometryFromCfgOnly()) {
-      // DriveGeometry=CFG and no list in the .cfg: as a disc without the
+   } else if (scsiGeometryFromCfgOnly() && (filesystemGetModePageData(lun, 4, &pageLength) == NULL)) {
+      // DriveGeometry=CFG and no list in the .cfg (page 0, or page 4, whose cylinders
+      // and heads are the geometry then and are sent below): as a disc without the
       // board's parameters on cylinder 0 ("blown format", OEM manual App. A)
       commandDataBlock.status = SCSI_STATUS_CHECK_COND;
       requestSenseData[lun] = BAD_FORMAT;

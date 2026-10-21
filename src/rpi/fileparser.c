@@ -140,29 +140,22 @@ static void copy_to_eol(parse_state * st)
 }
 
 /* Step over the "=" and any spacing between a key and its value, copying it
- * through unchanged.  False when the line carries no value: a bare key, or
- * one followed only by a comment. */
-static bool skip_to_value(parse_state * st)
+ * through unchanged (*equals: there was an "=").  False when the line carries
+ * no value: a bare key, or one followed only by a comment; the line's end or
+ * comment is then left for the caller. */
+static bool skip_to_value(parse_state * st, bool * equals)
 {
+    *equals = false;
     while (st->ptr < st->insize)
     {
         uint8_t c = st->in[st->ptr];
         if ((c == ' ') || (c == '\t') || (c == '='))
         {
+            *equals = *equals || (c == '=');
             emit(st, st->in[st->ptr++]);
             continue;
         }
-        if (c == '#')
-        {
-            copy_to_eol(st);
-            return false;
-        }
-        if ((c == '\n') || (c == '\r'))
-        {
-            emit(st, st->in[st->ptr++]);
-            return false;
-        }
-        return true;
+        return (c != '#') && (c != '\n') && (c != '\r');
     }
     return false;
 }
@@ -453,9 +446,19 @@ static int parse_file( const char * filename , const char * outfile, const parse
         for (keylen = strlen(keyv[keyindex].key); keylen != 0; keylen--)
             emit(&st, st.in[st.ptr++]);
 
-        if (!skip_to_value(&st))
+        bool equals;
+        if (!skip_to_value(&st, &equals))
         {
             LOG_DEBUG("Key data not found \n");
+            if (outfile && values[keyindex].length)
+            {
+                /* a line with no value (ModePage3= edited by hand): the value goes
+                   in, not lost - the key's line is there, so it is not added */
+                if (!equals)
+                    emit(&st, '=');
+                emit_value(&st, &keyv[keyindex], &values[keyindex]);
+            }
+            copy_to_eol(&st);
             continue;
         }
 
