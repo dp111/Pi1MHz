@@ -82,7 +82,10 @@
                                             by a new connection from the same address */
 #define ABORT_US     30000000u           /* ...and is dropped outright after this long */
 
-enum { S_LOGIN_USER, S_LOGIN_PASS, S_LIVE };
+/* The session's stage.  CONNECTING and LIVE are logged in (see logged_in); CLOSING is a login that
+   failed for good (the third wrong password, the time limit): the session closes once its last
+   words have gone. */
+enum { S_LOGIN_USER, S_LOGIN_PASS, S_CONNECTING, S_LIVE, S_CLOSING };
 
 static struct tcp_pcb *g_listener;
 static struct tcp_pcb *g_pcb;            /* the one session */
@@ -121,8 +124,10 @@ static uint32_t g_taken_seen, g_taken_us;        /* keys taken, and when the cou
 static uint32_t g_other_seen;                    /* other keys taken already looked at */
 static bool     g_silent_wait;                   /* a key was taken: watching for output after it */
 static uint32_t g_silent_us, g_silent_tx, g_silent_scan_us;   /* g_silent_tx: g_out.drawn when the key was taken */
-static bool            g_scan_pending;        /* a new session still has to ask the Beeb for what is on its screen */
-static bool            g_scan_merge;          /* ... and compare it with the model, which has been drawn */
+/* A read of the Beeb's screen to ask for: none, an ordinary one (the terminal drawn from it), or one
+   compared with the model, which has been drawn already (only what differs is drawn). */
+enum { SCAN_NONE, SCAN_FULL, SCAN_MERGE };
+static uint8_t         g_scan;
 static bool            g_unseen;              /* the ROM filing system printed where RS423 cannot see: a scan, once it stops */
 #define UNSEEN_QUIET_US 100000u
 static bool            g_break_asked;         /* F12 was pressed: the next hook follows a BREAK */
@@ -131,6 +136,11 @@ static uint32_t        g_banner_until;            /* banners are read until then
 
 static uint8_t   g_stage;
 static uint32_t  g_start_us;
+
+static bool logged_in(void)
+{
+   return g_stage == S_CONNECTING || g_stage == S_LIVE;
+}
 
 /* The client's window size (NAWS, asked for in the greeting).  The screen is not drawn until the
    first size has come, or NAWS_WAIT_US has gone by (a client that says nothing): a window smaller
@@ -148,7 +158,6 @@ static bool     g_win_first;                    /* the first size has been acted
 #define CONNECT_DOT_US   300000u
 #define CONNECT_MIN_US  1000000u
 #define CONNECT_WARN_US 3000000u                 /* how long a too-small window's warning stays */
-static bool     g_connecting;
 static uint32_t g_conn_us;                       /* when it started */
 static uint32_t g_dot_us;                        /* the last dot */
 static uint32_t g_warn_until;                    /* a warning is being shown until then */
@@ -166,7 +175,6 @@ static unsigned  g_hold_n;
 static bool      g_fin;                  /* the client closed its side: the session ends once its keys are in */
 static uint32_t  g_fin_us;               /* ... and when the keys or the output last moved */
 static bool      g_bind_failed;          /* telnetd_port is set but could not be listened on */
-static bool      g_close_after;          /* close once the output has gone */
 static bool      g_att_known, g_att;     /* last attachment told to the client */
 static char      g_peer[20];
 static uint32_t  g_sessions, g_refused, g_replaced, g_dropped;
@@ -324,12 +332,10 @@ static void session_reset(void)
    g_login_cr = false;
    g_hold_n = 0u;
    g_fin = false;
-   g_connecting = false;
    pend_free();
    g_khead = g_ktail = 0u;
    g_olen = g_opos = 0u;
    g_len = 0u;
-   g_close_after = false;
    g_att_known = false;
    g_rx_blocked = false;
    g_stage = S_LIVE;
@@ -339,8 +345,7 @@ static void session_reset(void)
    g_esc_cut = false;
    g_silent_wait = false;
    g_scan_keys = 0u;
-   g_scan_pending = false;
-   g_scan_merge = false;
+   g_scan = SCAN_NONE;
    memset(g_user, 0, sizeof g_user);             /* the login typed, not kept after the session */
    memset(g_line, 0, sizeof g_line);
 }
@@ -379,7 +384,7 @@ static bool session_close(bool abort_conn)
 
 static void connect_start(void)
 {
-   g_connecting = true;
+   g_stage = S_CONNECTING;
    g_conn_us = g_dot_us = Pi1MHz_now_us;
    g_warn_until = 0u;
    g_warned = false;
@@ -426,7 +431,6 @@ static void login_key(uint8_t k)
       g_len = 0u;
       if (credentials_ok()) {
          tnd_login_ok(&g_login, g_peer_addr);
-         g_stage = S_LIVE;
          g_att_known = false;
          o_str("\r\n");
          send_banners();                         /* only now: nothing of the Beeb's before a login */
@@ -434,7 +438,7 @@ static void login_key(uint8_t k)
       } else {
          if (tnd_login_fail(&g_login, g_peer_addr)) {   /* the third from this address: it is locked out */
             o_str("\r\nLogin incorrect\r\n");
-            g_close_after = true;
+            g_stage = S_CLOSING;
          } else {
             o_str("\r\nLogin incorrect\r\n\r\nlogin: ");
             g_stage = S_LOGIN_USER;
@@ -479,7 +483,7 @@ static void deliver_key(uint8_t k)
 {
    if (g_lit_next) {                             /* the byte after TND_KEY_LIT: any value, as it is */
       g_lit_next = false;
-      if (g_stage == S_LIVE && serial_redirect_beeb->rom) {
+      if (logged_in() && serial_redirect_beeb->rom) {
          k_push(LIT_KEY);
          k_put(k, true);
       }
@@ -489,7 +493,7 @@ static void deliver_key(uint8_t k)
       g_lit_next = true;
       return;
    }
-   if (g_stage != S_LIVE) {
+   if (!logged_in()) {
       if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_REFRESH && k != TND_KEY_SHIFT)
          login_key(k);
    } else if (k == TND_KEY_BREAK) {
@@ -699,7 +703,7 @@ again:
    return;
 
 full:
-   if (g_stage == S_LIVE && esc_ahead(now)) {   /* a lone ESC behind the backlog: cut through to it */
+   if (logged_in() && esc_ahead(now)) {   /* a lone ESC behind the backlog: cut through to it */
       g_esc_cut = true;
       goto again;
    }
@@ -733,7 +737,7 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
    }
    if (p == NULL) {                             /* the client closed its side ... */
       g_why = "client closed";
-      if (g_stage != S_LIVE || (g_pend == NULL && g_khead == g_ktail))
+      if (!logged_in() || (g_pend == NULL && g_khead == g_ktail))
          return session_close(false) ? ERR_ABRT : ERR_OK;
       g_fin = true;                             /* ... after sending more than the Beeb has taken yet */
       g_fin_us = Pi1MHz_now_us;                 /* (cat prog | nc): it is typed in, then the session ends */
@@ -799,7 +803,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    /* A session still at the login prompt holds nothing yet: a new connection from the same address
       takes its place, or from another once nothing has been typed there for a while, so nobody can
       keep the owner out by connecting and waiting, nor by reconnecting over and over. */
-   if (g_pcb != NULL && !locked && g_stage != S_LIVE
+   if (g_pcb != NULL && !locked && !logged_in()
        && tnd_login_may_replace(g_peer_addr, addr, Pi1MHz_now_us - g_login_input_us)) {
       g_replaced++;
       g_why = "replaced at login";
@@ -849,9 +853,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
       that does is drawn first, with its colours, and the read is only compared with it: a program can
       have changed the screen where the Pi could not see (output with the RS423 copy off, writes to
       screen memory), and then the terminal is drawn again from the Beeb's characters. */
-   g_scan_pending = true;
-   g_scan_merge = g_out.sync && !tnd_out_blank(&g_out);
-   g_connecting = false;
+   g_scan = g_out.sync && !tnd_out_blank(&g_out) ? SCAN_MERGE : SCAN_FULL;
    if (!rawport) {                              /* the raw port: no negotiation, nothing but text */
       uint8_t g[TND_GREETING_LEN];
       o_put(g, tnd_greeting(g));
@@ -874,7 +876,7 @@ static void pump(void)
 {
    if (g_pcb == NULL)
       return;
-   if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_close_after
+   if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_stage == S_CLOSING
                            || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
       bool  was_idle = g_pcb->snd_queuelen == 0u;
       u16_t sent = 0u;
@@ -898,7 +900,7 @@ static void pump(void)
       if (g_opos == g_olen)
          g_opos = g_olen = 0u;
    }
-   if (g_close_after && g_opos == g_olen) {
+   if (g_stage == S_CLOSING && g_opos == g_olen) {
       g_why = "login";
       (void)session_close(false);
    }
@@ -1027,7 +1029,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       tnd_out_at(&g_out, col, row);
       if (reset) {
          tnd_out_beeb_reset(&g_out);
-         if (g_pcb != NULL && g_stage == S_LIVE && g_ansi) {
+         if (g_pcb != NULL && logged_in() && g_ansi) {
             /* Somebody is connected: their terminal is refreshed too, so what the Beeb prints
                from here (the new banners) lands where the model says. */
             char cup[40];
@@ -1039,7 +1041,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_banner_until = Pi1MHz_now_us + 4000000u;   /* ... and the next four seconds hold the new ones */
       }
    }
-   bool    live = g_pcb != NULL && g_stage == S_LIVE && !g_close_after;
+   bool    live = g_pcb != NULL && logged_in();
 
    /* Teletype mode: the raw port, or a client that asked for an 8-bit path (telnet BINARY, either way).
       Then the Beeb's bytes go out as they are and the client's go in as they are: no translation, no
@@ -1048,9 +1050,8 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       bool raw = g_sess_rawport || g_in.bin_in || g_in.bin_out;
       if (raw != g_in.raw) {
          g_in.raw = raw;
-         if (!raw && g_ansi_cfg && g_stage == S_LIVE) {
-            g_scan_pending = true;
-            g_scan_merge = false;
+         if (!raw && g_ansi_cfg && logged_in()) {
+            g_scan = SCAN_FULL;
          }
       }
       g_ansi = g_ansi_cfg && !raw;
@@ -1059,7 +1060,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
    /* What the Beeb printed.  With a client to show it to it is translated, and
       the rest waits in the Beeb's buffer while the output buffer is full;
       with none (or before login) it is read and dropped. */
-   if (beeb_attached && !(g_connecting && g_stage == S_LIVE)) {   /* held while connecting */
+   if (beeb_attached && g_stage != S_CONNECTING) {   /* held while connecting */
       for (unsigned i = 0u; i < BEEB_PER_POLL; i++) {
          if (live && o_room() < TND_OUT_MAX + 2u)
             break;
@@ -1111,10 +1112,9 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       } else if (g_silent_wait && (now_us - g_silent_us) >= SILENT_KEY_US) {
          g_silent_wait = false;
          if (g_out.drawn == g_silent_tx && serial_redirect_beeb->rom && g_ansi && g_pcb != NULL
-             && g_stage == S_LIVE && !g_scan_pending && (now_us - g_silent_scan_us) >= SILENT_SCAN_US) {
+             && logged_in() && g_scan == SCAN_NONE && (now_us - g_silent_scan_us) >= SILENT_SCAN_US) {
             g_silent_scan_us = now_us;
-            g_scan_pending = true;                 /* the screen read, merged: only what differs is drawn */
-            g_scan_merge = g_out.sync;
+            g_scan = g_out.sync ? SCAN_MERGE : SCAN_FULL;   /* the screen read, merged: only what differs is drawn */
          }
       }
    }
@@ -1130,13 +1130,13 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
 
-   if (g_stage != S_LIVE && !g_close_after && (now_us - g_start_us) >= LOGIN_US) {
+   if ((g_stage == S_LOGIN_USER || g_stage == S_LOGIN_PASS) && (now_us - g_start_us) >= LOGIN_US) {
       o_str("\r\nLogin timed out\r\n");          /* once: the session closes when it has gone */
-      g_close_after = true;
+      g_stage = S_CLOSING;
       (void)tnd_login_fail(&g_login, g_peer_addr);   /* a failure too: holding the prompt by typing now and */
    }                                              /* then, reconnecting each time, ends in a lockout */
 
-   if (g_hold_n != 0u && !tnd_login_held(&g_login) && g_stage != S_LIVE && !g_close_after) {
+   if (g_hold_n != 0u && !tnd_login_held(&g_login) && (g_stage == S_LOGIN_USER || g_stage == S_LOGIN_PASS)) {
       uint8_t  k[sizeof g_hold];
       unsigned n = g_hold_n;
       memcpy(k, g_hold, n);                      /* what was typed during the hold, in order (a wrong */
@@ -1198,11 +1198,11 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       pend_consume();                           /* client data waiting for room in the ring */
 
    /* The client's window size: the first one before the screen is drawn, a change after it. */
-   if (g_pcb != NULL && g_stage == S_LIVE && g_in.win_gen != g_win_gen && o_room() >= TND_COPY_MAX + 120u) {
+   if (g_pcb != NULL && logged_in() && g_in.win_gen != g_win_gen && o_room() >= TND_COPY_MAX + 120u) {
       g_win_gen = g_in.win_gen;
       if (!g_win_first) {
          g_win_first = true;                     /* the first: the connecting phase looks at it */
-      } else if (g_ansi && !g_connecting) {
+      } else if (g_ansi && g_stage == S_LIVE) {
          uint8_t rb[TND_COPY_MAX];
          o_put(rb, tnd_out_redraw(&g_out, rb));   /* resized: drawn again by position */
       }
@@ -1212,7 +1212,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
    /* Connecting: a dot now and then; done once the minimum is over and the client has said its
       window size (or not, in time) - then a too-small window is told so for a while, and then
       the terminal is cleared and the Beeb's screen drawn in place. */
-   if (g_connecting && g_stage == S_LIVE && g_pcb != NULL && o_room() >= TND_COPY_MAX + 160u) {
+   if (g_stage == S_CONNECTING && g_pcb != NULL && o_room() >= TND_COPY_MAX + 160u) {
       if (g_warn_until == 0u && (now_us - g_dot_us) >= CONNECT_DOT_US) {
          g_dot_us = now_us;
          o_str(" .");
@@ -1239,7 +1239,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
          }
       } else if (ready && (g_warn_until == 0u || (int32_t)(now_us - g_warn_until) >= 0
                            || (g_in.win_rows >= g_out.rows && g_in.win_cols >= g_out.cols))) {   /* made big enough */
-         g_connecting = false;
+         g_stage = S_LIVE;
          if (g_ansi && g_tek && g_in.ttype_got
              && (strncmp(g_in.ttype, "XTERM", 5) == 0 || strncmp(g_in.ttype, "xterm", 5) == 0))
             o_str("\x1b[>q");                   /* XTVERSION: a real xterm can draw the Beeb's graphics */
@@ -1290,26 +1290,26 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_unseen = true;
       } else if (g_unseen && (now_us - unseen_us) >= UNSEEN_QUIET_US) {
          g_unseen = false;
-         g_scan_pending = true;
+         if (g_scan == SCAN_NONE)
+            g_scan = SCAN_FULL;
       }
    }
    if (g_out.rescan) {                           /* a compared read was cut short: an ordinary one */
       g_out.rescan = false;
-      g_scan_pending = true;
+      if (g_scan == SCAN_NONE)
+         g_scan = SCAN_FULL;
    }
-   if (g_scan_pending && g_ansi && g_stage == S_LIVE && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
+   if (g_scan != SCAN_NONE && g_ansi && g_stage == S_LIVE && !naws_wait && g_pcb != NULL && beeb_attached
        && serial_redirect_beeb->rom && g_khead == g_ktail) {
-      g_scan_pending = false;
-      if (g_scan_merge) {
-         g_scan_merge = false;
+      if (g_scan == SCAN_MERGE)
          tnd_out_scan_merge(&g_out);
-      }
+      g_scan = SCAN_NONE;
       k_push(SCAN_KEY);
    }
 
    /* A narrow text window that scrolled or was cleared is drawn again from the model,
       a row at a time, once the Beeb has nothing more to print for now. */
-   if (g_out.dirty && g_stage == S_LIVE && g_pcb != NULL && !serial_redirect_pending()
+   if (g_out.dirty && logged_in() && g_pcb != NULL && !serial_redirect_pending()
        && o_room() >= TND_REPAINT_MAX + 2u) {
       uint8_t db[TND_REPAINT_MAX];
       size_t  dn = tnd_out_dirty_row(&g_out, db);
@@ -1319,7 +1319,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    /* The copy cursor's mark, once the Beeb has been quiet for a moment and has
       the keys. */
-   if (g_pcb != NULL && g_stage == S_LIVE && g_copy && g_ansi && g_khead == g_ktail
+   if (g_pcb != NULL && logged_in() && g_copy && g_ansi && g_khead == g_ktail
        && o_room() >= TND_COPY_MAX + 2u) {
       uint8_t cb[TND_COPY_MAX];
       size_t  cn = tnd_out_copyflush(&g_out, now_us, cb);
@@ -1329,7 +1329,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    /* The keys, as far as the Beeb's keyboard buffer has room (the redirect's
       own FIFO, and behind it the stub's retry when the MOS buffer is full). */
-   if (beeb_attached && g_stage == S_LIVE) {
+   if (beeb_attached && logged_in()) {
       while (g_khead != g_ktail) {
          size_t room = serial_redirect_room();
          uint32_t idx = g_khead & KRING_MASK;
@@ -1351,7 +1351,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
    /* Only a Beeb that has gone is said: a line printed when it comes back (it used to say
       "[BBC attached - press RETURN]") would push the terminal's rows one away from the Beeb's
       just after a reset had put them in step, and the copy cursor's mark then landed a row off. */
-   if (g_stage == S_LIVE && !g_connecting && (!g_att_known || beeb_attached != g_att)) {
+   if (g_stage == S_LIVE && (!g_att_known || beeb_attached != g_att)) {
       if (!beeb_attached) {
          o_str("[BBC not attached: on the BBC type X%=20:CALL &FC88]\r\n");
          tnd_out_origin_lost(&g_out);           /* that line moved the rows: not the Beeb's now */
@@ -1542,7 +1542,7 @@ void telnetd_status(char *buf, size_t len)
    }
    if (g_pcb != NULL)
       used = (size_t)snprintf(buf, len, "port %u, %s%s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
-                              (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_in.raw ? " (teletype)" : "", g_peer,
+                              (unsigned int)g_port, logged_in() ? "live" : "login", g_in.raw ? " (teletype)" : "", g_peer,
                               (unsigned long)g_sessions, (unsigned long)g_refused,
                               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
    else

@@ -18,6 +18,7 @@
 #include "config.h"
 #include "serial_redirect.h"
 #include "telnetd.h"
+#include "telnetd_proto.h"
 #include "lwip/tcp.h"
 #include "lwip/altcp.h"
 #include "lwip/priv/tcp_priv.h"
@@ -41,6 +42,15 @@ static void tr_bytes(const char *tag, int id, const uint8_t *p, size_t n)
          printf("\\%02x", p[i]);
    }
    putchar('\n');
+}
+
+/* telnetd.c's calls into telnetd_proto.c that leave nothing in the output by themselves, made
+   visible in the trace (run_tests.sh links with --wrap). */
+void __real_tnd_out_scan_merge(tnd_out_t *o);
+void __wrap_tnd_out_scan_merge(tnd_out_t *o)
+{
+   if (trace) printf("  scan merged\n");
+   __real_tnd_out_scan_merge(o);
 }
 
 /* ---- Pi1MHz and config --------------------------------------------------- */
@@ -427,6 +437,18 @@ int main(int argc, char **argv)
    beeb_prints("Acorn MOS\r\n>");
    tick(50000u);
    CHECK(got_has(c, "Acorn MOS"), "the new banner shown");
+
+   step("a ROM filing system operation: the screen read once it stops");
+   {
+      size_t k1 = nkeys;
+      rep.unseen_gen++;
+      tick(50000u);
+      rep.unseen_gen++;
+      tick(50000u);
+      CHECK(nkeys == k1, "not while the reports come");
+      tick(100000u);
+      CHECK(nkeys == k1 + 1u && keys[k1] == 0xFFu, "then the ROM is asked for the screen");
+   }
 
    step("a resize redraws");
    mark_at(c);

@@ -21,7 +21,7 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
 
 # -funsigned-char as on the ARM, whose char telnetd.c is written for.
 echo "== telnetd session =="
-S="-std=gnu2x -Wall -Wextra -g -funsigned-char -I$HERE/session -I$SRC -I$SRC/wifi"
+S="-std=gnu2x -Wall -Wextra -g -funsigned-char -I$HERE/session -I$SRC -I$SRC/wifi -Wl,--wrap=tnd_out_scan_merge"
 L="$SRC/telnetd_proto.c $SRC/wifi/lwip_util.c $SRC/lib/textparse.c $SRC/net_telnet.c"
 gcc $S -fsanitize=address,undefined -fno-sanitize-recover=all \
     -o "$B/s" "$HERE/test_telnetd_session.c" "$SRC/telnetd.c" $L
