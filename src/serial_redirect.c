@@ -60,10 +60,12 @@
   exit of the other kind, both being whole instructions over fixed bytes.
 
   What the Beeb sends goes to the modem (serial_modem.c), and what the modem
-  answers comes back; this file only moves the bytes.
+  answers comes back; this file only moves the bytes.  The modem and telnetd
+  each have a poll of their own, registered here (serial_redirect_telnet_attached
+  says whose the stream is).
 
-  Telnet mode (helper 20, 6502code.asm): the same stub, hooked the same way,
-  but the helper writes 2 to the control port (+28) where helper 19 writes 1.
+  Telnet mode (helper 20, 6502code.asm, or the TelnetD ROM): the same stub, hooked the same
+  way, but the helper writes &10 + MODE to the control port (+28) where helper 19 writes 1.
   The Pi then edits the operand of the stub's LDX #1 (+16) to 0, so what it
   sends is inserted into the MOS keyboard buffer instead of the RS423 input
   buffer, and the byte stream belongs to telnetd.c, not the modem.  Like the
@@ -218,16 +220,8 @@ static volatile uint32_t ser_tx_drops, ser_fulls, ser_stalls, ser_escapes, ser_i
 #else
 #define SER_COUNT(c) ((void)0)
 #endif
-static volatile uint8_t  ser_beeb_mode;   /* the Beeb's screen MODE, as helper 20 reported it when it hooked in */
-static volatile uint8_t  ser_beeb_col, ser_beeb_row;   /* ... and its text cursor */
-static volatile uint32_t ser_mode_gen;    /* counts the reports */
-static volatile uint32_t ser_reset_gen;   /* counts the resets of the BBC */
-static volatile bool     ser_scan_ok;     /* the auto-start ROM has taken REMV: the screen can be asked for */
-static volatile bool     ser_keys_told;   /* ... and tells each cursor key, COPY or RETURN a program takes (&24) */
-static volatile uint32_t ser_key_gen;     /* counts those */
-static volatile uint32_t ser_key_other_gen; /* ... and every other byte a program takes (&25, build 13) */
-static volatile bool     ser_lit_ok;      /* the ROM reads a byte after LITKEY as it is (build 13, &26) */
-static volatile uint32_t ser_unseen_gen;  /* counts the ROM's "printed where RS423 could not see" (&22) */
+static volatile ser_beeb_report_t ser_rep;   /* the control port's reports, for telnetd */
+volatile const ser_beeb_report_t *const serial_redirect_beeb = &ser_rep;
 #ifdef DEBUG
 /* Per-byte cost of the IRQ path: the gap between consecutive consumes while
    the gate stays open, i.e. one whole trip through the stub and back. */
@@ -473,39 +467,37 @@ static void ser_control(unsigned int gpio)
    /* Helper 20 says where the Beeb's cursor and what screen MODE it has, in three
       bytes sent ahead of the mode value that also means "telnet": &80 + column
       and &E0 + row, then &10 + MODE.  They are information, not a change of mode. */
-   if (v == SER_CTL_ROMFS) {                  /* the ROM: a ROM filing system operation, whose output the MOS keeps from RS423 */
-      ser_unseen_gen++;
+   switch (v) {
+   case SER_CTL_ROMFS:                        /* the ROM: a ROM filing system operation, whose output the MOS keeps from RS423 */
+      ser_rep.unseen_gen++;
       return;
-   }
-   if (v == SER_CTL_KEY_TOLD) {               /* the ROM: a program took a cursor key, COPY or RETURN */
-      ser_key_gen++;
+   case SER_CTL_KEY_TOLD:                     /* the ROM: a program took a cursor key, COPY or RETURN */
+      ser_rep.key_gen++;
       return;
-   }
-   if (v == SER_CTL_KEY_OTHER) {              /* ... or any other byte (build 13) */
-      ser_key_other_gen++;
+   case SER_CTL_KEY_OTHER:                    /* ... or any other byte */
+      ser_rep.key_other_gen++;
       return;
-   }
-   if (v == SER_CTL_RESET || v == SER_CTL_RESET_SCAN || v == SER_CTL_RESET_TELL || v == SER_CTL_RESET_LIT) {
-      /* the auto-start ROM: a reset, seen or not on the reset line */
-      ser_after_break();                         /* a soft reset leaves the screen as it was: not a new screen */
-      ser_scan_ok = (v != SER_CTL_RESET);        /* and it can be asked for the screen */
-      ser_keys_told = (v == SER_CTL_RESET_TELL || v == SER_CTL_RESET_LIT);   /* build 11: it tells the keys taken */
-      ser_lit_ok = (v == SER_CTL_RESET_LIT);     /* build 13: every key taken, and LITKEY bytes as they are */
+   case SER_CTL_RESET:                        /* the auto-start ROM: a reset, seen or not on the reset line */
+   case SER_CTL_RESET_LIT:
+      ser_after_break();                      /* a soft reset leaves the screen as it was: not a new screen */
+      ser_rep.rom = (v == SER_CTL_RESET_LIT);
       return;
+   default:
+      break;
    }
    if (v >= SER_CTL_COLUMN) {
       if (v >= SER_CTL_ROW)
-         ser_beeb_row = (uint8_t)(v & 0x1Fu);
+         ser_rep.row = (uint8_t)(v & 0x1Fu);
       else
-         ser_beeb_col = (uint8_t)(v & 0x7Fu);
+         ser_rep.col = (uint8_t)(v & 0x7Fu);
       return;
    }
-   bool telnet = (v == SER_CTL_TELNET_OLD) || ((v & 0xF8u) == SER_CTL_TELNET);   /* or TELNET + the Beeb's MODE */
+   bool telnet = (v & 0xF8u) == SER_CTL_TELNET;   /* TELNET + the Beeb's MODE */
 
-   if ((v & 0xF8u) == SER_CTL_TELNET) {
+   if (telnet) {
       ser_after_break();                        /* a helper has just hooked in: nothing before it is in flight */
-      ser_beeb_mode = (uint8_t)(v & 7u);
-      ser_mode_gen++;                           /* the report is complete */
+      ser_rep.mode = (uint8_t)(v & 7u);
+      ser_rep.mode_gen++;                       /* the report is complete */
    }
 
    ser_hooked = (v != SER_CTL_UNHOOK);
@@ -548,64 +540,14 @@ size_t serial_redirect_read(uint8_t *dst, size_t max)
    return n;
 }
 
-bool serial_redirect_scan_ok(void)
+bool serial_redirect_telnet_attached(void)
 {
-   return ser_scan_ok;
-}
-
-bool serial_redirect_keys_told(void)
-{
-   return ser_keys_told;
-}
-
-uint32_t serial_redirect_key_gen(void)
-{
-   return ser_key_gen;
-}
-
-uint32_t serial_redirect_key_other_gen(void)
-{
-   return ser_key_other_gen;
-}
-
-bool serial_redirect_lit_ok(void)
-{
-   return ser_lit_ok;
+   return ser_telnet && ser_hooked;
 }
 
 uint32_t serial_redirect_rx_count(void)
 {
    return ser_rx_count;
-}
-
-/* Counts the auto-start ROM's reports of a ROM filing system operation (service
-   call &0D): the cassette and ROM filing systems own the 6850 while they run, and
-   the MOS sends nothing to RS423 then (OS 1.2 &E0DC), so what they print - *CAT,
-   *OPT 1 messages - is on the Beeb's screen and nowhere else. */
-uint32_t serial_redirect_unseen_gen(void)
-{
-   return ser_unseen_gen;
-}
-
-uint32_t serial_redirect_reset_gen(void)
-{
-   return ser_reset_gen;
-}
-
-uint32_t serial_redirect_mode_gen(void)
-{
-   return ser_mode_gen;
-}
-
-uint8_t serial_redirect_beeb_mode(void)
-{
-   return ser_beeb_mode;
-}
-
-void serial_redirect_beeb_cursor(uint8_t *col, uint8_t *row)
-{
-   *col = ser_beeb_col;
-   *row = ser_beeb_row;
 }
 
 size_t serial_redirect_room(void)
@@ -664,7 +606,7 @@ void serial_redirect_drop_keys(uint8_t keep_after)
 
 /* SHIFT for the Beeb, pressed once: the ROM's SHIFT byte in its workspace, which its KEYV
    handler reads and clears (see the top).  Telnet mode only, and only useful with the
-   auto-start ROM (serial_redirect_scan_ok). */
+   auto-start ROM (serial_redirect_beeb->rom). */
 void serial_redirect_telnetd_refresh(void)
 {
    if (ser_enabled && ser_base >= SER_WS_OFF)
@@ -701,12 +643,7 @@ void serial_redirect_break(void)
 
 static void serial_redirect_poll(void)
 {
-   /* The byte stream is the modem's, or telnetd's once helper 20 has put the
-      stub in telnet mode (telnetd also serves its network side every pass). */
    bool telnet = ser_telnet && ser_hooked;
-   if (!telnet)
-      modem_poll(Pi1MHz_now_us);
-   telnetd_poll(Pi1MHz_now_us, telnet);
 
    /* A BREAK that no reset followed (3 s): the stub's exit and chain operand back as they were, so a
       later chained exit does not jump through &FFFC's bytes. */
@@ -783,11 +720,9 @@ static void serial_redirect_poll(void)
 
 void serial_redirect_init(uint8_t instance, uint8_t address)
 {
-   ser_reset_gen++;
+   ser_rep.reset_gen++;
    SER_LOG('R', address);
-   ser_scan_ok = false;                          /* the MOS has put its vectors back: the ROM says again if it can */
-   ser_keys_told = false;
-   ser_lit_ok = false;
+   ser_rep.rom = false;                          /* the MOS has put its vectors back: the ROM says again if it can */
    ser_brk_req = false;
    static const uint8_t stub[SER_STUB_LEN] = {
       0xE0, 0x02,             /* +00 CPX #2      */
@@ -834,6 +769,8 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    rx.head = rx.tail = 0u;
    ser_tx_drained = false;
    modem_reset();                  /* a BBC reset hangs up, as a DTR drop would */
+   modem_attach();                 /* the stream's two users: their polls (deduped) */
+   telnetd_attach();
 
    /* The vectors the stub replaced (+0A, +0D, +2B) are written as 0 only by the first init after
       the Pi starts.  This runs again on every Beeb reset, up to a poll pass after it, by when the

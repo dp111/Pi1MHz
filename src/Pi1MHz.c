@@ -204,9 +204,12 @@ uint32_t Pi1MHz_fiq_overruns;       /* post ring: FIQs that found the VPU a lap 
 uint32_t Pi1MHz_fiq_ovr_first_us;   /* system-timer stamp of the first of them since the last nRST, 0 = none */
 volatile Pi1MHz_break_t Pi1MHz_break = { .margin_min_us = INT32_MAX };    /* BREAK forensics, see Pi1MHz.h */
 
-// Table of polling functions to call while idle
-NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
-NOINIT_SECTION static const char *Pi1MHz_poll_names[NUM_EMULATORS];
+// Table of polling functions to call while idle.  Its own size: polls are not one per emulator
+// (the serial redirect's modem and telnetd have one each, many emulators have none).
+#define POLL_SLOTS 32u
+_Static_assert(POLL_SLOTS <= 255u, "Pi1MHz_polls_max is a uint8_t");
+NOINIT_SECTION static func_ptr Pi1MHz_poll_table[POLL_SLOTS];
+NOINIT_SECTION static const char *Pi1MHz_poll_names[POLL_SLOTS];
 // holds the total number of polling functions to call
 static uint8_t  Pi1MHz_polls_max;
 
@@ -382,9 +385,9 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name )
          return;
    }
 
-   if (Pi1MHz_polls_max >= NUM_EMULATORS) {
+   if (Pi1MHz_polls_max >= POLL_SLOTS) {
       LOG_INFO("Poll registration ignored: table full (%u)\n",
-               (unsigned int)NUM_EMULATORS);
+               (unsigned int)POLL_SLOTS);
       return;
    }
 
@@ -905,7 +908,7 @@ static void poll_ticks_start(void)
 
 /* Longest single run of each poll callback since last read, for /status:
    the way to find out which poller is starving the audio DMA. */
-static uint32_t poll_max_ticks[NUM_EMULATORS];
+static uint32_t poll_max_ticks[POLL_SLOTS];
 
 /* ticks -> microseconds, exact for any POLL_TICKS_PER_MS (15625 neither
    divides by 1000 nor is divisible by it - truncating either way skews
@@ -944,7 +947,7 @@ static inline uint32_t poll_ticks_to_us(uint32_t ticks)
 bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name )
 {
    uint8_t i;
-   uint8_t slot = NUM_EMULATORS;
+   uint8_t slot = POLL_SLOTS;
 
    if (old_fn == NULL || new_fn == NULL)
       return false;
@@ -956,7 +959,7 @@ bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name )
          return false;            /* already registered elsewhere */
    }
 
-   if (slot >= NUM_EMULATORS)
+   if (slot >= POLL_SLOTS)
       return false;               /* old_fn was never registered */
 
    Pi1MHz_poll_table[slot] = new_fn;
@@ -988,7 +991,7 @@ unsigned int Pi1MHz_poll_count(void)
 #if (__ARM_ARCH >= 7)
 #error "POLL_PROFILE uses the ARM1176 CP15 c15 cycle counter, which faults on the A53 (kernel7). Profile on kernel.img (rpi) instead."
 #endif
-static uint32_t poll_prof_cycles[NUM_EMULATORS];
+static uint32_t poll_prof_cycles[POLL_SLOTS];
 static uint32_t poll_prof_overhead;
 static uint32_t poll_prof_passes;
 
@@ -1181,7 +1184,7 @@ _Noreturn void kernel_main(void)
             poll_prof_report();
             poll_prof_passes = 0u;
             poll_prof_overhead = 0u;
-            for (unsigned int i = 0; i < NUM_EMULATORS; i++)
+            for (unsigned int i = 0; i < POLL_SLOTS; i++)
                poll_prof_cycles[i] = 0u;
          }
       }

@@ -94,8 +94,8 @@ static bool            g_debug;               /* telnetd_debug=1: the diagnostic
 static bool            g_utf8 = true;
 static bool            g_copy = true;         /* show the copy cursor */
 
-/* With ROM build 11 the Beeb tells each cursor key, COPY or RETURN a program takes from its keyboard
-   buffer (serial_redirect_key_gen): the ones sent wait here and move the copy cursor only when taken,
+/* With the ROM (serial_redirect_beeb->rom) the Beeb tells each cursor key, COPY or RETURN a program takes from its keyboard
+   buffer (serial_redirect_beeb->key_gen): the ones sent wait here and move the copy cursor only when taken,
    in order - so a key that only waits in the buffer (a listing in paged mode waiting for SHIFT)
    moves nothing, whatever is on the screen. */
 #define CKQ_SIZE 32u
@@ -103,7 +103,7 @@ static uint8_t  g_ckq[CKQ_SIZE];
 static uint32_t g_ckq_head, g_ckq_tail;
 static uint32_t g_kgen_seen;                  /* the reports already used */
 
-/* ROM build 13 tells every byte a program takes (serial_redirect_key_other_gen), so the Pi knows the keys
+/* The ROM tells every byte a program takes (serial_redirect_beeb->key_other_gen), so the Pi knows the keys
    waiting in the Beeb's buffer (put in less taken) and when it last took one: the status page says when
    the Beeb has stopped taking keys (a hang).  And a key taken that prints nothing (a program that writes
    the screen itself, WordWise-Plus's editor) has the screen read again, silently and merged, so the
@@ -461,7 +461,7 @@ static void login_key(uint8_t k)
    it discards what was typed ahead. */
 static uint32_t keys_waiting(void)
 {
-   uint32_t taken = serial_redirect_key_gen() + serial_redirect_key_other_gen();
+   uint32_t taken = serial_redirect_beeb->key_gen + serial_redirect_beeb->key_other_gen;
    uint32_t w = serial_redirect_rx_count() - taken - g_keys_base;
    return w > 0x80000000u ? 0u : w;
 }
@@ -469,14 +469,14 @@ static uint32_t keys_waiting(void)
 static void keys_emptied(void)                   /* the Beeb's buffer emptied (ESCAPE, a reset) */
 {
    g_scan_keys = 0u;                             /* a scan key in it went too */
-   g_keys_base = serial_redirect_rx_count() - serial_redirect_key_gen() - serial_redirect_key_other_gen();
+   g_keys_base = serial_redirect_rx_count() - serial_redirect_beeb->key_gen - serial_redirect_beeb->key_other_gen;
 }
 
 static void deliver_key(uint8_t k)
 {
    if (g_lit_next) {                             /* the byte after TND_KEY_LIT: any value, as it is */
       g_lit_next = false;
-      if (g_stage == S_LIVE && serial_redirect_lit_ok()) {
+      if (g_stage == S_LIVE && serial_redirect_beeb->rom) {
          k_push(LIT_KEY);
          k_put(k, true);
       }
@@ -495,10 +495,10 @@ static void deliver_key(uint8_t k)
       g_break_asked = true;                        /* the next hook is the start of a new boot */
       serial_redirect_break();
    } else if (k == TND_KEY_REFRESH) {
-      if (serial_redirect_scan_ok())
+      if (serial_redirect_beeb->rom)
          k_push(SCAN_KEY);                            /* the ROM keeps it from the program and sends the screen */
    } else if (k == TND_KEY_SHIFT) {
-      if (serial_redirect_scan_ok())
+      if (serial_redirect_beeb->rom)
          serial_redirect_shift();                     /* a trip, not a key: nothing queued can hold it up */
    } else if (k == TND_KEY_ESCAPE) {
       g_khead = g_ktail;
@@ -513,7 +513,7 @@ static void deliver_key(uint8_t k)
    } else {
       k_push(k);
       if (g_copy && g_ansi && ((k >= 139u && k <= 143u) || k == 13u)) {
-         if (serial_redirect_keys_told()) {         /* moved when the Beeb takes it (see g_ckq) */
+         if (serial_redirect_beeb->rom) {         /* moved when the Beeb takes it (see g_ckq) */
             if (g_ckq_tail - g_ckq_head < CKQ_SIZE)
                g_ckq[g_ckq_tail++ % CKQ_SIZE] = k;
          } else {
@@ -836,7 +836,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_in.notelnet = rawport;                     /* ... and no telnet at all there */
    g_ansi = g_ansi_cfg && !rawport;
    g_ckq_head = g_ckq_tail;                     /* a new terminal: no copy keys waiting */
-   g_kgen_seen = serial_redirect_key_gen();
+   g_kgen_seen = serial_redirect_beeb->key_gen;
    g_win_gen = 0u;
    g_win_first = false;
    tnd_out_session(&g_out);                     /* the model has been following the Beeb all along */
@@ -972,7 +972,7 @@ static void tcp_probe(uint32_t now_us)
       wait_ms *= 2u;
 }
 
-void telnetd_poll(uint32_t now_us, bool beeb_attached)
+static void telnetd_poll(uint32_t now_us, bool beeb_attached)
 {
    tcp_watch(now_us);
    tcp_probe(now_us);
@@ -984,12 +984,12 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       auto-start ROM (a software BREAK never touches the line), or asked for by F12, or the
       hook finds the cursor in the corner of the screen. */
    static uint32_t reset_seen;
-   bool            hooked = serial_redirect_mode_gen() != mode_seen;
+   bool            hooked = serial_redirect_beeb->mode_gen != mode_seen;
    static uint32_t hook_recent_us, hook_last_poll_us;   /* counted down: no wrap of the 32-bit clock */
    /* A hook that comes with F12 or well after the last one (the ROM and then HELPERS
       hook within seconds of each other in one boot, a disc being slow) follows a reset
       the Pi never saw on the reset line, such as CALL !-4: the Beeb has a new screen. */
-   bool            hw_reset = serial_redirect_reset_gen() != reset_seen;
+   bool            hw_reset = serial_redirect_beeb->reset_gen != reset_seen;
    {
       uint32_t dt = now_us - hook_last_poll_us;
       hook_last_poll_us = now_us;
@@ -1002,21 +1002,23 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       hook_recent_us = HOOK_SAME_BOOT_US;
    if (hooked && !reset) {
       uint8_t rc, rr;
-      serial_redirect_beeb_cursor(&rc, &rr);
+      rc = serial_redirect_beeb->col;
+      rr = serial_redirect_beeb->row;
       reset = (rc == 0u && rr == 0u);
    }
    if (hooked || reset) {
       uint8_t col, row;
-      mode_seen = serial_redirect_mode_gen();
-      reset_seen = serial_redirect_reset_gen();
+      mode_seen = serial_redirect_beeb->mode_gen;
+      reset_seen = serial_redirect_beeb->reset_gen;
       keys_emptied();                           /* a reset empties the Beeb's buffer */
       if (hooked)
          g_break_asked = false;
-      if (reset || serial_redirect_beeb_mode() != g_out.mode)
-         tnd_out_assume_mode(&g_out, serial_redirect_beeb_mode());
+      if (reset || serial_redirect_beeb->mode != g_out.mode)
+         tnd_out_assume_mode(&g_out, serial_redirect_beeb->mode);
       if (g_debug && g_out.mode != g_mc_mode)
          mode_changed('h');
-      serial_redirect_beeb_cursor(&col, &row);
+      col = serial_redirect_beeb->col;
+      row = serial_redirect_beeb->row;
       tnd_out_at(&g_out, col, row);
       if (reset) {
          tnd_out_beeb_reset(&g_out);
@@ -1073,18 +1075,18 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       return;
    tnd_out_tek(&g_out, g_tek && g_ansi && g_in.xterm);   /* the terminal answered CSI > q as xterm */
 
-   g_in.lit_ok = serial_redirect_lit_ok();       /* bytes above 127 can go (ROM build 13) */
+   g_in.lit_ok = serial_redirect_beeb->rom;       /* bytes above 127 can go */
    g_in.tele = g_out.tele;                       /* MODE 7: its glyphs come back as its codes */
 
-   /* Every key taken (ROM build 13): when the count last moved, and a key that drew no character
+   /* Every key taken : when the count last moved, and a key that drew no character
       (WordWise-Plus moves the cursor with VDU 31 and writes the screen memory itself). */
    {
-      uint32_t taken = serial_redirect_key_gen() + serial_redirect_key_other_gen();
+      uint32_t taken = serial_redirect_beeb->key_gen + serial_redirect_beeb->key_other_gen;
       if (taken != g_taken_seen) {
          g_taken_seen = taken;
          g_taken_us = now_us;
       }
-      uint32_t other = serial_redirect_key_other_gen();
+      uint32_t other = serial_redirect_beeb->key_other_gen;
       if (other != g_other_seen) {
          uint32_t d = other - g_other_seen;
          g_other_seen = other;
@@ -1103,7 +1105,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
                                                        be holding it back), or more keys to take - wait on */
       } else if (g_silent_wait && (now_us - g_silent_us) >= SILENT_KEY_US) {
          g_silent_wait = false;
-         if (g_out.drawn == g_silent_tx && serial_redirect_lit_ok() && g_ansi && g_pcb != NULL
+         if (g_out.drawn == g_silent_tx && serial_redirect_beeb->rom && g_ansi && g_pcb != NULL
              && g_stage == S_LIVE && !g_scan_pending && (now_us - g_silent_scan_us) >= SILENT_SCAN_US) {
             g_silent_scan_us = now_us;
             g_scan_pending = true;                 /* the screen read, merged: only what differs is drawn */
@@ -1112,10 +1114,10 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
 
-   /* The keys the Beeb has taken (ROM build 11): each moves the copy cursor, in order. */
-   g_out.cc_exact = serial_redirect_keys_told();
+   /* The keys the Beeb has taken : each moves the copy cursor, in order. */
+   g_out.cc_exact = serial_redirect_beeb->rom;
    {
-      uint32_t gen = serial_redirect_key_gen();
+      uint32_t gen = serial_redirect_beeb->key_gen;
       while (g_kgen_seen != gen) {
          g_kgen_seen++;
          if (g_ckq_head != g_ckq_tail)
@@ -1276,7 +1278,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    {
       static uint32_t unseen_seen;
       static uint32_t unseen_us;
-      uint32_t        gen = serial_redirect_unseen_gen();
+      uint32_t        gen = serial_redirect_beeb->unseen_gen;
       if (gen != unseen_seen) {
          unseen_seen = gen;
          unseen_us = now_us;
@@ -1291,7 +1293,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       g_scan_pending = true;
    }
    if (g_scan_pending && g_ansi && g_stage == S_LIVE && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
-       && serial_redirect_scan_ok() && g_khead == g_ktail) {
+       && serial_redirect_beeb->rom && g_khead == g_ktail) {
       g_scan_pending = false;
       if (g_scan_merge) {
          g_scan_merge = false;
@@ -1354,6 +1356,16 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    }
 
    pump();
+}
+
+static void telnetd_poll_cb(void)
+{
+   telnetd_poll(Pi1MHz_now_us, serial_redirect_telnet_attached());
+}
+
+void telnetd_attach(void)
+{
+   Pi1MHz_Register_Poll(telnetd_poll_cb, "telnetd");
 }
 
 /* ---- setup and status ------------------------------------------------------- */
@@ -1478,7 +1490,7 @@ void telnetd_status(char *buf, size_t len)
       with what led up to the last, the keys waiting and when one was last taken, the TCP state. */
    if (g_debug) {
       used = (size_t)snprintf(buf, len, "hooks %lu, resets %lu; ",
-                              (unsigned long)serial_redirect_mode_gen(), (unsigned long)serial_redirect_reset_gen());
+                              (unsigned long)serial_redirect_beeb->mode_gen, (unsigned long)serial_redirect_beeb->reset_gen);
       if (used >= len)
          return;
       buf += used;
@@ -1511,7 +1523,7 @@ void telnetd_status(char *buf, size_t len)
       buf += used;
       len -= used;
    }
-   if (serial_redirect_lit_ok()) {              /* ROM build 13: the keys waiting, and a Beeb not taking them */
+   if (serial_redirect_beeb->rom) {              /* the ROM: the keys waiting, and a Beeb not taking them */
       uint32_t w = keys_waiting();
       bool     hung = w != 0u && (Pi1MHz_now_us - g_taken_us) >= KEYS_HUNG_US;
       used = 0u;

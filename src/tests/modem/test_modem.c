@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "Pi1MHz.h"
 #include "net_service.h"
 #include "serial_modem.h"
 #include "serial_redirect.h"
@@ -47,6 +48,11 @@ size_t serial_redirect_write(const uint8_t *src, size_t len)
    to_beeb[to_beeb_len] = '\0';
    return len;
 }
+
+/* modem_attach's poll: registered, and not run here (the tests call modem_poll) */
+uint32_t Pi1MHz_now_us;
+void Pi1MHz_Register_Poll(func_ptr fn, const char *name) { (void)fn; (void)name; }
+bool serial_redirect_telnet_attached(void) { return false; }
 
 /* ---- config ------------------------------------------------------------ */
 const char *config_get(const char *key)

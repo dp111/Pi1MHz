@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "Pi1MHz.h"
 #include "config.h"
 #include "net_service.h"
 #include "serial_modem.h"
@@ -470,6 +471,18 @@ void modem_poll(uint32_t now_us)
       m_state = M_COMMAND;
       break;
    }
+}
+
+/* Its own poll: the stream is the modem's whenever telnetd does not have it. */
+static void modem_poll_cb(void)
+{
+   if (!serial_redirect_telnet_attached())
+      modem_poll(Pi1MHz_now_us);
+}
+
+void modem_attach(void)
+{
+   Pi1MHz_Register_Poll(modem_poll_cb, "modem");
 }
 
 void modem_status(char *buf, size_t len)

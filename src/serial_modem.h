@@ -7,7 +7,8 @@
 /* The Hayes-style modem behind the serial redirect: AT commands from the
    Beeb's RS423 stream, and ATD opens a TCP connection instead of dialling. */
 void modem_reset(void);              /* defaults, and hang up */
-void modem_poll(uint32_t now_us);    /* main loop, from the redirect's poll */
+void modem_poll(uint32_t now_us);    /* main loop: one pass (modem_attach registers it) */
+void modem_attach(void);             /* registers the poll (the serial redirect's init) */
 void modem_status(char *buf, size_t len);   /* for /status */
 
 #endif

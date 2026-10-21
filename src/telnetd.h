@@ -9,10 +9,11 @@
    to webserver_init; does nothing when the key is absent or 0. */
 void telnetd_init(void);
 
-/* Main loop, from the serial redirect's poll.  beeb_attached is true while
-   helper 20 has the Beeb's keyboard and RS423 output on the Pi: then this
-   owns the redirect's byte stream, and the modem does not. */
-void telnetd_poll(uint32_t now_us, bool beeb_attached);
+/* Registers telnetd's poll (the serial redirect's init, so before WiFi is up: the Beeb's output
+   is read and dropped while nobody is connected).  Each pass, beeb_attached is true while
+   helper 20 or the ROM has the Beeb's keyboard and RS423 output on the Pi: then telnetd owns
+   the redirect's byte stream, and the modem does not. */
+void telnetd_attach(void);
 
 void telnetd_status(char *buf, size_t len);   /* for /status */
 bool telnetd_enabled(void);   /* telnetd_port set and not Telnetd_addr=-1: the auto-start ROM may hook the Beeb in */
