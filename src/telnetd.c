@@ -852,7 +852,6 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_win_first = false;
    tnd_out_session(&g_out);                     /* the model has been following the Beeb all along */
    tnd_out_tek(&g_out, false);                  /* until this terminal says it is xterm */
-   g_out.tek_on = false;
    /* The ROM is asked for the Beeb's screen (below).  A model that knows nothing is drawn from it; one
       that does is drawn first, with its colours, and the read is only compared with it: a program can
       have changed the screen where the Pi could not see (output with the RS423 copy off, writes to
@@ -1033,8 +1032,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       serial_redirect_beeb_cursor(&col, &row);
       tnd_out_at(&g_out, col, row);
       if (reset) {
-         g_out.coloured = false;               /* a reset puts the colours and the cursor back */
-         g_out.curoff = false;
+         tnd_out_beeb_reset(&g_out);
          if (g_pcb != NULL && g_stage == S_LIVE && g_ansi) {
             /* Somebody is connected: their terminal is refreshed too, so what the Beeb prints
                from here (the new banners) lands where the model says. */

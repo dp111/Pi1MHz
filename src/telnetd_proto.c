@@ -36,6 +36,12 @@
 enum { I_NORMAL, I_CR, I_IAC, I_OPT, I_SB, I_SBIAC, I_ESC, I_CSI, I_SS3, I_C2, I_DCS0, I_DCS, I_DCSESC };
 
 #define ESC_STUCK_US  500000u    /* an escape sequence that never finished */
+#define SB_STUCK_US   2000000u   /* a subnegotiation that never finished (IAC SB with no IAC SE) */
+
+/* Options the client agreed to: if it takes one back later, that is acknowledged (RFC 854). */
+#define AGREED_ECHO   1u         /* DO ECHO: we echo (the Beeb does) */
+#define AGREED_SGA_DO 2u         /* DO SGA: we suppress go-ahead */
+#define AGREED_SGA_WILL 4u       /* WILL SGA: the client does */
 
 static bool seen(const uint8_t *map, uint8_t o)
 {
@@ -244,11 +250,21 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
       return 2u;
    }
 
+   if (c == TN_IAC && !s->notelnet && s->state >= I_ESC) {
+      s->after = s->state;                      /* a telnet command inside an escape sequence: read it, */
+      s->state = I_IAC;                         /* then carry on with the sequence (telnet is the layer below) */
+      return 0u;
+   }
+
    switch (s->state) {
    case I_IAC:
       switch (c) {
       case TN_IAC:                              /* a literal 0xFF: not a Beeb key ... */
-         s->state = I_NORMAL;
+         s->state = s->after;
+         if (s->after != I_NORMAL) {             /* (inside an escape sequence: dropped) */
+            s->after = I_NORMAL;
+            break;
+         }
          if (s->raw && s->lit_ok) {             /* ... except in teletype mode: the byte 255 */
             keys[0] = TND_KEY_LIT;
             keys[1] = 0xFFu;
@@ -262,15 +278,18 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
       case TN_SB:
          s->state = I_SB;
          s->nsb = 0u;
+         s->sb_us = now_us;
          break;
       default:                                  /* NOP, AYT, GA, ... */
-         s->state = I_NORMAL;
+         s->state = s->after;
+         s->after = I_NORMAL;
          break;
       }
       return 0u;
 
    case I_OPT:
-      s->state = I_NORMAL;
+      s->state = s->after;
+      s->after = I_NORMAL;
       if (c == TND_OPT_BINARY) {                /* teletype mode asked for (or ended): an 8-bit path */
          bool on = (s->cmd == TN_DO || s->cmd == TN_WILL);
          bool *f = (s->cmd == TN_DO || s->cmd == TN_DONT) ? &s->bin_out : &s->bin_in;
@@ -284,14 +303,30 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
          return 0u;
       }
       if (s->cmd == TN_DO) {
-         if (c != TN_OPT_ECHO && c != TN_OPT_SGA && !seen(s->seen_do, c)) {
+         if (c == TN_OPT_ECHO)
+            s->agreed |= AGREED_ECHO;
+         else if (c == TN_OPT_SGA)
+            s->agreed |= AGREED_SGA_DO;
+         else if (!seen(s->seen_do, c)) {
             mark(s->seen_do, c);
+            rep[0] = TN_IAC; rep[1] = TN_WONT; rep[2] = c;
+            *replen = 3u;
+         }
+      } else if (s->cmd == TN_DONT) {           /* an agreed option taken back: say so (a refusal of */
+         uint8_t bit = (c == TN_OPT_ECHO) ? AGREED_ECHO : (c == TN_OPT_SGA) ? AGREED_SGA_DO : 0u;
+         if (bit != 0u && (s->agreed & bit) != 0u) {   /* the offer itself needs no answer) */
+            s->agreed = (uint8_t)(s->agreed & ~bit);
             rep[0] = TN_IAC; rep[1] = TN_WONT; rep[2] = c;
             *replen = 3u;
          }
       } else if (s->cmd == TN_WONT) {
          if (c == TND_OPT_NAWS)
             s->naws_no = true;
+         if (c == TN_OPT_SGA && (s->agreed & AGREED_SGA_WILL) != 0u) {
+            s->agreed = (uint8_t)(s->agreed & ~AGREED_SGA_WILL);
+            rep[0] = TN_IAC; rep[1] = TN_DONT; rep[2] = c;
+            *replen = 3u;
+         }
       } else if (s->cmd == TN_WILL && c == TND_OPT_TTYPE) {
          if (!seen(s->seen_will, c)) {           /* asked for in the greeting: what is it? (SEND) */
             static const uint8_t send[6] = { TN_IAC, TN_SB, TND_OPT_TTYPE, 1u, TN_IAC, TN_SE };
@@ -300,7 +335,9 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
             *replen = sizeof send;
          }
       } else if (s->cmd == TN_WILL) {
-         if (c != TN_OPT_SGA && c != TND_OPT_NAWS && !seen(s->seen_will, c)) {
+         if (c == TN_OPT_SGA)
+            s->agreed |= AGREED_SGA_WILL;
+         else if (c != TND_OPT_NAWS && !seen(s->seen_will, c)) {
             mark(s->seen_will, c);
             rep[0] = TN_IAC; rep[1] = TN_DONT; rep[2] = c;
             *replen = 3u;
@@ -317,7 +354,8 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 
    case I_SBIAC:
       if (c == TN_SE) {
-         s->state = I_NORMAL;
+         s->state = s->after;
+         s->after = I_NORMAL;
          if (s->nsb == 5u && s->sb[0] == TND_OPT_NAWS) {   /* NAWS: width and height, high byte first */
             s->win_cols = (uint16_t)((s->sb[1] << 8) | s->sb[2]);
             s->win_rows = (uint16_t)((s->sb[3] << 8) | s->sb[4]);
@@ -443,7 +481,12 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
          s->esc_us = now_us;
          return n;
       }
-      return plain_byte(s, c, keys);
+      {
+         size_t n = plain_byte(s, c, keys);
+         if (s->u8_lead != 0u)
+            s->u8_us = now_us;
+         return n;
+      }
    }
 }
 
@@ -461,6 +504,17 @@ size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS])
       s->state = I_NORMAL;
       keys[0] = TND_KEY_ESCAPE;
       return 1u + plain_byte(s, 'P', keys + 1);
+   }
+   if ((s->state == I_SB || s->state == I_SBIAC) && (now_us - s->sb_us) >= SB_STUCK_US) {
+      s->state = I_NORMAL;                      /* IAC SB that never ended: the keys after it are keys again */
+      s->after = I_NORMAL;
+   }
+   if (s->state == I_NORMAL && s->u8_need != 0u && s->u8_lead != 0u
+       && (now_us - s->u8_us) >= TND_ESC_US) {  /* a lone lead byte nothing followed: a Latin-1 character */
+      size_t n = char_key(s, s->u8_lead, keys);
+      s->u8_need = 0u;
+      s->u8_lead = 0u;
+      return n;
    }
    return 0u;
 }
@@ -535,7 +589,7 @@ static uint8_t phys(const tnd_out_t *s, uint8_t logical)
    return (uint8_t)(s->pal[logical & 15u] & 7u);
 }
 
-void tnd_out_set_mode(tnd_out_t *s, uint8_t mode)
+static void tnd_out_set_mode(tnd_out_t *s, uint8_t mode)
 {
    static const uint8_t cols[8] = { 80u, 40u, 20u, 80u, 40u, 20u, 40u, 40u };
    static const uint8_t rows[8] = { 32u, 32u, 32u, 25u, 32u, 32u, 25u, 25u };
@@ -549,8 +603,8 @@ void tnd_out_set_mode(tnd_out_t *s, uint8_t mode)
    s->wr = (uint8_t)(s->cols - 1u);
    s->wb = (uint8_t)(s->rows - 1u);
    s->cx = s->cy = 0u;
-   s->fg = 7u; s->bg = 0u;
    scr_default_palette(s);
+   s->fg = (uint8_t)(s->ncol - 1u); s->bg = 0u;  /* the MOS's: the highest logical colour on 0 */
    s->cc_on = s->hl_on = false;
    s->npend = 0u;
    s->dirty = false;                             /* a new screen: nothing left to draw again */
@@ -647,8 +701,16 @@ void tnd_out_touch(tnd_out_t *s, uint32_t now_us)
    s->last_us = now_us;
 }
 
+void tnd_out_beeb_reset(tnd_out_t *s)
+{
+   s->coloured = false;                          /* a reset puts the colours and the cursor back */
+   s->curoff = false;
+   s->smerge = false;                            /* ... and ends a screen read half sent */
+}
+
 void tnd_out_session(tnd_out_t *s)
 {
+   s->tek_on = false;                            /* a new terminal is not in Tektronix mode */
    s->tsgr = 0xFFu;                              /* a new terminal: its colours are not known */
    s->hl_on = false;
    s->cc_on = false;
@@ -1535,6 +1597,32 @@ static size_t glyph(tnd_out_t *s, uint8_t c, uint8_t *dst, uint8_t *stored, int 
    }
 }
 
+/* VDU 8: the cursor left; from the window's left edge to the right end of the line above, and
+   from its top left corner the window scrolls down first (the MOS's VDU 8 then VDU 11). */
+static size_t cursor_back(tnd_out_t *s, uint8_t *dst)
+{
+   size_t n = 0u;
+
+   if (s->cx > s->wl) {
+      s->cx--;
+      dst[n++] = 8u;
+      return n;
+   }
+   s->cx = s->wr;
+   if (s->cy > s->wt) {
+      s->cy--;
+      if (s->sync && s->origin_ok)
+         n += row_changed(s, dst + n);
+   } else {
+      n += scr_scroll_down(s, dst + n);
+   }
+   if (s->sync && s->origin_ok)
+      n += put_pos(dst + n, s->cx, s->cy);
+   else
+      dst[n++] = 8u;
+   return n;
+}
+
 static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
 {
    size_t n = 0u;
@@ -1544,14 +1632,23 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
       if (s->got < sizeof s->p)
          s->p[s->got] = c;
       s->got++;
-      if (s->got >= vdu_params(s->code))
+      if (s->got >= vdu_params(s->code)) {
+         if (s->disabled) {                     /* collected under VDU 21: counted, not acted on */
+            s->code = 0u;
+            return 0u;
+         }
          return finish_code(s, dst);
+      }
       return 0u;
    }
 
-   if (s->disabled) {                           /* VDU 21: only VDU 6 gets through */
-      if (c == 6u)
-         s->disabled = false;
+   if (s->disabled) {                           /* VDU 21: only VDU 6 gets through, but the MOS */
+      if (c == 6u)                              /* still counts the other codes' parameters, so a */
+         s->disabled = false;                   /* 6 among them does not end it (as the banner reader) */
+      else if (c < 32u && vdu_params(c) != 0u) {
+         s->code = c;
+         s->got = 0u;
+      }
       return 0u;
    }
 
@@ -1563,21 +1660,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
       case 14: s->paged = true;  break;          /* paged mode: the MOS waits for SHIFT at each page */
       case 15: s->paged = false; break;
       case 8:                                   /* cursor left; at the edge, the end of the line above */
-         if (s->cx > s->wl) {
-            s->cx--;
-            dst[n++] = 8u;
-         } else if (s->cy > s->wt) {
-            s->cx = s->wr;
-            s->cy--;
-            if (s->sync && s->origin_ok) {
-               n += row_changed(s, dst + n);
-               n += put_pos(dst + n, s->cx, s->cy);
-            } else {
-               dst[n++] = 8u;
-            }
-         } else {
-            dst[n++] = 8u;
-         }
+         n += cursor_back(s, dst);
          break;
       case 9:                                   /* cursor right; at the edge, the start of the next line */
          if (s->cx < s->wr) {
@@ -1659,6 +1742,18 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
          dst[n++] = 13u;
          n += put_left(s, dst + n);             /* to the window's left edge */
          break;
+      case 20:                                  /* the default colours and palette */
+         if (s->tele && s->sync)
+            break;
+         scr_default_palette(s);
+         s->fg = (uint8_t)(s->ncol - 1u);
+         s->bg = 0u;
+         if (s->coloured) {
+            n = put_str(dst, "\x1b[0m");
+            s->coloured = false;
+            s->tsgr = 0xFFu;
+         }
+         break;
       case 21: s->disabled = true; break;
       case 26:                                  /* default windows, cursor home */
          s->wl = 0u; s->wt = 0u;
@@ -1711,23 +1806,21 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
    }
 
    if (c == 127u) {                             /* DELETE: back, blank, back */
-      if (s->cx > s->wl) {
-         s->cx--;
-      } else if (s->cy > s->wt) {               /* from the start of a line: the end of the one above */
-         s->cx = s->wr;
-         s->cy--;
+      if (s->cx == s->wl) {                     /* from the start of a line: the end of the one above */
+         n = cursor_back(s, dst);
          s->ch[s->cy][s->cx] = ' ';
          s->drawn++;
          s->at[s->cy][s->cx] = AT_KNOWN | cur_attr(s);
          if (s->sync && s->origin_ok) {
-            n += put_pos(dst + n, s->cx, s->cy);
             dst[n++] = ' ';
             n += put_pos(dst + n, s->cx, s->cy);
             return n;
          }
-         dst[0] = 8u; dst[1] = ' '; dst[2] = 8u;
-         return 3u;
+         dst[n++] = ' ';
+         dst[n++] = 8u;
+         return n;
       }
+      s->cx--;
       s->ch[s->cy][s->cx] = ' ';
       s->drawn++;
       s->at[s->cy][s->cx] = AT_KNOWN | cur_attr(s);
@@ -1816,8 +1909,16 @@ static size_t merge_end(tnd_out_t *s, uint8_t *dst)
             differ = true;
             break;
          }
-   if (!differ)
-      return 0u;                                   /* the terminal is right already, colours and all */
+   if (!differ) {                                  /* the terminal is right already, colours and all, */
+      const uint8_t *t = s->sm_tail;              /* but the Beeb's window or cursor may not be */
+      if (s->sm_n == 8u && s->sync && t[1] == s->wl && t[2] == s->wb && t[3] == s->wr && t[4] == s->wt
+          && (unsigned)s->wl + t[6] == s->cx && (unsigned)s->wt + t[7] == s->cy)
+         return 0u;
+      n = 0u;
+      for (unsigned i = 0u; i < s->sm_n; i++)
+         n += out_byte(s, s->sm_tail[i], dst + n);
+      return n;
+   }
    memcpy(och, s->ch, sizeof och);
    memcpy(oat, s->at, sizeof oat);
    for (unsigned y = 0u; y < s->rows; y++)       /* the cells as they were, for those that agree */
@@ -2198,7 +2299,7 @@ size_t tnd_out_redraw(tnd_out_t *s, uint8_t dst[TND_COPY_MAX])
    s->tsgr = s->coloured ? 0xFFu : TTX_SGR_PLAIN;
    s->hl_on = false;
    if (s->tele) {
-      memset(s->lattr, 0xFF, sizeof s->lattr);     /* not known after the clear: all sent again */
+      memset(s->lattr, 0xFF, s->rows);             /* not known after the clear: all sent again */
       n += ttx_sync_lattr(s, dst + n, TND_COPY_MAX - 16u - n);
    }
    mark_dirty(s, 0u, 0u, (unsigned)s->cols - 1u, (unsigned)s->rows - 1u);

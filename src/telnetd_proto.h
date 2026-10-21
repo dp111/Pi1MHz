@@ -80,6 +80,10 @@ typedef struct {
    uint32_t u8_cp;              /* a UTF-8 character being read */
    uint8_t  u8_need;            /* ... and its continuation bytes still to come */
    uint8_t  u8_lead;            /* its first byte, while nothing has followed it */
+   uint32_t u8_us;              /* ... and when it came: a Latin-1 client's lone byte is given after TND_ESC_US */
+   uint8_t  after;              /* the state a telnet command inside an escape sequence goes back to */
+   uint32_t sb_us;              /* when the subnegotiation being read began: one never ended is dropped */
+   uint8_t  agreed;             /* options the client agreed to and could take back (AGREED_* in the .c) */
    bool     lit_ok;             /* set by the daemon: the Beeb can take bytes above 127 (TND_KEY_LIT) */
    bool     tele;               /* set by the daemon: MODE 7, so teletext's glyphs map back to its codes */
    /* Teletype mode: every byte is a key as it is, no escape sequences or UTF-8 decoded: ESC (27) is the
@@ -107,7 +111,8 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
                    size_t *replen);
 
 /* Call regularly: releases a lone ESC once it has waited TND_ESC_US, and drops
-   an escape sequence that never finished.  Returns keys released (0 or 1). */
+   an escape sequence or subnegotiation that never finished, and a Latin-1 byte held as a
+   possible UTF-8 lead.  Returns keys released (0 to TND_IN_KEYS). */
 size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS]);
 
 /* The key codes the translator produces, as the MOS keyboard buffer holds them
@@ -207,8 +212,12 @@ void   tnd_out_scan_merge(tnd_out_t *s);
 /* The screen size the model assumes until the Beeb sends a MODE (the daemon's
    telnetd_mode setting): the Beeb's mode at the start cannot be read.  Nothing
    on the screen is known and the cursor position is not (until a CLS, MODE,
-   TAB ...).  tnd_out_set_mode is the Beeb's own MODE: a cleared screen. */
+   TAB ...).  (The Beeb's own MODE, a cleared screen, is followed inside the model.) */
 void   tnd_out_assume_mode(tnd_out_t *s, uint8_t mode);
+
+/* The Beeb was reset: its colours and cursor are the MOS's defaults again, and a screen read it
+   was sending is over.  (Call with tnd_out_assume_mode, which ends VDU 21 and a VDU sequence.) */
+void   tnd_out_beeb_reset(tnd_out_t *s);
 
 /* The Beeb's cursor is known (helper 20 read it from the MOS): the model can
    follow from there, though what is on the screen is not known. */

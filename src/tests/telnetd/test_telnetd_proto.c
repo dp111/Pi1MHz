@@ -1028,6 +1028,94 @@ static void test_review_fixes_full(void)
    CHECK(strstr(out, "ok") != NULL, "a reset ends a VDU sequence half collected"); if (!strstr(out, "ok")) printf("    got [%s]\n", out);
 }
 
+/* The second review's fixes (2026-10-21): each check failed on 4d96b12's telnetd_proto.c. */
+static void test_review_fixes_2(void)
+{
+   tnd_in_t in;
+   tnd_out_t s;
+   char out[4096];
+   size_t n;
+   const char *r;
+
+   /* A telnet command inside an escape sequence is read as one, and the sequence carries on. */
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\x1bO\xff\xfa\x1f\x00\x50\x00\x18\xff\xf0" "A");
+   CHECK(nkeys == 1 && keys[0] == 143u, "ESC O, a NAWS, then A: the up arrow and nothing else"); if (nkeys != 1 || keys[0] != 143u) dump();
+   CHECK(in.win_cols == 80u && in.win_rows == 24u, "... and the window size is taken");
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\x1b[1\xff\xf1" "5~");
+   CHECK(nkeys == 1 && keys[0] == 0x85u, "an IAC NOP inside ESC [ 15 ~: still f5"); if (nkeys != 1) dump();
+
+   /* IAC SB with no IAC SE: dropped after a while, and the keys after it are keys. */
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\xff\xfa\x1f\x01\x02");
+   tick(&in, 3000000u);
+   FEED(&in, "x");
+   CHECK(nkeys == 1 && keys[0] == 'x', "an unended subnegotiation does not swallow every later key"); if (nkeys != 1) dump();
+
+   /* A Latin-1 client's lone byte (&E9) is given once nothing follows it. */
+   tnd_in_reset(&in); in_reset(); in.lit_ok = true;
+   FEED(&in, "\xe9");
+   tick(&in, 200000u);
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xE9u, "a lone &E9 reaches the Beeb without another key"); if (nkeys != 2) dump();
+
+   /* An agreed option taken back is acknowledged; a refusal of the offer is not answered. */
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\xff\xfe\x01");
+   CHECK(nreply == 0, "DONT ECHO as the answer to WILL ECHO: no reply");
+   FEED(&in, "\xff\xfd\x01");
+   CHECK(nreply == 0, "DO ECHO: agreed, no reply");
+   FEED(&in, "\xff\xfe\x01");
+   CHECK(nreply == 3 && memcmp(reply, "\xff\xfc\x01", 3) == 0, "DONT ECHO after DO ECHO: WONT ECHO");
+   in_reset();
+   FEED(&in, "\xff\xfb\x03\xff\xfc\x03");
+   CHECK(nreply == 3 && memcmp(reply, "\xff\xfe\x03", 3) == 0, "WONT SGA after WILL SGA: DONT SGA");
+
+   /* VDU 21 still counts parameters: a 6 among them does not end it. */
+   r = RENDER("\x15\x1f\x06\x0a" "hi" "\x06" "b");
+   CHECK(strcmp(r, "b") == 0, "VDU 21,31,6,10 hides the TAB's parameters and the text after it"); if (strcmp(r, "b")) printf("    got [%s]\n", r);
+
+   /* VDU 20: the default colours. */
+   r = RENDER("\x16\x01\x11\x01" "x" "\x14" "y");
+   CHECK(strstr(r, "x\x1b[0my") != NULL, "VDU 20 puts the terminal's colours back"); if (!strstr(r, "x\x1b[0my")) printf("    got [%s]\n", r);
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x04", out);
+   CHECK(s.fg == 1u, "MODE 4: the text colour is logical 1, the highest there"); if (s.fg != 1u) printf("    got %u\n", s.fg);
+
+   /* A read that agrees with the model but has another cursor: the cursor is taken. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "HI\r\n\x11\x01YO", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "H" "\x1f\x01\x00" "I" "\x1f\x00\x01" "Y" "\x1f\x01\x01" "O"
+                    "\x1c\x00\x1f\x27\x00" "\x1f\x05\x03", out);
+   CHECK(n != 0u && s.cx == 5u && s.cy == 3u, "a read that agrees but moved the cursor: the cursor is the Beeb's"); if (s.cx != 5u || s.cy != 3u) printf("    got %u,%u\n", s.cx, s.cy);
+   CHECK(s.ch[1][0] == 'Y' && (s.at[1][0] & 0x40u) == 0u, "... and the red YO keeps its colour");
+
+   /* VDU 8 in the window's top left corner: the window scrolls down, the cursor to the row's end. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "A\r\x08", out);
+   CHECK(s.cx == 39u && s.cy == 0u && s.ch[1][0] == 'A', "VDU 8 at the top left scrolls down"); if (s.cx != 39u) printf("    got %u,%u [%c]\n", s.cx, s.cy, s.ch[1][0]);
+
+   /* A redraw in MODE 7 sends line attributes for the 25 rows only. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07", out);
+   {
+      uint8_t d[TND_COPY_MAX];
+      bool clean = true;
+      tnd_out_redraw(&s, d);
+      for (unsigned y = 25u; y < TND_ROWS_MAX; y++)
+         if (s.lattr[y] != 0u) clean = false;
+      CHECK(clean, "a MODE 7 redraw leaves no line attribute owed below row 25");
+   }
+
+   /* A Beeb reset ends a screen read half sent. */
+   tnd_out_reset(&s, true);
+   tnd_out_scan_merge(&s);
+   FEED_OUT(&s, "\x1a\x0c", out);
+   tnd_out_beeb_reset(&s);
+   CHECK(!s.smerge, "a reset ends a screen read");
+}
+
 static void test_output_vdu21(void)
 {
    tnd_out_t s; tnd_out_reset(&s, true);
@@ -1500,6 +1588,7 @@ int main(void)
    test_output_vdu21();
    test_output_teletext();
    test_review_fixes_full();
+   test_review_fixes_2();
    test_output_teletext_chip();
    test_tek();
    test_output_robustness();
