@@ -88,6 +88,8 @@ EOF
 
 cp "$SRC/teletext_emulator.c" "$SRC/teletext_emulator.h" "$B/"
 cp "$HERE/test_teletext.c" "$B/"
+mkdir -p "$B/lib"
+cp "$SRC/lib/textparse.c" "$SRC/lib/textparse.h" "$B/lib/"
 
 echo "== compile-check (strict) =="
 gcc -std=gnu2x -I"$B" -c "$B/teletext_emulator.c" -o "$B/ttx.o" \
@@ -95,7 +97,7 @@ gcc -std=gnu2x -I"$B" -c "$B/teletext_emulator.c" -o "$B/ttx.o" \
    -Wpointer-arith -Wstrict-prototypes -Wundef -Wredundant-decls -Wnull-dereference
 
 echo "== functional test =="
-gcc -std=gnu2x -I"$B" -Wall -Wextra -o "$B/ttxtest" "$B/test_teletext.c"
+gcc -std=gnu2x -I"$B" -Wall -Wextra -o "$B/ttxtest" "$B/test_teletext.c" "$B/lib/textparse.c"
 "$B/ttxtest"
 
 echo "TELETEXT TESTS PASSED"

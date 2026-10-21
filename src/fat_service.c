@@ -310,36 +310,19 @@ bool fat_service_file_in_use(const char *host_path)
          base--;
       if (qlen == 0u)
          return true;              /* the root holds BEEB.MMB */
-      if (qlen - base == sizeof mmb - 1u) {
-         size_t k;
-         for (k = 0; k < sizeof mmb - 1u; k++) {
-            char c = q[base + k];
-            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-            if (c != mmb[k])
-               break;
-         }
-         if (k == sizeof mmb - 1u)
-            return true;
-      }
+      if (strcasecmp(&q[base], mmb) == 0)
+         return true;
    }
 
    for (unsigned int i = 0; i < 16u; i++) {
       const char *p;
-      size_t j;
 
       if (!fat_open_valid[i])
          continue;
       p = fat_path_norm(fat_open_path[i]);
-      for (j = 0; j < qlen; j++) {
-         char ca = p[j], cb = q[j];
-         if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
-         if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
-         if (ca != cb)
-            break;
-      }
       /* Equal - or host_path is a directory containing the open file, so
          a recursive DELETE/MOVE of the folder is refused too. */
-      if (j == qlen && (p[qlen] == '\0' || p[qlen] == '/' || qlen == 0u))
+      if (strncasecmp(p, q, qlen) == 0 && (p[qlen] == '\0' || p[qlen] == '/' || qlen == 0u))
          return true;
    }
    return false;

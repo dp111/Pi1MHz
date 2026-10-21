@@ -291,6 +291,7 @@ set(core_files
    Pi1MHz.c
    config.c
    config.h
+   lib/textparse.c
    ram_emulator.c
    helpers.c
    chainboot.c
@@ -491,6 +492,7 @@ set(wifi_files
    wifi/sdio_host.c
    wifi/wifi.c
    wifi/wifi_lwip.c
+   wifi/lwip_util.c
    wifi/wifi.h
    wifi/wifi_lwip.h
    wifi/webserver.c

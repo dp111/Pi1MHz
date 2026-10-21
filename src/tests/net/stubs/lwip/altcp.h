@@ -34,6 +34,7 @@ struct altcp_pcb {
    /* test control / capture */
    u16_t            t_sndbuf;      /* value altcp_sndbuf returns             */
    err_t            t_write_err;   /* value altcp_write returns              */
+   u16_t            t_write_max;   /* nonzero: a longer write is ERR_MEM     */
    u32_t            t_recved;      /* total bytes altcp_recved acked         */
    int              t_closed;      /* altcp_close/abort seen                 */
    int              t_freed;       /* backing memory released                */

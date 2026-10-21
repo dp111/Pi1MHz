@@ -20,6 +20,7 @@ keys must start at the beginning of the line and with
 #include "../BeebSCSI/filesystem.h"
 #include "rpi.h"
 #include "fileparser.h"
+#include "../lib/textparse.h"
 
 /* Largest config file parse_readfile() will accept. Config files are only a
  * few KB; this ceiling keeps the 4x output buffer (filesize*4) well clear of
@@ -261,11 +262,10 @@ static void store_numstring(parse_state * st, const parserkey * key,
         char digit = 0;
         for (int half = 0; half < 2; half++)
         {
-            uint8_t c = st->in[st->ptr++];
+            int nib = text_hex_nibble(st->in[st->ptr++]);
             digit = (char)(digit << 4);
-            if ((c >= '0') && (c <= '9'))       digit = (char)(digit | (c - '0'));
-            else if ((c >= 'A') && (c <= 'F'))  digit = (char)(digit | (c - 'A' + 10));
-            else if ((c >= 'a') && (c <= 'f'))  digit = (char)(digit | (c - 'a' + 10));
+            if (nib > 0)                        /* a non-hex character counts as 0 */
+                digit = (char)(digit | nib);
         }
         value->v.string[i] = digit;
         LOG_DEBUG("%02x ", value->v.string[i]);

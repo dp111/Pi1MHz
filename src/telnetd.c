@@ -55,9 +55,12 @@
 
 #include "Pi1MHz.h"
 #include "config.h"
+#include "lib/textparse.h"
+#include "wifi/lwip_util.h"
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
+#include "net_telnet.h"           /* telnet_escape */
 
 #define KRING_SIZE   4096u               /* power of two */
 #define KRING_MASK   (KRING_SIZE - 1u)
@@ -654,11 +657,12 @@ static void beeb_byte(uint8_t c)
          (void)tnd_out_byte(&g_out, c, d);
          tnd_out_touch(&g_out, Pi1MHz_now_us);
       }
-      if (c == 0xFFu && !g_sess_rawport) {      /* IAC must be doubled (not on the raw port: no telnet there) */
-         static const uint8_t ff[2] = { 0xFF, 0xFF };
-         o_put(ff, 2u);
-      } else {
+      if (g_sess_rawport) {                     /* the raw port: no telnet there, so no escaping */
          o_put(&c, 1u);
+      } else {                                  /* IAC must be doubled */
+         uint8_t esc[2];
+         size_t  used;
+         o_put(esc, telnet_escape(&c, 1u, esc, sizeof esc, &used));
       }
    }
 }
@@ -872,29 +876,24 @@ static void pump(void)
       return;
    if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_close_after
                            || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
-      size_t want = g_olen - g_opos;
-      size_t room = tcp_sndbuf(g_pcb);
-      if (room == 0u)
+      bool  was_idle = g_pcb->snd_queuelen == 0u;
+      u16_t sent = 0u;
+      err_t e = lwip_tcp_write_some(g_pcb, g_obuf + g_opos, g_olen - g_opos, &sent);
+      if (e == ERR_OK && sent != 0u) {
+         g_opos += sent;
+         g_tx_us = Pi1MHz_now_us;
+         if (was_idle)
+            g_prog_us = g_tx_us;                 /* the wait for the first ACK starts now */
+         (void)tcp_output(g_pcb);
+      } else if (e == ERR_OK) {                  /* the send buffer is full */
          g_room0++;
-      if (want > room)
-         want = room;
-      if (want != 0u) {
-         bool  was_idle = g_pcb->snd_queuelen == 0u;
-         err_t e = tcp_write(g_pcb, g_obuf + g_opos, (u16_t)want, TCP_WRITE_FLAG_COPY);
-         if (e == ERR_OK) {
-            g_opos += want;
-            g_tx_us = Pi1MHz_now_us;
-            if (was_idle)
-               g_prog_us = g_tx_us;              /* the wait for the first ACK starts now */
-            (void)tcp_output(g_pcb);
-         } else if (e == ERR_MEM) {             /* ERR_MEM: the heap is busy, try again */
-            g_wmem++;
-         } else {
-            g_why = "write error";
-            g_why_err = (int)e;
-            (void)session_close(true);
-            return;
-         }
+      } else if (e == ERR_MEM) {                 /* ERR_MEM: the heap is busy, try again */
+         g_wmem++;
+      } else {
+         g_why = "write error";
+         g_why_err = (int)e;
+         (void)session_close(true);
+         return;
       }
       if (g_opos == g_olen)
          g_opos = g_olen = 0u;
@@ -1380,12 +1379,11 @@ void telnetd_attach(void)
    as <name>_addr=-1 does for every other device (it has no FRED address of its own). */
 static long telnetd_port_cfg(void)
 {
-   const char *v = config_get("telnetd_port");
-   uint8_t     unused = 0u;
-   long        port = (v != NULL) ? strtol(v, NULL, 10) : 0;
+   uint16_t port = 0u;
+   uint8_t  unused = 0u;
    if (config_emulator_override("Telnetd", &unused) < 0)
       return 0;
-   return (port > 0 && port <= 65535) ? port : 0;
+   return text_parse_port_str(config_get("telnetd_port"), &port) ? (long)port : 0;
 }
 
 /* Before WiFi is up (the ROM asks at every reset) the setting is the answer; once a listen has
@@ -1464,9 +1462,8 @@ void telnetd_init(void)
    g_port = (uint16_t)port;
 
    {                                            /* telnetd_raw_port: teletype mode, no telnet (nc, PuTTY "Raw") */
-      const char *v = config_get("telnetd_raw_port");
-      long rp = (v != NULL) ? strtol(v, NULL, 10) : 0;
-      if (rp > 0 && rp <= 65535 && rp != port) {
+      uint16_t rp = 0u;
+      if (text_parse_port_str(config_get("telnetd_raw_port"), &rp) && (long)rp != port) {
          struct tcp_pcb *rl = tcp_new_ip_type(IPADDR_TYPE_V4);
          if (rl != NULL && tcp_bind(rl, IP_ADDR_ANY, (u16_t)rp) == ERR_OK) {
             g_raw_listener = tcp_listen_with_backlog(rl, 2u);

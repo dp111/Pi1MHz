@@ -17,9 +17,9 @@
    own key names: current-host, current-display-path, host-history (one URI
    per line, most recent first, at most 32). */
 
-#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "fn_devices.h"
 #include "fn_store.h"
@@ -104,9 +104,7 @@ static bool fs_norm(char *out, size_t cap, const char *in)
 
 static bool starts_ci(const char *s, const char *prefix)
 {
-   for (; *prefix; s++, prefix++)
-      if (tolower((unsigned char)*s) != *prefix) return false;
-   return true;
+   return strncasecmp(s, prefix, strlen(prefix)) == 0;
 }
 
 static bool is_tnfs_uri(const char *s)

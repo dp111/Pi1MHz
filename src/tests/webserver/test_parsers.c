@@ -51,9 +51,9 @@ int main(void)
    ok(ws_strcasestr("nothing here", "100-continue") == NULL,
       "strcasestr miss");
    ok(ws_strcasestr("abc", "") != NULL, "strcasestr empty needle");
-   ok(ws_hexval('0') == 0 && ws_hexval('9') == 9 && ws_hexval('a') == 10
-      && ws_hexval('F') == 15 && ws_hexval('g') == -1 && ws_hexval(' ') == -1,
-      "ws_hexval table");
+   ok(text_hex_nibble('0') == 0 && text_hex_nibble('9') == 9 && text_hex_nibble('a') == 10
+      && text_hex_nibble('F') == 15 && text_hex_nibble('g') == -1 && text_hex_nibble(' ') == -1,
+      "text_hex_nibble table");
 
    puts("== ws_url_decode ==");
    {

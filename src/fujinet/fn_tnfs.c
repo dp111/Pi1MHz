@@ -16,6 +16,7 @@
 #include "fn_tnfs.h"
 #include "../net_tnfs.h"
 #include "../fnv1a.h"
+#include "../lib/textparse.h"
 
 #define SESSIONS      2u
 #define HOST_MAX      64u
@@ -67,16 +68,8 @@ static bool parse_uri(const char *uri, char *host, uint16_t *port, char *path)
    memcpy(host, h, name);
    host[name] = '\0';
    *port = TNFS_PORT;
-   if (colon) {
-      unsigned long v = 0;
-      for (const char *p = colon + 1; p < h + hl; p++) {
-         if (*p < '0' || *p > '9') return false;
-         v = v * 10u + (unsigned long)(*p - '0');
-         if (v > 65535u) return false;
-      }
-      if (v == 0) return false;
-      *port = (uint16_t)v;
-   }
+   if (colon && !text_parse_port(colon + 1, (size_t)(h + hl - (colon + 1)), port))
+      return false;
    snprintf(path, URI_MAX, "%s", slash ? slash : "/");
    return true;
 }

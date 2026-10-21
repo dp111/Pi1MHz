@@ -239,7 +239,7 @@ int main(void)
          (void)strcasecmp(s, t);
          (void)ws_prefix(t, s);
          (void)ws_strcasestr(s, t);
-         (void)ws_hexval((char)(rnd() & 0xFFu));
+         (void)text_hex_nibble((char)(rnd() & 0xFFu));
          free(t);
       }
       {

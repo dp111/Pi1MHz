@@ -17,6 +17,7 @@
 #include "md5.h"
 #include "wifi.h"
 #include "wifi_lwip.h"
+#include "lwip_util.h"
 #include "sdio.h"
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
@@ -41,6 +42,7 @@
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
+#include "../rpi/hwrng.h"             /* the digest-auth secret */
 #include "../Pi1MHz.h"
 #include "../rpi/asm-helpers.h"
 #include "../AUN/aun_emulator.h"
@@ -52,6 +54,7 @@
 #include "../usb_mouse.h"
 #include "../usb_storage.h"
 #include "../smb/smb_client.h"
+#include "../lib/textparse.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -596,13 +599,16 @@ static void ws_copy_slot_release(const ws_conn_t *c)
 /* Rolling digest-auth nonce.  Regenerated lazily once it crosses
    WS_NONCE_MAX_AGE_US; clients are challenged with stale=true and
    re-authenticate transparently after that.  The server-side secret is
-   initialised once from the system timer so nonces are unpredictable
-   across reboots. */
+   128 bits from the hardware RNG (ws_seed_secret), so nonces cannot be
+   predicted. */
+#define WS_SECRET_WORDS        4u
+#define WS_SECRET_TRIES        8u    /* hwrng attempts before settling for the fallback */
 static char            g_ws_nonce[MD5_HEX_LEN + 1u];
 static uint32_t        g_ws_nonce_issued_us;
 static uint32_t        g_ws_nonce_counter;
-static uint32_t        g_ws_nonce_secret;
+static uint32_t        g_ws_nonce_secret[WS_SECRET_WORDS];
 static bool            g_ws_nonce_secret_initialised;
+static uint8_t         g_ws_nonce_secret_tries;
 
 static void ws_set_error(const char *message)
 {
@@ -759,17 +765,6 @@ static const char *ws_strcasestr(const char *hay, const char *needle)
    return NULL;
 }
 
-static int ws_hexval(char c)
-{
-   if (c >= '0' && c <= '9')
-      return c - '0';
-   if (c >= 'a' && c <= 'f')
-      return c - 'a' + 10;
-   if (c >= 'A' && c <= 'F')
-      return c - 'A' + 10;
-   return -1;
-}
-
 /* Decode percent-escapes (%XX) into raw bytes.  Control characters
    (incl. NUL) decoded from %XX would let a client inject a string
    terminator past a length check or smuggle CR/LF into a header
@@ -790,8 +785,8 @@ static bool ws_url_decode(const char *src, char *dst, size_t dstsz)
    while (*src != '\0' && o + 1u < dstsz) {
       unsigned char c;
       if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
-         int hi = ws_hexval(src[1]);
-         int lo = ws_hexval(src[2]);
+         int hi = text_hex_nibble(src[1]);
+         int lo = text_hex_nibble(src[2]);
          if (hi >= 0 && lo >= 0) {
             c = (unsigned char)((hi << 4) | lo);
             dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
@@ -1498,43 +1493,54 @@ static bool ws_digest_enabled(void)
        && cfg->webdav_password[0] != '\0';
 }
 
-/* Mix the chip's WiFi MAC plus the system timer into the secret on
-   first use.  RPI_GetSystemTime at boot is highly predictable
-   (a few hundred ms) on its own, so an attacker who could time the
-   first 401 challenge could guess the secret to within a few k of
-   values.  The chip MAC (read once from cur_etheraddr by
-   sdio_runtime_get_chip_mac) is 24 bits of board-OTP entropy on top
-   of that, which is enough to push the search space out of trivial
-   range.  Still NOT cryptographically strong - digest auth over
-   plain HTTP isn't secret anyway - but materially harder. */
-static uint32_t ws_seed_secret(void)
+/* Fill the secret from the hardware RNG; true if every word came from it.
+   The timer and the chip MAC alone are predictable - the timer at boot to a
+   few hundred ms, the MAC is printed on the board's network traffic - so an
+   attacker who could time the first 401 challenge could search the whole
+   secret offline.  hwrng_start runs in webserver_init, so the generator's
+   warm-up is long over by the first challenge; a word it cannot give within
+   WS_RNG_WAIT_US (warm-up not over, or a stopped generator) falls back to
+   the old timer and MAC mix for that word, and the caller asks again at
+   the next refresh, up to WS_SECRET_TRIES times.  Re-seeding is harmless:
+   an issued nonce is checked against the stored string, not recomputed. */
+#define WS_RNG_WAIT_US 1000u
+static bool ws_seed_secret(void)
 {
    uint8_t  mac[6] = { 0u, 0u, 0u, 0u, 0u, 0u };
-   uint32_t s = RPI_GetSystemTime();
+   uint32_t fallback;
+   bool     all_rng = true;
+
    (void)sdio_runtime_get_chip_mac(mac);
-   s ^= ((uint32_t)mac[0] <<  0)
-      | ((uint32_t)mac[1] <<  8)
-      | ((uint32_t)mac[2] << 16)
-      | ((uint32_t)mac[3] << 24);
-   s ^= ((uint32_t)mac[4] <<  0) | ((uint32_t)mac[5] << 16);
-   s ^= 0xA5A5A5A5u;
-   return s;
+   fallback = ((uint32_t)mac[0] <<  0)
+            | ((uint32_t)mac[1] <<  8)
+            | ((uint32_t)mac[2] << 16)
+            | ((uint32_t)mac[3] << 24);
+   fallback ^= ((uint32_t)mac[4] <<  0) | ((uint32_t)mac[5] << 16);
+   fallback ^= 0xA5A5A5A5u;
+
+   for (uint32_t i = 0u; i < WS_SECRET_WORDS; i++) {
+      uint32_t w;
+      if (hwrng_word(&w, WS_RNG_WAIT_US) != 0) {
+         w = fallback ^ RPI_GetSystemTime() ^ (i * 0x9E3779B9u);
+         all_rng = false;
+      }
+      g_ws_nonce_secret[i] = w;
+   }
+   return all_rng;
 }
 
 static void ws_digest_refresh_nonce(void)
 {
    uint32_t now;
-   uint8_t  seed[12];
-   md5_ctx_t ctx;
-   uint8_t  digest[MD5_DIGEST_LEN];
-   static const char hex[] = "0123456789abcdef";
-   unsigned int i;
+   const void *parts[3] = { &now, g_ws_nonce_secret, &g_ws_nonce_counter };
+   size_t      lens[3]  = { sizeof now, sizeof g_ws_nonce_secret,
+                            sizeof g_ws_nonce_counter };
 
    now = RPI_GetSystemTime();
 
-   if (!g_ws_nonce_secret_initialised) {
-      g_ws_nonce_secret = ws_seed_secret();
-      g_ws_nonce_secret_initialised = true;
+   if (!g_ws_nonce_secret_initialised && g_ws_nonce_secret_tries < WS_SECRET_TRIES) {
+      g_ws_nonce_secret_tries++;
+      g_ws_nonce_secret_initialised = ws_seed_secret();
    }
 
    if (g_ws_nonce[0] != '\0'
@@ -1542,27 +1548,7 @@ static void ws_digest_refresh_nonce(void)
       return;
 
    ++g_ws_nonce_counter;
-   seed[ 0] = (uint8_t)(now                  );
-   seed[ 1] = (uint8_t)(now >>  8            );
-   seed[ 2] = (uint8_t)(now >> 16            );
-   seed[ 3] = (uint8_t)(now >> 24            );
-   seed[ 4] = (uint8_t)(g_ws_nonce_secret    );
-   seed[ 5] = (uint8_t)(g_ws_nonce_secret >>  8);
-   seed[ 6] = (uint8_t)(g_ws_nonce_secret >> 16);
-   seed[ 7] = (uint8_t)(g_ws_nonce_secret >> 24);
-   seed[ 8] = (uint8_t)(g_ws_nonce_counter   );
-   seed[ 9] = (uint8_t)(g_ws_nonce_counter >>  8);
-   seed[10] = (uint8_t)(g_ws_nonce_counter >> 16);
-   seed[11] = (uint8_t)(g_ws_nonce_counter >> 24);
-
-   md5_init(&ctx);
-   md5_update(&ctx, seed, sizeof seed);
-   md5_final(&ctx, digest);
-
-   for (i = 0u; i < MD5_DIGEST_LEN; ++i) {
-      g_ws_nonce[(i * 2u)     ] = hex[(digest[i] >> 4) & 0x0Fu];
-      g_ws_nonce[(i * 2u) + 1u] = hex[ digest[i]       & 0x0Fu];
-   }
+   md5_hex_cat(g_ws_nonce, parts, lens, 3u);
    g_ws_nonce[MD5_HEX_LEN] = '\0';
    g_ws_nonce_issued_us = now;
 }
@@ -2174,37 +2160,6 @@ static void fb_render_row(const framebuffer_export_info_t *info,
       dst[x] = 0u;
 }
 
-/* Queue up to want bytes, settling for less rather than nothing.
-   tcp_write() is transactional: it queues the whole chunk or it queues
-   nothing, and it allocates from the same MEM_SIZE heap that every other
-   connection's unacked data is sitting in.  tcp_sndbuf() does not see that
-   heap - it reports TCP window space - so on a busy server the sizes it
-   blesses routinely fail to allocate.
-
-   Retrying at one segment is what stops that becoming starvation.  With
-   several concurrent downloads, two saturated senders own nearly all of the
-   32 KB heap; the rest asked for 8 KB, got ERR_MEM every time, queued not
-   one byte, and were killed ~30 s later by the idle watchdog - the client
-   seeing a 200 with an empty body.  A 1460-byte write fits in what is left,
-   and any progress at all re-arms the watchdog (ws_sent clears poll_count),
-   so the slow connections finish instead of dying.  Deliberately not fixed
-   by enlarging MEM_SIZE: 64 KB was measured to make all four streams crawl,
-   because the heap is also what limits how far the SDIO transmit path can
-   be oversubscribed. */
-static err_t ws_write_best_effort(struct tcp_pcb *pcb, const void *data,
-                                  u16_t want, u16_t *written)
-{
-   err_t err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
-
-   if (err == ERR_MEM && want > TCP_MSS) {
-      want = TCP_MSS;
-      err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
-   }
-
-   *written = (err == ERR_OK) ? want : 0u;
-   return err;
-}
-
 static bool conn_pump(ws_conn_t *c)
 {
    err_t err = ERR_OK;
@@ -2224,17 +2179,15 @@ static bool conn_pump(ws_conn_t *c)
    }
 
    /* in-memory portion (HTML body, or the HTTP header of a download) */
+   /* lwip_tcp_write_some settles for one segment when the heap is short:
+      its comment says why that matters with several downloads at once.
+      Any progress at all re-arms the idle watchdog (ws_sent clears
+      poll_count). */
    while (c->out != NULL && c->out_sent < c->out_len) {
-      u16_t  avail = tcp_sndbuf(c->pcb);
-      size_t want  = c->out_len - c->out_sent;
       u16_t  wrote = 0u;
-      if (avail == 0u)
-         break;
-      if (want > avail)
-         want = avail;
-      err = ws_write_best_effort(c->pcb, c->out + c->out_sent, (u16_t)want,
-                                 &wrote);
-      if (err != ERR_OK)
+      err = lwip_tcp_write_some(c->pcb, c->out + c->out_sent,
+                                c->out_len - c->out_sent, &wrote);
+      if (err != ERR_OK || wrote == 0u)
          break;
       c->out_sent += wrote;
       c->bytes_queued += (uint32_t)wrote;
@@ -2257,8 +2210,6 @@ static bool conn_pump(ws_conn_t *c)
       bool did_card_read = false;
 
       while (1) {
-         u16_t  avail;
-         size_t want;
          u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
@@ -2296,15 +2247,9 @@ static bool conn_pump(ws_conn_t *c)
             c->dl_remaining -= br;
          }
 
-         avail = tcp_sndbuf(c->pcb);
-         if (avail == 0u)
-            break;
-         want = c->dl_buf_len - c->dl_buf_sent;
-         if (want > avail)
-            want = avail;
-         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
-                                    (u16_t)want, &wrote);
-         if (err != ERR_OK)
+         err = lwip_tcp_write_some(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                   c->dl_buf_len - c->dl_buf_sent, &wrote);
+         if (err != ERR_OK || wrote == 0u)
             break;
          c->dl_buf_sent += wrote;
          c->bytes_queued += (uint32_t)wrote;
@@ -2321,8 +2266,6 @@ static bool conn_pump(ws_conn_t *c)
       uint32_t row_padded = (c->fb_info.width * 3u + 3u) & ~3u;
 
       while (1) {
-         u16_t  avail;
-         size_t want;
          u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
@@ -2366,15 +2309,9 @@ static bool conn_pump(ws_conn_t *c)
             c->dl_buf_sent = 0u;
          }
 
-         avail = tcp_sndbuf(c->pcb);
-         if (avail == 0u)
-            break;
-         want = c->dl_buf_len - c->dl_buf_sent;
-         if (want > avail)
-            want = avail;
-         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
-                                    (u16_t)want, &wrote);
-         if (err != ERR_OK)
+         err = lwip_tcp_write_some(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                   c->dl_buf_len - c->dl_buf_sent, &wrote);
+         if (err != ERR_OK || wrote == 0u)
             break;
          c->dl_buf_sent += wrote;
          c->bytes_queued += (uint32_t)wrote;
@@ -5745,13 +5682,13 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
                size_t   i;
                for (i = 0u; !bad && i < n; i++) {
                   char     h = c->dav_chunk_linebuf[i];
+                  int      nib;
                   uint32_t d;
                   if (h == ';')
                      break;                    /* chunk-ext: ignore the rest */
-                  if (h >= '0' && h <= '9')      d = (uint32_t)(h - '0');
-                  else if (h >= 'a' && h <= 'f') d = (uint32_t)(h - 'a' + 10);
-                  else if (h >= 'A' && h <= 'F') d = (uint32_t)(h - 'A' + 10);
-                  else { bad = true; break; }
+                  nib = text_hex_nibble(h);
+                  if (nib < 0) { bad = true; break; }
+                  d = (uint32_t)nib;
                   if (size > (0x7FFFFFFFu - d) / 16u) { bad = true; break; }
                   size = size * 16u + d;
                }
@@ -6657,12 +6594,12 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
    /* Real lock state is not persisted (the chip is single-user), but
       the token still wants to be unguessable so a client that uses
       it in If: headers doesn't trivially collide with a different
-      session.  Mix in the chip MAC and a bumped counter on top of
-      the system timer, the same way ws_digest_refresh_nonce does. */
+      session.  Mix the digest secret's RNG words and a bumped counter
+      into the system timer. */
    ws_digest_refresh_nonce();   /* ensures g_ws_nonce_secret is set */
    ++g_ws_nonce_counter;
-   a = RPI_GetSystemTime() ^ g_ws_nonce_secret;
-   b = g_ws_nonce_counter ^ (g_ws_nonce_secret >> 16) ^ (g_ws_nonce_secret << 16);
+   a = RPI_GetSystemTime() ^ g_ws_nonce_secret[0];
+   b = g_ws_nonce_counter ^ g_ws_nonce_secret[1];
    snprintf(token, sizeof token,
             "opaquelocktoken:%08lx-%08lx",
             (unsigned long)a, (unsigned long)b);
@@ -7794,6 +7731,7 @@ void webserver_init(void)
 
    g_ws_ready = false;
    ws_set_error(NULL);
+   hwrng_start();          /* warm up now: the digest secret (ws_seed_secret) wants it */
 
    if (g_ws_listener != NULL) {
       tcp_arg(g_ws_listener, NULL);
