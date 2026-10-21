@@ -84,8 +84,10 @@ int main(void)
    ok(config_get_bool("b_one") && config_get_bool("b_yl") && config_get_bool("b_yu")
       && config_get_bool("b_tl") && config_get_bool("b_tu"),
       "values 1/y/Y/t/T -> true");
-   ok(!config_get_bool("b_zero") && !config_get_bool("b_no") && !config_get_bool("b_word"),
-      "values 0/n/on -> false");
+   ok(!config_get_bool("b_zero") && !config_get_bool("b_no"),
+      "values 0/n -> false");
+   ok(config_get_bool("b_word"),
+      "value on -> true (config_get_flag: one parser for every on/off key since 2026-10-21)");
 
    ok(!config_beeb_write_protected(), "write-protect false when its key is absent");
    { static char wp[] = "Beeb_write_protect=Y\n"; config_parse(wp, sizeof wp - 1); }

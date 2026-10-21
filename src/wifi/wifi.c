@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>   /* strtoul - wifi_parse_test_iovars */
 #include <string.h>
+#include <strings.h>  /* strcasecmp */
 
 static wifi_config_t g_wifi_config;
 static wifi_network_config_t g_wifi_network_config;
@@ -44,7 +45,6 @@ static bool g_wifi_images_preloaded;
    has no BBC-bus state, so a reset must not tear it down and re-join. */
 static bool g_wifi_init_done;
 static void wifi_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
-static bool wifi_equals_ignore_case(const char *left, const char *right);
 
 static bool wifi_hex_key(const char *value, size_t length)
 {
@@ -325,7 +325,7 @@ static bool wifi_parse_ip_mode(wifi_config_t *config)
       return true;
    }
 
-   if (wifi_equals_ignore_case(prop, "dhcp")) {
+   if (prop != NULL && strcasecmp(prop, "dhcp") == 0) {
       config->ip_mode = WIFI_IP_MODE_DHCP;
       config->ip_address[0] = '\0';
       return true;
@@ -515,36 +515,6 @@ static uint8_t wifi_parse_test_iovars(wifi_test_iovar_t *out, const char *spec)
    return count;
 }
 
-static bool wifi_cmdline_bool(const char *key)
-{
-   const char *prop = config_get(key);
-
-   return prop != NULL && prop[0] != '\0' && prop[0] != '0';
-}
-
-static char wifi_ascii_tolower(char value)
-{
-   if (value >= 'A' && value <= 'Z')
-      return (char)(value + ('a' - 'A'));
-
-   return value;
-}
-
-static bool wifi_equals_ignore_case(const char *left, const char *right)
-{
-   if (left == NULL || right == NULL)
-      return false;
-
-   while (*left != '\0' && *right != '\0') {
-      if (wifi_ascii_tolower(*left) != wifi_ascii_tolower(*right))
-         return false;
-      ++left;
-      ++right;
-   }
-
-   return *left == '\0' && *right == '\0';
-}
-
 static wifi_sdio_tx_probe_command_t wifi_parse_sdio_tx_probe_command(void)
 {
    static const wifi_probe_command_entry_t command_map[] = {
@@ -566,7 +536,7 @@ static wifi_sdio_tx_probe_command_t wifi_parse_sdio_tx_probe_command(void)
       return WIFI_SDIO_TX_PROBE_COMMAND_VERSION;
 
    for (index = 0; index < (sizeof(command_map) / sizeof(command_map[0])); ++index) {
-      if (wifi_equals_ignore_case(prop, command_map[index].name))
+      if (prop != NULL && strcasecmp(prop, command_map[index].name) == 0)
          return command_map[index].value;
    }
 
@@ -592,17 +562,17 @@ bool wifi_config_load(wifi_config_t *config)
    config->sdio_rx_sweep_limit = 16u;
    strlcpy(config->hostname, "Pi1MHz", sizeof(config->hostname));
    strlcpy(config->netmask, "255.255.255.0", sizeof(config->netmask));
-   config->sdio_probe_enabled = wifi_cmdline_bool("wifi_sdio_probe");
-   config->sdio_tx_probe_enabled = wifi_cmdline_bool("wifi_sdio_tx_probe");
+   config->sdio_probe_enabled = config_get_flag("wifi_sdio_probe", false);
+   config->sdio_tx_probe_enabled = config_get_flag("wifi_sdio_tx_probe", false);
    /* wifi_emulator=1 keeps the old lenient "proceed anyway" behaviour when
       the CYW43 firmware never reaches HT_AVAIL / fn2-ready (only useful when
       running under a test emulator with no real chip).  On real hardware,
       leaving it unset makes a firmware-boot failure report a clear error. */
-   config->allow_emulator_fallback = wifi_cmdline_bool("wifi_emulator");
+   config->allow_emulator_fallback = config_get_flag("wifi_emulator", false);
    /* wifi_diag=1: credit-window depth + shut->reopen histograms on
       /status.  Off by default - the sampling costs a little per received
       frame, and release builds must pay nothing they don't need. */
-   config->diag_enabled = wifi_cmdline_bool("wifi_diag");
+   config->diag_enabled = config_get_flag("wifi_diag", false);
    /* wifi_test_iovars="name=value,name=value,..." - see wifi_parse_test_iovars. */
    config->test_iovar_count = wifi_parse_test_iovars(config->test_iovars,
                                                      config_get("wifi_test_iovars"));
@@ -767,7 +737,7 @@ void wifi_init(void)
       wifi_debug_log("re-init: keeping the live config (ssid already set)");
    g_wifi_boot_stage = WIFI_BOOT_STAGE_IDLE;
    g_wifi_images_preloaded = false;
-   g_wifi_debug_enabled = wifi_cmdline_bool("wifi_debug");
+   g_wifi_debug_enabled = config_get_flag("wifi_debug", false);
    wifi_clear_error();
 
    /* wifi_debug_log already prepends "WIFI: " and a CRLF; using it

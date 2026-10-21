@@ -56,9 +56,13 @@ int config_emulator_override(const char *name, uint8_t *addr);
  * writable byte. Exposed for host testing. */
 void config_parse(char *buf, size_t len);
 
-/* Interpret a key's value as a boolean flag: true if present and its value
- * begins with 1/y/Y/t/T, else false (absent or anything else). Read from the
- * store on each call (not cached). */
+/* Interpret a key's value as a boolean flag: false if it begins with 0/n/f or
+ * is "off", true if it begins with 1-9/y/t or is "on" (any case), else dflt
+ * (absent, empty or anything else). Read from the store on each call (not
+ * cached). The one boolean parser: every on/off key reads through it. */
+bool config_get_flag(const char *key, bool dflt);
+
+/* config_get_flag(key, false). */
 bool config_get_bool(const char *key);
 
 /* True if "Beeb_write_protect" is set. When true, every write the Beeb

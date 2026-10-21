@@ -24,7 +24,8 @@ int main(void)
       "greeting=hello world\n"          /* values may contain spaces */
       "MixedCase=Hello\n"
       "Teletext_addr=-1\n"              /* negative address = disable */
-      "Harddisc_addr=0x50\n";           /* address override */
+      "Harddisc_addr=0x50\n"            /* address override */
+      "f_off=off\n" "f_OFF=OFF\n" "f_on=On\n" "f_no=no\n" "f_two=2\n" "f_junk=maybe\n" "f_true=true\n";
 
    config_parse(cfg, strlen(cfg));
 
@@ -46,6 +47,15 @@ int main(void)
    assert(config_emulator_override("Harddisc", &addr) == 1 && addr == 0x50);
    addr = 0xAA;
    assert(config_emulator_override("M5000", &addr) == 0 && addr == 0xAA); /* no key, untouched */
+
+   /* the one boolean parser (telnetd's own said "off" was on, wifi's said "no" was) */
+   assert(!config_get_flag("f_off", true) && !config_get_flag("f_OFF", true));
+   assert(config_get_flag("f_on", false) && config_get_bool("f_on"));
+   assert(!config_get_flag("f_no", true));
+   assert(config_get_flag("f_two", false) && config_get_flag("f_true", false));
+   assert(config_get_flag("f_junk", true) && !config_get_flag("f_junk", false));   /* unknown: the default */
+   assert(config_get_flag("empty_value", true) && config_get_flag("nope", true));
+   assert(!config_get_bool("nope"));
 
    printf("all config tests passed\n");
    return 0;

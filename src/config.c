@@ -138,12 +138,23 @@ void config_load(const char *filename)
    LOG_DEBUG("CONFIG: %s parsed, %d key(s)\n", filename, config_count);
 }
 
-bool config_get_bool(const char *key)
+bool config_get_flag(const char *key, bool dflt)
 {
    const char *v = config_get(key);
-   return (v != NULL) &&
-          (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' ||
-           v[0] == 't' || v[0] == 'T');
+   if (v == NULL || v[0] == '\0')
+      return dflt;
+   if (v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F'
+       || strncasecmp(v, "off", 3) == 0)
+      return false;
+   if ((v[0] >= '1' && v[0] <= '9') || v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T'
+       || strncasecmp(v, "on", 2) == 0)
+      return true;
+   return dflt;
+}
+
+bool config_get_bool(const char *key)
+{
+   return config_get_flag(key, false);
 }
 
 bool config_beeb_write_protected(void)
