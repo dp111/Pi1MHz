@@ -20,6 +20,10 @@ header — trust the newest status over the body).
   never creates, formats, or writes them. Beeb writes are silently
   accepted-and-discarded — never refused with an error, because the Beeb's
   FS handshake loops have no timeouts and an error can hang the machine.
+  Exception, by the owner's choice: WRITE6 and FORMAT to LUN ≥ 8 are
+  refused with WRITE FAULT at the command phase, before any data moves.
+  No VFS ROM sends either, so they are tripwires for an unexpected writer
+  (db10f516). Leave them; don't re-report them.
 - **Never do SD/FatFs work in FIQ context.** FIQ latches a request; the
   main loop services it (see `hd_juke_pending`).
 - **State machines own their dispatch.** Work belonging to one state goes
