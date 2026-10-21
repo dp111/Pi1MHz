@@ -29,6 +29,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
@@ -261,6 +262,19 @@ void filesystemSetModePageRaw(uint8_t lunNumber, uint8_t page, const uint8_t * d
 typedef struct { uint8_t start; uint8_t size; } modePageField_t;
 const modePageField_t * filesystemModePageFields(uint8_t page, size_t * count);
 
+/* The controller's rules this layer follows, owned by scsi.c, which lends
+   them with filesystemSetDrivePolicy (NULL: the defaults, Mixed and Auto).
+   page0IsDriveList: ModePage0 is the Adaptec's drive parameter list and
+   carries the geometry (ACB, SASI, Mixed); false on a drive with its own
+   controller, where page 0 is an ordinary page and the geometry is page 4
+   alone.  geometryFromCfgOnly: DriveGeometry=CFG, a .cfg without its
+   geometry page gets none made up; false (Auto) deduces it. */
+typedef struct {
+   bool page0IsDriveList;
+   bool geometryFromCfgOnly;
+} filesystemDrivePolicy_t;
+void filesystemSetDrivePolicy(const filesystemDrivePolicy_t *policy);
+
 /* A big-endian number of `size` bytes at `start` in a mode page or the
    block descriptor (a .cfg's page is char *, a bus buffer uint8_t *). */
 static inline uint32_t modePageGetField(const void *page, unsigned int start, unsigned int size)
@@ -296,12 +310,6 @@ static inline void modePage3Put(void *page3, unsigned int field, uint16_t value)
 
 /* The block descriptor's block length: bytes 5-7 */
 #define LBADESCRIPTOR_BLOCK_SIZE 5
-/* ModePage0 is the Adaptec's drive parameter list (true, the default), or an
-   ordinary page with the geometry in page 4 alone (a drive with its own
-   controller); set by scsi.c from DriveController=. */
-void filesystemSetPage0IsDriveList(bool driveList);
-/* DriveGeometry=CFG (true) or Auto: set by scsi.c */
-void filesystemSetGeometryFromCfgOnly(bool cfgOnly);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);

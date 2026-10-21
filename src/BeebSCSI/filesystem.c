@@ -1875,29 +1875,28 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
 
 // takes lun geometry and updates the keyvalues
 
-/* ModePage0 is the Adaptec's drive parameter list on an ACB or SASI board,
-   and carries the geometry.  On a drive with its own controller page 0 is
-   an ordinary mode page (a CCS drive's Unit Attention page: some drives
-   hold 80 02 00 00, others have none) and the geometry is page 4 alone. */
-static bool page0IsDriveList = true;
+/* The controller's rules are scsi.c's (DriveController=, DriveGeometry=,
+   read at power-on): it lends them once, and this layer reads them there
+   rather than keep a copy.  Until it does (or with no scsi.c at all, as in
+   a host test of this layer alone), Mixed and Auto. */
+static const filesystemDrivePolicy_t filesystemDefaultPolicy = {
+   .page0IsDriveList = true, .geometryFromCfgOnly = false
+};
+static const filesystemDrivePolicy_t *drivePolicy = &filesystemDefaultPolicy;
 
-/* DriveGeometry=CFG (true): a .cfg without its geometry page gets none
-   made up; Auto (false, the default) deduces it.  Set by scsi.c. */
-static bool geometryFromCfgOnly = false;
-
-void filesystemSetGeometryFromCfgOnly(bool cfgOnly)
+void filesystemSetDrivePolicy(const filesystemDrivePolicy_t *policy)
 {
-   geometryFromCfgOnly = cfgOnly;
-}
-
-void filesystemSetPage0IsDriveList(bool driveList)
-{
-   page0IsDriveList = driveList;
+   drivePolicy = (policy != NULL) ? policy : &filesystemDefaultPolicy;
 }
 
 static bool filesystemPage0IsDriveList(void)
 {
-   return page0IsDriveList;
+   return drivePolicy->page0IsDriveList;
+}
+
+static bool filesystemGeometryFromCfgOnly(void)
+{
+   return drivePolicy->geometryFromCfgOnly;
 }
 
 /* The geometry fields of page 0, the Adaptec drive list (cylinders bytes
@@ -2014,7 +2013,7 @@ static void filesystemGeometryFromImage(uint8_t lunNumber)
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
    filesystemGeometryFromImage(lunNumber);
-   if (!geometryFromCfgOnly)            // DriveGeometry=CFG: no page invented
+   if (!filesystemGeometryFromCfgOnly())  // DriveGeometry=CFG: no page invented
       filesystemLunToconfigGeometry(lunNumber);
 }
 
@@ -2120,7 +2119,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
             warned[lunNumber] = filesystemState.driveGeneration + 1u;
             LOG_DEBUG("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
                       (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
-                      geometryFromCfgOnly ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
+                      filesystemGeometryFromCfgOnly() ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
                       (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
          }
 #endif

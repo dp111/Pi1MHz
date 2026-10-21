@@ -107,11 +107,17 @@ static uint32_t requestSenseData[MAX_LUNS];
 // The controller behind the host adaptor (DriveController=, read at power-on)
 static scsiController_t scsiController = SCSI_CONTROLLER_MIXED;
 
+// What the LUN layer follows of it (and DriveGeometry=): lent to filesystem.c
+static filesystemDrivePolicy_t scsiDrivePolicy = {
+   .page0IsDriveList = true, .geometryFromCfgOnly = false
+};
+
 void scsiSetController(scsiController_t controller)
 {
    scsiController = controller;
    // page 0 is the Adaptec drive list everywhere but on a SCSI drive
-   filesystemSetPage0IsDriveList(controller != SCSI_CONTROLLER_SCSI);
+   scsiDrivePolicy.page0IsDriveList = (controller != SCSI_CONTROLLER_SCSI);
+   filesystemSetDrivePolicy(&scsiDrivePolicy);
 }
 
 scsiController_t scsiGetController(void)
@@ -120,17 +126,15 @@ scsiController_t scsiGetController(void)
 }
 
 // DriveGeometry= (read at power-on): false = Auto, true = CFG
-static bool scsiGeometryCfgOnly = false;
-
 void scsiSetGeometryFromCfgOnly(bool cfgOnly)
 {
-   scsiGeometryCfgOnly = cfgOnly;
-   filesystemSetGeometryFromCfgOnly(cfgOnly);
+   scsiDrivePolicy.geometryFromCfgOnly = cfgOnly;
+   filesystemSetDrivePolicy(&scsiDrivePolicy);
 }
 
 bool scsiGeometryFromCfgOnly(void)
 {
-   return scsiGeometryCfgOnly;
+   return scsiDrivePolicy.geometryFromCfgOnly;
 }
 
 // DriveGeometry=Auto or CFG, any case.  No value is Auto; an unknown one is
