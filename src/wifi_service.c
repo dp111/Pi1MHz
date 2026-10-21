@@ -442,11 +442,12 @@ static void response_printf(uint32_t cp, const char *format, ...)
    response_string(cp, value);
 }
 
+/* 16 bytes (lwIP's IP4ADDR_STRLEN_MAX): "255.255.255.255" and its NUL. */
 static void ip_text(char out[16], const wifi_ipv4_addr_t *ip)
 {
-   (void)snprintf(out, 16u, "%u.%u.%u.%u", (unsigned)ip->octets[0],
-                  (unsigned)ip->octets[1], (unsigned)ip->octets[2],
-                  (unsigned)ip->octets[3]);
+   ip4_addr_t a;
+   IP4_ADDR(&a, ip->octets[0], ip->octets[1], ip->octets[2], ip->octets[3]);
+   (void)ip4addr_ntoa_r(&a, out, 16);
 }
 
 static bool two_strings(uint32_t start, const char **first, const char **second)
@@ -545,9 +546,7 @@ static uint8_t wifi_ifcfg(uint32_t cp)
       intentionally contains no address in DHCP mode.  Report the netif so
       *IFCFG changes from zeroes as soon as JOIN has obtained its lease. */
    if (radio.link_up && live != NULL && live->netif_added) {
-      const ip4_addr_t *live_ip = netif_ip4_addr(&live->netif);
-      (void)snprintf(ip, sizeof ip, "%u.%u.%u.%u", ip4_addr1(live_ip),
-                     ip4_addr2(live_ip), ip4_addr3(live_ip), ip4_addr4(live_ip));
+      (void)ip4addr_ntoa_r(netif_ip4_addr(&live->netif), ip, (int)sizeof ip);
    }
    (void)sdio_runtime_get_chip_mac(mac);
    /* Function 18 is a public ElkWiFi ABI, not the Pi diagnostic surface.
@@ -570,9 +569,9 @@ static uint8_t wifi_online(uint32_t cp)
    if (radio.link_up && live != NULL && live->netif_added) {
       const ip4_addr_t *address = netif_ip4_addr(&live->netif);
       if (!ip4_addr_isany_val(*address)) {
-         response_printf(cp, "ONLINE %u.%u.%u.%u\r\n",
-                         ip4_addr1(address), ip4_addr2(address),
-                         ip4_addr3(address), ip4_addr4(address));
+         char text[16];
+         (void)ip4addr_ntoa_r(address, text, (int)sizeof text);
+         response_printf(cp, "ONLINE %s\r\n", text);
          return WIFI_SVC_OK;
       }
    }
