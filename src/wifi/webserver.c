@@ -42,6 +42,7 @@
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
+#include "../rpi/hwrng.h"             /* the digest-auth secret */
 #include "../Pi1MHz.h"
 #include "../rpi/asm-helpers.h"
 #include "../AUN/aun_emulator.h"
@@ -598,13 +599,16 @@ static void ws_copy_slot_release(const ws_conn_t *c)
 /* Rolling digest-auth nonce.  Regenerated lazily once it crosses
    WS_NONCE_MAX_AGE_US; clients are challenged with stale=true and
    re-authenticate transparently after that.  The server-side secret is
-   initialised once from the system timer so nonces are unpredictable
-   across reboots. */
+   128 bits from the hardware RNG (ws_seed_secret), so nonces cannot be
+   predicted. */
+#define WS_SECRET_WORDS        4u
+#define WS_SECRET_TRIES        8u    /* hwrng attempts before settling for the fallback */
 static char            g_ws_nonce[MD5_HEX_LEN + 1u];
 static uint32_t        g_ws_nonce_issued_us;
 static uint32_t        g_ws_nonce_counter;
-static uint32_t        g_ws_nonce_secret;
+static uint32_t        g_ws_nonce_secret[WS_SECRET_WORDS];
 static bool            g_ws_nonce_secret_initialised;
+static uint8_t         g_ws_nonce_secret_tries;
 
 static void ws_set_error(const char *message)
 {
@@ -1489,41 +1493,54 @@ static bool ws_digest_enabled(void)
        && cfg->webdav_password[0] != '\0';
 }
 
-/* Mix the chip's WiFi MAC plus the system timer into the secret on
-   first use.  RPI_GetSystemTime at boot is highly predictable
-   (a few hundred ms) on its own, so an attacker who could time the
-   first 401 challenge could guess the secret to within a few k of
-   values.  The chip MAC (read once from cur_etheraddr by
-   sdio_runtime_get_chip_mac) is 24 bits of board-OTP entropy on top
-   of that, which is enough to push the search space out of trivial
-   range.  Still NOT cryptographically strong - digest auth over
-   plain HTTP isn't secret anyway - but materially harder. */
-static uint32_t ws_seed_secret(void)
+/* Fill the secret from the hardware RNG; true if every word came from it.
+   The timer and the chip MAC alone are predictable - the timer at boot to a
+   few hundred ms, the MAC is printed on the board's network traffic - so an
+   attacker who could time the first 401 challenge could search the whole
+   secret offline.  hwrng_start runs in webserver_init, so the generator's
+   warm-up is long over by the first challenge; a word it cannot give within
+   WS_RNG_WAIT_US (warm-up not over, or a stopped generator) falls back to
+   the old timer and MAC mix for that word, and the caller asks again at
+   the next refresh, up to WS_SECRET_TRIES times.  Re-seeding is harmless:
+   an issued nonce is checked against the stored string, not recomputed. */
+#define WS_RNG_WAIT_US 1000u
+static bool ws_seed_secret(void)
 {
    uint8_t  mac[6] = { 0u, 0u, 0u, 0u, 0u, 0u };
-   uint32_t s = RPI_GetSystemTime();
+   uint32_t fallback;
+   bool     all_rng = true;
+
    (void)sdio_runtime_get_chip_mac(mac);
-   s ^= ((uint32_t)mac[0] <<  0)
-      | ((uint32_t)mac[1] <<  8)
-      | ((uint32_t)mac[2] << 16)
-      | ((uint32_t)mac[3] << 24);
-   s ^= ((uint32_t)mac[4] <<  0) | ((uint32_t)mac[5] << 16);
-   s ^= 0xA5A5A5A5u;
-   return s;
+   fallback = ((uint32_t)mac[0] <<  0)
+            | ((uint32_t)mac[1] <<  8)
+            | ((uint32_t)mac[2] << 16)
+            | ((uint32_t)mac[3] << 24);
+   fallback ^= ((uint32_t)mac[4] <<  0) | ((uint32_t)mac[5] << 16);
+   fallback ^= 0xA5A5A5A5u;
+
+   for (uint32_t i = 0u; i < WS_SECRET_WORDS; i++) {
+      uint32_t w;
+      if (hwrng_word(&w, WS_RNG_WAIT_US) != 0) {
+         w = fallback ^ RPI_GetSystemTime() ^ (i * 0x9E3779B9u);
+         all_rng = false;
+      }
+      g_ws_nonce_secret[i] = w;
+   }
+   return all_rng;
 }
 
 static void ws_digest_refresh_nonce(void)
 {
    uint32_t now;
-   uint8_t  seed[12];
-   const void *parts[1] = { seed };
-   size_t      lens[1]  = { sizeof seed };
+   const void *parts[3] = { &now, g_ws_nonce_secret, &g_ws_nonce_counter };
+   size_t      lens[3]  = { sizeof now, sizeof g_ws_nonce_secret,
+                            sizeof g_ws_nonce_counter };
 
    now = RPI_GetSystemTime();
 
-   if (!g_ws_nonce_secret_initialised) {
-      g_ws_nonce_secret = ws_seed_secret();
-      g_ws_nonce_secret_initialised = true;
+   if (!g_ws_nonce_secret_initialised && g_ws_nonce_secret_tries < WS_SECRET_TRIES) {
+      g_ws_nonce_secret_tries++;
+      g_ws_nonce_secret_initialised = ws_seed_secret();
    }
 
    if (g_ws_nonce[0] != '\0'
@@ -1531,20 +1548,7 @@ static void ws_digest_refresh_nonce(void)
       return;
 
    ++g_ws_nonce_counter;
-   seed[ 0] = (uint8_t)(now                  );
-   seed[ 1] = (uint8_t)(now >>  8            );
-   seed[ 2] = (uint8_t)(now >> 16            );
-   seed[ 3] = (uint8_t)(now >> 24            );
-   seed[ 4] = (uint8_t)(g_ws_nonce_secret    );
-   seed[ 5] = (uint8_t)(g_ws_nonce_secret >>  8);
-   seed[ 6] = (uint8_t)(g_ws_nonce_secret >> 16);
-   seed[ 7] = (uint8_t)(g_ws_nonce_secret >> 24);
-   seed[ 8] = (uint8_t)(g_ws_nonce_counter   );
-   seed[ 9] = (uint8_t)(g_ws_nonce_counter >>  8);
-   seed[10] = (uint8_t)(g_ws_nonce_counter >> 16);
-   seed[11] = (uint8_t)(g_ws_nonce_counter >> 24);
-
-   md5_hex_cat(g_ws_nonce, parts, lens, 1u);
+   md5_hex_cat(g_ws_nonce, parts, lens, 3u);
    g_ws_nonce[MD5_HEX_LEN] = '\0';
    g_ws_nonce_issued_us = now;
 }
@@ -6590,12 +6594,12 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
    /* Real lock state is not persisted (the chip is single-user), but
       the token still wants to be unguessable so a client that uses
       it in If: headers doesn't trivially collide with a different
-      session.  Mix in the chip MAC and a bumped counter on top of
-      the system timer, the same way ws_digest_refresh_nonce does. */
+      session.  Mix the digest secret's RNG words and a bumped counter
+      into the system timer. */
    ws_digest_refresh_nonce();   /* ensures g_ws_nonce_secret is set */
    ++g_ws_nonce_counter;
-   a = RPI_GetSystemTime() ^ g_ws_nonce_secret;
-   b = g_ws_nonce_counter ^ (g_ws_nonce_secret >> 16) ^ (g_ws_nonce_secret << 16);
+   a = RPI_GetSystemTime() ^ g_ws_nonce_secret[0];
+   b = g_ws_nonce_counter ^ g_ws_nonce_secret[1];
    snprintf(token, sizeof token,
             "opaquelocktoken:%08lx-%08lx",
             (unsigned long)a, (unsigned long)b);
@@ -7727,6 +7731,7 @@ void webserver_init(void)
 
    g_ws_ready = false;
    ws_set_error(NULL);
+   hwrng_start();          /* warm up now: the digest secret (ws_seed_secret) wants it */
 
    if (g_ws_listener != NULL) {
       tcp_arg(g_ws_listener, NULL);
