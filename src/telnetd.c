@@ -137,6 +137,7 @@ static uint32_t  g_start_us;
    the terminal drawn again from the model, since a console that shrinks moves its rows. */
 #define NAWS_WAIT_US 500000u
 static uint8_t  g_win_gen;                      /* the last size acted on (tnd_in_t's win_gen) */
+static uint8_t  g_mode_gen;                     /* the client's last line or character mode acted on (tnd_in_t's mode_gen) */
 static bool     g_win_first;                    /* the first size has been acted on */
 
 /* A new session (once logged in) is "connecting" for a moment: under the boot banners the line
@@ -171,7 +172,7 @@ static unsigned long g_drop_obuf;
 static int       g_drop_rxblk;
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
-static bool      g_esc_cut;              /* a lone ESC is waiting behind the backlog: the keys before it go */
+static bool      g_esc_cut;              /* an ESCAPE or BREAK is waiting behind the backlog: the keys before it go */
 static uint32_t  g_recv_us;              /* when client data last came */
 /* Client data taken from lwIP but not yet turned into keys, copied out of its pbufs as it comes.
    Holding the pbufs themselves held lwIP's receive pool: the window is 64 KB, but a client sending
@@ -525,13 +526,13 @@ static void deliver_key(uint8_t k)
    }
 }
 
-/* A key from the client.  While a lone ESC is cut through the backlog (pend_consume) the keys
-   before it are thrown away; the ESC itself is delivered, which empties the ring and the Beeb's
-   buffer as ESCAPE does. */
+/* A key from the client.  While an ESCAPE or BREAK is cut through the backlog (pend_consume)
+   the keys before it are thrown away; it is delivered itself, which empties the ring and the
+   Beeb's buffer. */
 static void take_key(uint8_t k)
 {
    if (g_esc_cut) {
-      if (k != TND_KEY_ESCAPE)
+      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK)
          return;
       g_esc_cut = false;
       g_lit_next = false;
@@ -555,7 +556,9 @@ static void client_byte(uint8_t c, uint32_t now_us)
    client data not yet read?  ESCAPE is meant to cut through type-ahead, but what is still in TCP
    waits behind a full key ring: a client sending faster than the Beeb takes keys (a paste, a
    stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  Telnet
-   commands are skipped; an ESC that ends the data counts once nothing more has come for 300 ms. */
+   commands are skipped; an ESC that ends the data counts once nothing more has come for 300 ms.
+   The same for BREAK (F12, ESC [ 2 4 ~, or IAC BRK) and IAC IP (ESCAPE): a Beeb stuck in a
+   program that reads no keys has a full ring, and they are how it is got back. */
 static bool esc_ahead(uint32_t now_us)
 {
    unsigned st = 0u;
@@ -569,15 +572,24 @@ static bool esc_ahead(uint32_t now_us)
             else if (c == 27u) st = 4u;
             break;
          case 1:                                  /* after IAC */
+            if (c == 244u || c == 243u)           /* IP, BRK */
+               return true;
             st = (c == 250u) ? 2u : (c >= 251u && c <= 254u) ? 3u : 0u;
             break;
          case 2: if (c == 0xFFu) st = 5u; break;  /* in a subnegotiation */
          case 5: st = (c == 240u) ? 0u : 2u; break;
          case 3: st = 0u; break;                  /* the option of WILL, WONT, DO, DONT */
+         case 6: st = (c == '2') ? 7u : 0u; break;   /* after ESC [: F12 is ESC [ 2 4 ~ */
+         case 7: st = (c == '4') ? 8u : 0u; break;
+         case 8:
+            if (c == '~')
+               return true;
+            st = 0u;
+            break;
          default:                                 /* after ESC */
             if (c != '[' && c != 'O' && c != 'P')   /* CSI, SS3, DCS: sequences, not the ESCAPE key */
                return true;
-            st = 0u;
+            st = (c == '[' && !g_in.raw) ? 6u : 0u;
             break;
          }
       }
@@ -614,22 +626,49 @@ static void sil_note(uint8_t c)
    g_sil[i].y = g_out.cy;
 }
 
-/* What the Beeb printed since its last line end, as plain text: what a teletype joining now
-   would show of the line (a prompt such as ">"), for when the model does not know the cursor's
-   row (no CLS or MODE seen since the Pi started).  A VDU code's parameters are not text. */
-static char    g_tline[TND_COLS_MAX + 1u];
-static uint8_t g_tlen;
+/* What the Beeb printed since its last line end: its prompt and what has been typed after it, over
+   as many rows as it wraps (the Beeb wraps without a line end) - what a teletype is shown of the
+   line when it joins, or when the client changes between line and character mode.  DELETE's echo
+   takes a character off; a cursor move (copy editing) or a line longer than the buffer makes it
+   no longer the line (g_tline_ok false: the model's cursor row is used).  A VDU code's parameters
+   are not text. */
+#define TLINE_MAX 320u                          /* an input line (255) and its prompt */
+static uint8_t  g_tline[TLINE_MAX];
+static uint16_t g_tlen;
+static bool     g_tline_ok;                     /* nothing seen yet: not known */
 
 static void tline_byte(uint8_t c)
 {
    if (g_out.code != 0u)
       return;
-   if (c >= 32u && c < 127u) {
-      if (g_tlen < TND_COLS_MAX)
-         g_tline[g_tlen++] = (char)c;
-   } else if (c != 7u) {
-      g_tlen = 0u;
+   if (c >= 32u && c != 127u && c != 0xFFu) {
+      if (g_tlen < TLINE_MAX)
+         g_tline[g_tlen++] = c;
+      else
+         g_tline_ok = false;
+   } else if (c == 127u) {                      /* DELETE */
+      if (g_tlen != 0u)
+         g_tlen--;
+      else
+         g_tline_ok = false;
+   } else if (c == 10u || c == 13u || c == 12u || c == 22u || c == 30u || c == 31u) {
+      g_tlen = 0u;                              /* a line end, CLS, MODE, home, TAB(x,y): a new line */
+      g_tline_ok = true;
+   } else if (c == 8u || c == 9u || c == 11u) {
+      g_tline_ok = false;                       /* the cursor moved along it */
    }
+}
+
+/* A teletype is shown the Beeb's line (usually its prompt, and what has been typed), so it does not
+   look dead; no key is sent to the Beeb for it. */
+static void o_beeb_line(void)
+{
+   char cl[TND_COLS_MAX + 1u];
+
+   if (g_tline_ok)
+      o_put(g_tline, g_tlen);
+   else if (tnd_out_cursor_line(&g_out, cl, sizeof cl) != 0u)
+      o_str(cl);
 }
 
 static void beeb_follow(uint8_t c)
@@ -699,7 +738,7 @@ again:
    return;
 
 full:
-   if (g_stage == S_LIVE && esc_ahead(now)) {   /* a lone ESC behind the backlog: cut through to it */
+   if (g_stage == S_LIVE && esc_ahead(now)) {   /* ESCAPE or BREAK behind the backlog: cut through to it */
       g_esc_cut = true;
       goto again;
    }
@@ -839,6 +878,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_ckq_head = g_ckq_tail;                     /* a new terminal: no copy keys waiting */
    g_kgen_seen = serial_redirect_key_gen();
    g_win_gen = 0u;
+   g_mode_gen = 0u;
    g_win_first = false;
    tnd_out_session(&g_out);                     /* the model has been following the Beeb all along */
    tnd_out_tek(&g_out, false);                  /* until this terminal says it is xterm */
@@ -1190,6 +1230,27 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    }
    bool naws_wait = !g_win_first && !g_in.naws_no && (now_us - g_start_us) < NAWS_WAIT_US;
 
+   /* The client changed between line and character mode (Linux telnet's "mode line"): its own
+      "telnet>" prompt is where the Beeb's line was, and nothing more comes until the Beeb prints.
+      Shown again: an ANSI terminal drawn again by position, a teletype the line (its prompt and
+      what was typed of it before the change). */
+   if (g_pcb != NULL && g_stage == S_LIVE && g_in.mode_gen != g_mode_gen && o_room() >= TND_COPY_MAX + TLINE_MAX + 16u) {
+      g_mode_gen = g_in.mode_gen;
+      if (!g_connecting && !g_repaint) {
+         if (g_ansi) {
+            uint8_t rb[TND_COPY_MAX];
+            size_t  rn = tnd_out_redraw(&g_out, rb);
+            if (rn != 0u) {
+               o_put(rb, rn);
+               o_put(rb, tnd_out_colours(&g_out, rb));
+            }
+         } else {
+            o_str("\r");
+            o_beeb_line();
+         }
+      }
+   }
+
    /* Connecting: a dot now and then; done once the minimum is over and the client has said its
       window size (or not, in time) - then a too-small window is told so for a while, and then
       the terminal is cleared and the Beeb's screen drawn in place. */
@@ -1240,16 +1301,8 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
                g_att = true;
             }
          } else {
-            /* Teletype mode: the line the Beeb is on, from the model (usually its prompt), so the
-               session does not start blank; no key is sent to the Beeb for it. */
-            char cl[TND_COLS_MAX + 1u];
-            o_str("\r\n");
-            if (tnd_out_cursor_line(&g_out, cl, sizeof cl) != 0u) {
-               o_str(cl);
-            } else if (g_tlen != 0u) {           /* the model does not know the row: the text since the line end */
-               g_tline[g_tlen] = 0;
-               o_str(g_tline);
-            }
+            o_str("\r\n");                       /* teletype mode: the line the Beeb is on */
+            o_beeb_line();
          }
       }
    }

@@ -365,6 +365,12 @@ static void test_break_key(void)
    FEED(&s, "\x1b[21~\x1b[23~");
    CHECK(nkeys == 2 && keys[0] == 0x80 && keys[1] == TND_KEY_REFRESH, "F10 is f0 and F11 is the redraw request");
    in_reset();
+   FEED(&s, "ab\xff\xf3" "c");
+   CHECK(nkeys == 4 && keys[2] == TND_KEY_BREAK && keys[3] == 'c', "IAC BRK is the BREAK request"); if (nkeys != 4) dump();
+   in_reset();
+   FEED(&s, "ab\xff\xf4" "c");
+   CHECK(nkeys == 4 && keys[2] == TND_KEY_ESCAPE && keys[3] == 'c', "IAC IP (Ctrl-C in line mode) is ESCAPE"); if (nkeys != 4) dump();
+   in_reset();
    FEED(&s, "\x1b[6~");
    CHECK(nkeys == 1 && keys[0] == TND_KEY_SHIFT, "Page Down is SHIFT, for paged mode");
    in_reset();
@@ -426,8 +432,32 @@ static void test_negotiation(void)
    CHECK(strlen(s.ttype) == sizeof s.ttype - 1u && strncmp(s.ttype, "XTERM-256COLOR", 14) == 0, "a long name is cut, still ended");
 
    in_reset();
-   FEED(&s, "\xff\xfe\x01\xff\xfc\x01");
-   CHECK(nreply == 0, "DONT and WONT need no reply");
+   FEED(&s, "\xff\xfc\x01\xff\xfc\x03");
+   CHECK(nreply == 0, "WONT ECHO, WONT SGA need no reply");
+
+   /* Line mode (Linux telnet's "mode line"): DONT SGA and DONT ECHO, answered WONT once each and
+      counted; character mode again: DO, answered WILL. */
+   in_reset();
+   uint8_t gen0 = s.mode_gen;
+   FEED(&s, "\xff\xfe\x03\xff\xfe\x01\xff\xfe\x01");
+   static const uint8_t wonts[] = { 255, 252, 3, 255, 252, 1 };
+   CHECK(nreply == 6 && memcmp(reply, wonts, 6) == 0 && s.echo_off && s.sga_off, "DONT SGA, DONT ECHO: WONT each, once"); if (nreply != 6) dump();
+   CHECK((uint8_t)(s.mode_gen - gen0) == 2u, "line mode: counted (%u)", (unsigned)(uint8_t)(s.mode_gen - gen0));
+   in_reset();
+   FEED(&s, "\xff\xfd\x01\xff\xfd\x03\xff\xfd\x01");
+   static const uint8_t wills[] = { 255, 251, 1, 255, 251, 3 };
+   CHECK(nreply == 6 && memcmp(reply, wills, 6) == 0 && !s.echo_off && !s.sga_off, "DO ECHO, DO SGA again: WILL each, once"); if (nreply != 6) dump();
+   CHECK((uint8_t)(s.mode_gen - gen0) == 4u, "character mode: counted");
+   in_reset();
+   FEED(&s, "\xff\xfb\x01");
+   static const uint8_t dont1[] = { 255, 254, 1 };
+   CHECK(nreply == 3 && memcmp(reply, dont1, 3) == 0, "WILL ECHO from the client: refused (DONT)");
+
+   /* After IP a client flushes its output until DO TIMING-MARK is answered: every time. */
+   in_reset();
+   FEED(&s, "\xff\xfd\x06\xff\xfd\x06");
+   static const uint8_t wont6[] = { 255, 252, 6, 255, 252, 6 };
+   CHECK(nreply == 6 && memcmp(reply, wont6, 6) == 0, "DO TM: WONT TM, every time"); if (nreply != 6) dump();
 
    /* Subnegotiation is dropped entirely, even with an escaped 0xFF inside. */
    in_reset();

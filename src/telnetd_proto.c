@@ -20,7 +20,10 @@
      the pound sign           -> 96    (UTF-8 C2 A3, or Latin-1 A3)
      other bytes 0x80 and up  -> dropped
   Telnet negotiation is answered once per option, so a peer cannot start a loop:
-  WILL ECHO/SGA and DO ECHO/SGA are ours; anything else is refused.
+  WILL ECHO/SGA and DO ECHO/SGA are ours; anything else is refused.  DONT ECHO
+  or DONT SGA (a client's line mode) is answered WONT, and DO again WILL; DO
+  TIMING-MARK, which a client sends after an IP and flushes until answered, is
+  answered WONT every time.
 
   Beeb -> terminal.  The Beeb's RS423 output (*FX3,1) is the VDU byte stream:
   text, plus control codes some of which take parameter bytes.  A terminal gets
@@ -263,6 +266,14 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
          s->state = I_SB;
          s->nsb = 0u;
          break;
+      case TN_IP:                               /* Interrupt Process: the client's Ctrl-C in its line mode */
+         s->state = I_NORMAL;
+         keys[0] = TND_KEY_ESCAPE;
+         return 1u;
+      case TN_BRK:                              /* "send brk": the BREAK key */
+         s->state = I_NORMAL;
+         keys[0] = TND_KEY_BREAK;
+         return 1u;
       default:                                  /* NOP, AYT, GA, ... */
          s->state = I_NORMAL;
          break;
@@ -283,8 +294,21 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
          }
          return 0u;
       }
-      if (s->cmd == TN_DO) {
-         if (c != TN_OPT_ECHO && c != TN_OPT_SGA && !seen(s->seen_do, c)) {
+      if ((s->cmd == TN_DO || s->cmd == TN_DONT) && (c == TN_OPT_ECHO || c == TN_OPT_SGA)) {   /* ours: a change is answered, an agreement is not */
+         bool *off = (c == TN_OPT_ECHO) ? &s->echo_off : &s->sga_off;
+         if ((s->cmd == TN_DONT && !*off) || (s->cmd == TN_DO && *off)) {
+            *off = !*off;
+            s->mode_gen++;
+            rep[0] = TN_IAC; rep[1] = *off ? TN_WONT : TN_WILL; rep[2] = c;
+            *replen = 3u;
+         }
+         return 0u;
+      }
+      if (s->cmd == TN_DO && c == TND_OPT_TM) {      /* every time: the client flushes until it is answered */
+         rep[0] = TN_IAC; rep[1] = TN_WONT; rep[2] = c;
+         *replen = 3u;
+      } else if (s->cmd == TN_DO) {
+         if (!seen(s->seen_do, c)) {
             mark(s->seen_do, c);
             rep[0] = TN_IAC; rep[1] = TN_WONT; rep[2] = c;
             *replen = 3u;

@@ -50,6 +50,7 @@
 #define TND_KEY_LIT    0xFAu
 #define TND_IN_REPLY   6u      /* most negotiation bytes one input byte needs (IAC SB TTYPE SEND IAC SE) */
 #define TND_GREETING_LEN 15u
+#define TND_OPT_TM     6u      /* telnet option 6: timing mark (RFC 860), asked for after an IP to end a flush */
 #define TND_OPT_BINARY 0u      /* telnet option 0: an 8-bit path (RFC 856), how a client asks for teletype mode */
 #define TND_OPT_TTYPE  24u     /* telnet option 24: the client's terminal type (RFC 1091) */
 #define TND_OPT_NAWS   31u     /* telnet option 31: the client's window size (RFC 1073) */
@@ -89,6 +90,12 @@ typedef struct {
    bool     notelnet;           /* set by the daemon: not even IAC */
    bool     bin_in;             /* the client will send binary (it said WILL BINARY, we said DO) */
    bool     bin_out;            /* the client asked us to send binary (DO BINARY, we said WILL) */
+   /* A client's line mode (Linux telnet's "mode line") is DONT ECHO (and DONT SGA), its character
+      mode DO ECHO again: each is answered once per change, and mode_gen counts the changes, so the
+      daemon can show the Beeb's line again (the client's own "telnet>" prompt is over it). */
+   bool     echo_off;           /* the client said DONT ECHO, we said WONT */
+   bool     sga_off;            /* the client said DONT SGA, we said WONT */
+   uint8_t  mode_gen;
 } tnd_in_t;
 
 void   tnd_in_reset(tnd_in_t *s);
@@ -114,7 +121,8 @@ size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS]);
    (what OSBYTE 138 / INSV into buffer 0 takes): cursor left/right/down/up are
    140/141/142/143 and COPY is 139 (GET returns 136-139 and 135 under *FX4,1:
    the MOS subtracts 4), DELETE is 127, f0-f9 are 128-137, the pound sign is 96.
-   ESC and Ctrl-C are TND_KEY_ESCAPE. */
+   ESC and Ctrl-C are TND_KEY_ESCAPE, and so is telnet's IAC IP (Ctrl-C in a client's line mode,
+   where its keys wait for RETURN); IAC BRK ("send brk") is TND_KEY_BREAK, as F12 is. */
 
 /* ---- Beeb -> terminal ---------------------------------------------------- */
 
