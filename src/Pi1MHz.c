@@ -1166,6 +1166,13 @@ _Noreturn void kernel_main(void)
             Pi1MHz_break.release_us = RPI_GetSystemTime();   /* nRST seen high again: the MOS is running */
          oldreset = false;
       }
+      /* One peripheral clock read per pass, published for the pollers whose
+         deadlines are measured in milliseconds or longer - see
+         Pi1MHz_now_us.  Anything needing sub-pass precision (teletext field
+         phases, SDIO command timeouts) still reads the timer itself.
+         Both loops below need it: the profiler's froze it at 0, which
+         stopped the watchdog kick and every poller gated on it. */
+      Pi1MHz_now_us = RPI_GetSystemTime();
       /* One system-timer read per poll, not two.  RPI_GetSystemTime() is a
          Strongly-Ordered peripheral load the core waits on, and each poll's
          "after" timestamp is the next poll's "before", so carrying it over
@@ -1193,12 +1200,6 @@ _Noreturn void kernel_main(void)
          }
       }
 #else
-      /* One peripheral clock read per pass, published for the pollers whose
-         deadlines are measured in milliseconds or longer - see
-         Pi1MHz_now_us.  Anything needing sub-pass precision (teletext field
-         phases, SDIO command timeouts) still reads the timer itself. */
-      Pi1MHz_now_us = RPI_GetSystemTime();
-
 #ifdef DEBUG
       uint32_t before_ticks = poll_ticks();
 #endif
