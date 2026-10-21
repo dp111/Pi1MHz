@@ -2524,6 +2524,20 @@ bool filesystemPageControlCCS(uint8_t lunNumber)
    return (s != NULL) && (strncasecmp(s, "CCS", 3) == 0);
 }
 
+/* A page's mask applied: out[i] takes the sent byte's changeable bits and
+   the old byte's others, for the first `count` bytes (the caller's bound:
+   what was sent and what the mask covers).  An old byte past oldLength is
+   0.  out may be old (a page updated in place).  Returns count. */
+static size_t filesystemApplyMask(char * out, const uint8_t * sent, const char * old, size_t oldLength,
+                                  const char * mask, size_t count)
+{
+   for (size_t i = 0; i < count; i++) {
+      uint8_t was = (i < oldLength) ? (uint8_t)old[i] : 0u;
+      out[i] = (char)((sent[i] & (uint8_t)mask[i]) | (was & (uint8_t)~mask[i]));
+   }
+   return count;
+}
+
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
 {
    int index = filesystemPagetoIndex(page);
@@ -2534,14 +2548,13 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    if (windex != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL
                     && filesystemState.keyvalues[lunNumber][windex].v.string != NULL)
       {
-         unsigned int i;
-         for ( i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
-         {
-            filesystemState.keyvalues[lunNumber][index].v.string[i] = (char) ( (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
-                      ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i])));
-         }
-         if (filesystemState.keyvalues[lunNumber][index].length < i)
-            filesystemState.keyvalues[lunNumber][index].length = i;
+         // onto the stored page, in place: the key is allocated to its maximum
+         parserkeyvalue *kv = &filesystemState.keyvalues[lunNumber][index];
+         const parserkeyvalue *mask = &filesystemState.keyvalues[lunNumber][windex];
+         size_t count = (len < mask->length) ? len : mask->length;
+         size_t i = filesystemApplyMask(kv->v.string, Buffer, kv->v.string, SIZE_MAX, mask->v.string, count);
+         if (kv->length < i)
+            kv->length = i;
          return 1;
       }
 
@@ -2690,9 +2703,9 @@ size_t filesystemModePageAfterSelect(uint8_t lunNumber, uint8_t page, const char
    size_t total = filesystemMergeOnto(page, base, baseLength, declared, received, Buffer, merged, mask == NULL, true);
 
    memcpy(out, merged, 256);
+   // onto the pending base, which may be shorter than the page
    if ((mask != NULL) && (base != NULL))
-      for (size_t i = 0; (i < total) && (i < maskLength); i++)
-         out[i] = (uint8_t)((merged[i] & (uint8_t)mask[i]) | ((i < baseLength ? (uint8_t)base[i] : 0u) & (uint8_t)~mask[i]));
+      filesystemApplyMask((char *)out, merged, base, baseLength, mask, (total < maskLength) ? total : maskLength);
    return total;
 }
 
