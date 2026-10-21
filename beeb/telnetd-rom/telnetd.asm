@@ -41,6 +41,17 @@
 \ never claimed.  A, X and Y are given back as they came - the MOS keeps its
 \ slot number in X, and a ROM that does not claim the call must not change Y.
 \
+\ A MASTER'S SOFT BREAK.  The Master's MOS sends service 1 (and 2, &21-&24) only on a
+\ power-on or CTRL-BREAK: on a soft BREAK it keeps the workspace and skips them (MOS
+\ 3.50 &C09F, LDA &028D / BEQ), but resets the vectors all the same, so the session
+\ was lost on every BREAK.  It sends service &27 ("reset") on every reset, so after a
+\ soft one this hooks in there (build 23).  OS 1.20 sends 1 on every reset and no
+\ &27.  By &27 the MOS has started the second processor, so the Tube is left alone
+\ there; and with the vectors already in the stub (a MOS that sent 1 as well) nothing
+\ is done twice.  &27 goes to the ROMs from the top bank down, so a ROM above this one
+\ that hooks a vector there (VFS's trackerball interrupt) has done it first, and the
+\ hook is kept and gone on to like any other.
+\
 \ ROM FILING SYSTEM.  While the cassette or ROM filing system runs it owns the 6850,
 \ and the MOS sends nothing to RS423 (OS 1.2 &E0DC): what *CAT and friends print is
 \ on the Beeb's screen only.  Every ROM is offered service call &0D for each such
@@ -57,7 +68,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 22           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 23           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -133,7 +144,10 @@ GUARD &C000
                 tay
                 pla
                 rts
-.notrfs         cmp #1
+.notrfs         cmp #&27
+                bne not27
+                jmp reset27                 \ a Master's reset: see A MASTER'S SOFT BREAK
+.not27          cmp #1
                 bne done
                 pha                         \ the MOS wants A, X and Y back
                 txa
@@ -198,6 +212,45 @@ GUARD &C000
                 tax
                 pla
 .done           rts
+
+\ Service &27, a Master's reset: after a soft BREAK only (service 1 did the rest), and not
+\ when the vectors are in the stub already.  As service 1 from there on, but for the
+\ second processor's reset pulse: by now the MOS has started the Tube.
+.reset27        pha                         \ the MOS wants A, X and Y back
+                txa
+                pha
+                tya
+                pha
+                lda #&FD                    \ how did this reset start?
+                ldx #0
+                ldy #&FF
+                jsr OSBYTE
+                cpx #SOFT_BREAK
+                bne r27no                   \ power-on or CTRL-BREAK: service 1 has run
+                jsr instub
+                beq r27no                   \ hooked in already (before unstale, which would take it for stale)
+                jsr unstale
+                jsr stubok
+                bne r27no
+                lda TELNETON
+                and #1
+                beq r27no
+                jmp notsoft
+.r27no          jmp nopi
+
+\ Z set if both vectors are in the stub: INSV at it, IRQ1V 12 into it.  A is not kept.
+.instub         lda INSV+1
+                cmp #>STUB
+                bne isx
+                lda INSV
+                cmp #<STUB
+                bne isx
+                lda IRQ1V+1
+                cmp #>STUB
+                bne isx
+                lda IRQ1V
+                cmp #<(STUB+&0C)
+.isx            rts
 
 \ A software BREAK (CALL !-4, the reset vector) can leave the interrupt vector pointing
 \ at the stub the helper installed before it, which the helper takes for another

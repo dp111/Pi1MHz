@@ -84,7 +84,9 @@ daemon in on every reset. The image is `firmware/Pi1MHz/telnetd.rom`. Burn it in
 an EPROM or a flash ROM bank, or put it on the SD card (`/Pi1MHz/telnetd.rom`) and
 load it into sideways RAM the way you load any ROM image, then press CTRL-BREAK. It
 stays there across BREAK, and from then on every BREAK prints `TelnetD` and the
-session is back.
+session is back. (Before build 23 a plain BREAK on a Master lost the session until
+CTRL-BREAK: the Master's MOS skips the reset call the ROM answered on a soft BREAK, so
+the ROM now also answers the one it sends on every reset.)
 
 - **It needs nothing from the SD card.** The ROM finds the Pi's serial stub at its
   usual place (`&FCCC`) and hooks the Beeb's keyboard and RS423 output into it

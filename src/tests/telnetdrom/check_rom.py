@@ -673,6 +673,41 @@ def main(path):
         check(r["writes"] == want, f"reset type {rt}: the parasite reset and Tube clear pulse {'given' if want else 'not given'} ({r['writes']})")
         check(r["regs"] == (1, 9, 2) and r["sp_after"] == r["sp_before"], f"reset type {rt}: registers and stack given back")
 
+    # 1d. build 23: a Master's soft BREAK sends no service 1 (MOS 3.50 &C09F skips it) but resets the
+    # vectors; service &27, sent on every reset, hooks in after a soft one - as service 1, but with no
+    # second-processor pulse (the MOS has started the Tube by then) - and does nothing after a power-on
+    # or CTRL-BREAK (service 1 has run) or with the vectors in the stub already
+    vw = (0x22A, 0x22B, 0x204, 0x205, 0xFEE0)
+    r = call(rom, 0x27, 9, 2, pi_after=0, stub_after=0, reset_type=0, pokes=stub, watch=vw + (STUBA + 0x28,))
+    m = r["mem"]._subject
+    check((m[0x22A], m[0x22B], m[0x204], m[0x205]) == (0xCC, 0xFC, 0xD8, 0xFC)
+          and (m[STUBA + 0x0A], m[STUBA + 0x0B], m[STUBA + 0x0D], m[STUBA + 0x0E]) == (0x34, 0x12, 0x78, 0x56),
+          f"service &27 after a soft BREAK: hooked in, the old vectors kept: INSV &{m[0x22B]:02X}{m[0x22A]:02X} IRQ1V &{m[0x205]:02X}{m[0x204]:02X}")
+    check((3, 1, 0) in r["osbytes"] and r["helper_writes"] == [] and not any(a_ == 0xFEE0 for a_, v in r["writes"]),
+          f"... *FX3,1, no helper, and no Tube pulse: {r['osbytes']} {[w for w in r['writes'] if w[0] == 0xFEE0]}")
+    check([v for a_, v in r["writes"] if a_ == STUBA + 0x28][-1:] == [0x26], "... and the Pi told it was a reset (&26)")
+    check(r["regs"] == (0x27, 9, 2) and r["sp_after"] == r["sp_before"] and set(r["opcodes"]) <= ALLOWED,
+          f"... A, X, Y and the stack given back, NMOS opcodes only: {r['regs']}")
+    vfs = dict(stub)
+    vfs.update({0x204: 0x99, 0x205: 0x0D})        # VFS (a higher bank) hooked IRQ1V at &27 first
+    r = call(rom, 0x27, 9, 2, pi_after=0, stub_after=0, reset_type=0, pokes=vfs)
+    m = r["mem"]._subject
+    check((m[0x204], m[0x205]) == (0xD8, 0xFC) and (m[STUBA + 0x0D], m[STUBA + 0x0E]) == (0x99, 0x0D),
+          f"service &27 with VFS's &0D99 in IRQ1V: hooked in over it and goes on to it: kept &{m[STUBA + 0x0E]:02X}{m[STUBA + 0x0D]:02X}")
+    for rt in (1, 2):
+        r = call(rom, 0x27, 9, 2, pi_after=0, stub_after=0, reset_type=rt, pokes=stub, watch=vw)
+        check(r["writes"] == [] and r["osbytes"] == [(0xFD, 0, 0xFF)] and r["regs"] == (0x27, 9, 2) and r["sp_after"] == r["sp_before"],
+              f"service &27 after reset type {rt}: nothing (service 1 has run): {r['writes']} {r['osbytes']}")
+    ins = dict(stub)
+    ins.update({0x22A: 0xCC, 0x22B: 0xFC, 0x204: 0xD8, 0x205: 0xFC})
+    r = call(rom, 0x27, 9, 2, pi_after=0, stub_after=0, reset_type=0, pokes=ins, watch=vw + (STUBA + 0x28,))
+    check(r["writes"] == [] and (3, 1, 0) not in r["osbytes"] and r["regs"] == (0x27, 9, 2) and r["sp_after"] == r["sp_before"],
+          f"service &27 with the vectors in the stub already: nothing done twice: {r['writes']}")
+    for what, kw in (("telnetd off", dict(telnet_on=0)), ("stub moved", dict(stub_after=None))):
+        r = call(rom, 0x27, 9, 2, pi_after=0, reset_type=0, pokes=stub, watch=vw, **{"stub_after": 0, **kw})
+        check(r["writes"] == [] and r["regs"] == (0x27, 9, 2) and r["sp_after"] == r["sp_before"],
+              f"service &27 after a soft BREAK, {what}: nothing touched: {r['writes']}")
+
     # 2. power-on: the Pi comes up while the ROM waits, and the ROM hooks it in once
     for after in (0, 1, 7, WAIT_TURNS - 1):
         r = call(rom, 1, 9, 2, pi_after=after, reset_type=1)
