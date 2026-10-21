@@ -2112,7 +2112,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          // change (a remount or another ADFS directory), not at every start,
          // MODE SENSE or TRANSLATE; a release build prints nothing here, on
          // the SCSI command path.
-         filesystemGeometryFromImage(lunNumber);
+         filesytemdattoconfigGeometry(lunNumber);
 #ifdef DEBUG
          static uint32_t warned[MAX_LUNS];     // drive generation + 1 when said
          if (warned[lunNumber] != filesystemState.driveGeneration + 1u) {
@@ -2124,8 +2124,6 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
                       (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
          }
 #endif
-         if (!geometryFromCfgOnly)
-            filesystemLunToconfigGeometry(lunNumber);
       }
    }
 }
