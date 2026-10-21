@@ -83,8 +83,6 @@ extern int16_t g_y_pos_last2;
 
 //void fb_show_splash_screen(void);
 
-void fb_destroy(void);
-
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours);
 
 void fb_process_flash(void);
@@ -109,9 +107,6 @@ void fb_wait_for_vsync(void);
 
 screen_mode_t *fb_get_current_screen_mode(void);
 
-#if 0 /* no definition */
-void fb_set_vdu_device(vdu_device_t device);
-#endif
 
 int32_t fb_read_vdu_variable(vdu_variable_t v);
 
