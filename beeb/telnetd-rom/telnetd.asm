@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 20           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 21           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -295,13 +295,18 @@ GUARD &C000
                 ldy #0
                 jsr OSBYTE
                 ldx #0                      \ the name, as the helper prints it
-.instnm         lda romtitle,x
-                beq instnl
+                jsr prtitle
+                jmp OSNEWL
+.instx          rts
+
+\ Print the header's string at romtitle+X up to its 0, and leave X on the 0: the title
+\ (X=0) for install and *HELP, and the version after it for *HELP.
+.prtitle        lda romtitle,x
+                beq prtx
                 jsr OSWRCH
                 inx
-                bne instnm
-.instnl         jsr OSNEWL
-.instx          rts
+                bne prtitle
+.prtx           rts
 
 \ The two vectors into the stub, each unless it is there already: the vector it replaces
 \ is kept in the stub first (nothing runs it until the vector moves), and a vector that
@@ -964,13 +969,11 @@ VDUVARS = &0300
                 bne helpx
                 jsr OSNEWL
                 ldx #0
-.helplp         lda romtitle,x
-                bne helpch
-                lda #' '                    \ the 0 between the title and the version
-.helpch         jsr OSWRCH
+                jsr prtitle                 \ the title ...
+                lda #' '                    \ ... a space for the 0 between them ...
+                jsr OSWRCH
                 inx
-                cpx #(copyright - romtitle)
-                bne helplp
+                jsr prtitle                 \ ... and the version
                 jsr OSNEWL
 .helpx          pla
                 tay

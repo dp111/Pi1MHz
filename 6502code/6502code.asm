@@ -243,6 +243,33 @@ MACRO ESCOFF
 }
 ENDMACRO
 
+; local subroutine: blank the status row (row 23) of the explorer's screen,
+; leaving the cursor at its end.  expand as:  .clearline  BLANKROW (not CLEARLINE: CLEAR is a keyword)
+MACRO BLANKROW
+{
+    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
+    LDX #39 : LDA #' '
+.clearchar
+    JSR OSWRCH
+    DEX
+    BNE clearchar
+    RTS
+}
+ENDMACRO
+
+; send the VDU bytes from tab up to tabend (at most 255), in this page
+MACRO VDUTAB tab, tabend
+{
+    LDX #0
+.vduloop
+    LDA tab,X
+    JSR OSWRCH
+    INX
+    CPX #tabend-tab
+    BNE vduloop
+}
+ENDMACRO
+
 GUARD &FE00
 
 MACRO PAGERTS
@@ -792,13 +819,7 @@ ORG &FD00
     STA &0203
     LDA #0
     STA zp_fshand
-    LDX #0
-.vduloop
-    LDA vdutab,X
-    JSR OSWRCH
-    INX
-    CPX #vdutabend-vdutab
-    BNE vduloop
+    VDUTAB vdutab, vdutabend
     GOTOPAGE EXP_DIR, 1
 
 .stub
@@ -832,203 +853,180 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 19 : serial redirector - the RS423 buffers, fed and drained by the Pi
+; Helpers 19 and 20 : the Pi's serial stub hooked into INSV and IRQ1V
 ;
-; Hooks INSV (output buffer 2) and IRQ1V (input buffer 1) into the stub the
-; Pi keeps in FRED (src/serial_redirect.c has its layout), silences the
-; 6850's interrupt bits (its divider and format stay, so &FD03 hands a
-; working port back), and tells the Pi it may now raise nIRQ.  Entry &FD03
-; puts the vectors back; BREAK does too.  The stub's FRED offset is patched into
-; &FD07 by the Pi, so a relocated stub (Serial_addr=) needs no change here.
+; Both pages are this macro, expanded once each.  The stub is the Pi's, in
+; FRED (src/serial_redirect.c has its layout); the stub's FRED offset is
+; patched into &FD07 by the Pi (src/helpers.c), so a relocated stub
+; (Serial_addr=) needs no change here: that LDY # at &FD06 is also the first
+; instruction of the probe both entries call.  Entry &FD00 hooks, &FD03
+; unhooks; BREAK unhooks too.  Helper 19's page has no byte to spare.
+;
+; Each vector is taken on its own, as the TelnetD ROM's hookin does: one that
+; is the stub's already is left (and its stash kept: the stub must never call
+; itself); any other is stashed in the stub first - nothing runs the stub until
+; the vector moves - and then pointed at it.  An IRQ1V into FRED or JIM that is
+; not this stub is another program's hook (or a port: the RX gate's BIT reads
+; the old IRQ1V target on every interrupt), and nothing is done.  So a stub of
+; ours left in IRQ1V by a software BREAK is taken back, not refused.
+;
+;   ctrl    what goes to the stub's control port (+&28) when hooked: 1 says the
+;           modem (RS423), &10 telnet mode (SER_CTL_* in src/serial_redirect.h)
+;   report  TRUE: ctrl is ORed with the MODE, and the cursor goes first (&80 +
+;           column, &E0 + row, then ctrl + MODE, which ends the report); also
+;           *FX3,1 on the way in and *FX3,0 on the way out, and short messages
+;           ended by OSNEWL
 ; ---------------------------------------------------------------------------
-{
-ORG &FD00
-INSV  = &022A
-IRQ1V = &0204
+SER_INSV  = &022A
+SER_IRQ1V = &0204
 SER_TXOLD = &FC0A       ; stub offsets, indexed by Y = the stub base
 SER_RXOLD = &FC0D
 SER_EXOLD = &FC2B
 SER_CTRL  = &FC28
-    JMP serinstall          ; &FD00: hook the vectors
-    JMP serremove           ; &FD03: unhook them
-.serbase
+
+MACRO SERHOOK ctrl, report
+    JMP install             ; &FD00: hook the vectors
+    JMP remove              ; &FD03: unhook them
+
+; out: Y = stub offset, Z=1 if INSV already points at it; X kept.  No stub:
+; reports it and leaves the helper.
+.probe
     LDY #0                  ; &FD07: stub offset, patched by the Pi (0 = none)
+    ASSERT probe = &FD06
+    BEQ none
+    LDA &FC00,Y : CMP #&E0 : BNE none        ; the stub's CPX #2
+    LDA SER_INSV+1 : CMP #&FC : BNE probed
+    CPY SER_INSV
+.probed
     RTS
-    ASSERT serbase = &FD06
-
-; out: Y = stub offset, Z=1 if INSV already points at it (the two vectors
-; are only ever moved together).  No stub: reports it and leaves the helper.
-.serprobe
-    JSR serbase
-    BEQ sernone
-    LDA &FC00,Y : CMP #&E0 : BNE sernone     ; the stub's CPX #2
-    LDA INSV+1 : CMP #&FC : BNE serprobed
-    CPY INSV
-.serprobed
-    RTS
-.sernone
+.none
     PLA : PLA
+.fail
     LDX #msgnone-&FD00
-    JMP serprint
+    JMP print
 
-.serinstall
-    JSR serprobe : BEQ serhooked             ; already in: just re-arm the Pi
-    ; The RX gate's BIT reads the old IRQ1V target on every interrupt; into
-    ; FRED/JIM (another stub, or a stale copy of this one) that is a port read.
-    LDX #msgbusy-&FD00
-    LDA IRQ1V+1 : AND #&FE : CMP #&FC : BEQ serprint
-    LDA INSV    : STA SER_TXOLD,Y            ; stash first: nothing runs the
-    LDA INSV+1  : STA SER_TXOLD+1,Y          ; stub until the vectors move
-    LDA IRQ1V   : STA SER_RXOLD,Y : STA SER_EXOLD,Y
-    LDA IRQ1V+1 : STA SER_RXOLD+1,Y : STA SER_EXOLD+1,Y
+.install
+    JSR probe                                ; Y = the stub offset
+    TYA : CLC : ADC #&0C : TAX               ; X = the stub's IRQ1V entry
     PHP : SEI                                ; both vectors are used in IRQs
-    STY INSV
-    LDA #&FC : STA INSV+1 : STA IRQ1V+1
-    TYA : CLC : ADC #&0C : STA IRQ1V
+    LDA SER_IRQ1V+1 : EOR #&FC : BNE notfred
+    CPX SER_IRQ1V : BEQ irqin                ; the stub's already: kept as it is
+.busy
+    PLP                                      ; in FRED or JIM, not the stub: nothing done
+  IF report
+    JMP fail
+  ELSE
+    LDX #msgbusy-&FD00
+    BNE print
+  ENDIF
+.notfred
+    LSR A : BEQ busy                         ; JIM
+    LDA SER_IRQ1V   : STA SER_RXOLD,Y : STA SER_EXOLD,Y   ; stash first: nothing runs
+    LDA SER_IRQ1V+1 : STA SER_RXOLD+1,Y : STA SER_EXOLD+1,Y   ; the stub until the vectors move
+.irqin
+    JSR probe : BEQ insvin                   ; INSV the stub's already: kept as it is
+    LDA SER_INSV    : STA SER_TXOLD,Y
+    LDA SER_INSV+1  : STA SER_TXOLD+1,Y
+.insvin
+    STY SER_INSV                             ; both into the stub (no change to one that was)
+    STX SER_IRQ1V
+    LDA #&FC : STA SER_INSV+1 : STA SER_IRQ1V+1
     PLP
-.serhooked
-    LDA #1 : STA SER_CTRL,Y                  ; the Pi may raise nIRQ now
+  IF report
+    LDA #135 : JSR OSBYTE                    ; the screen MODE (Y) ...
+    TYA : AND #7 : ORA #ctrl : PHA
+    LDA #134 : JSR OSBYTE                    ; ... and the cursor (X = column, Y = row)
+    TYA : ORA #&E0 : PHA
+    TXA : ORA #&80
+    LDY probe+1                              ; Y = the stub offset again
+    STA SER_CTRL,Y                           ; &80 + column
+    PLA : STA SER_CTRL,Y                     ; &E0 + row
+    PLA : STA SER_CTRL,Y                     ; ctrl + MODE: the Pi may raise nIRQ now, and the
+                                             ; end of the report
+  ELSE
+    LDA #ctrl : STA SER_CTRL,Y               ; the Pi may raise nIRQ now
+  ENDIF
     LDA #156 : LDX #&40 : LDY #&1F : JSR OSBYTE  ; 6850: RTS high, no IRQs; keep format and divider
+  IF report
+    LDX #1 : LDA #msgon-&FD00 : BNE fx3      ; *FX3,1: the VDU stream to RS423 as well
+  ELSE
     LDX #msgon-&FD00
-    BNE serprint
+    BNE print
+  ENDIF
 
-.serremove
-    JSR serprobe
-    BEQ serunhook
-    LDX #msgnotin-&FD00                      ; Z=0: not ours
-    BNE serprint
-.serunhook
+.remove
+    LDX #msgnotin-&FD00
+    JSR probe                                ; (X kept)
+    BNE print                                ; not ours
     PHP : SEI
-    LDA #0 : STA SER_CTRL,Y                  ; the Pi drops nIRQ first
-    LDA SER_TXOLD,Y   : STA INSV
-    LDA SER_TXOLD+1,Y : STA INSV+1
-    LDA SER_RXOLD,Y   : STA IRQ1V
-    LDA SER_RXOLD+1,Y : STA IRQ1V+1
+    LDA #0 : STA SER_CTRL,Y                  ; the Pi drops nIRQ first (and the stub goes back to RS423)
+    LDA SER_TXOLD,Y   : STA SER_INSV
+    LDA SER_TXOLD+1,Y : STA SER_INSV+1
+    LDA SER_RXOLD,Y   : STA SER_IRQ1V
+    LDA SER_RXOLD+1,Y : STA SER_IRQ1V+1
     PLP
+  IF report
+    LDX #0 : LDA #msgoff-&FD00               ; *FX3,0: the screen only
+.fx3
+    PHA : LDA #3 : LDY #0 : JSR OSBYTE : PLA : TAX
+  ELSE
     LDX #msgoff-&FD00
-.serprint
-    LDA &FD00,X : BEQ serexit
-    JSR OSWRCH
+  ENDIF
+.print                                       ; the message at X, its last byte with bit 7 set
+    LDA &FD00,X : PHA
+    AND #&7F : JSR OSWRCH
     INX
-    BNE serprint
-.serexit
+    PLA : BPL print
+  IF report
+    JSR OSNEWL                               ; (the messages share this end of line)
+  ENDIF
     PAGERTS
 
-.msgon    EQUS " Serial: Pi", 13, 10, 0
-.msgoff   EQUS " Serial: 6850", 13, 10, 0
-.msgnotin EQUS " Not hooked", 13, 10, 0
-.msgbusy  EQUS " IRQ1V busy", 13, 10, 0
-.msgnone  EQUS " No port", 13, 10, 0
+  IF report
+.msgon    EQUS "Telnet", ASC("D")+&80
+.msgoff   EQUS " Of", ASC("f")+&80
+.msgnotin                              ; one text for the three ways it can fail:
+.msgnone  EQUS " ", ASC("?")+&80
+                                       ; not hooked in, the vector busy, no stub
+  ELSE
+.msgon    EQUS " Serial: Pi", 13, 10+&80
+.msgoff   EQUS " Serial: 6850", 13, 10+&80
+.msgnotin EQUS " Not hooked", 13, 10+&80
+.msgbusy  EQUS " IRQ1V busy", 13, 10+&80
+.msgnone  EQUS " No port", 13, 10+&80
+  ENDIF
+ENDMACRO
 
+; ---------------------------------------------------------------------------
+; Page 19 : serial redirector - the RS423 buffers, fed and drained by the Pi
+;
+; Hooks INSV (output buffer 2) and IRQ1V (input buffer 1) into the stub (see
+; SERHOOK above), silences the 6850's interrupt bits (its divider and format
+; stay, so &FD03 hands a working port back), and tells the Pi it may now raise
+; nIRQ.
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    SERHOOK 1, FALSE
+    PRINT "helper 19 spare bytes:", &FE00-P%
     ENDBLOCK &1300
 }
 
 ; ---------------------------------------------------------------------------
 ; Page 20 : telnet daemon - the keyboard and the screen, over the network
 ;
-; The same stub as helper 19 (src/serial_redirect.c), hooked the same way, but
-; it tells the Pi "telnet mode" (2 in the control port, where helper 19 says 1):
-; what the Pi sends then goes into the MOS keyboard buffer, not the RS423 input
-; buffer, so the real keyboard keeps working beside it and nothing needs
-; *FX2.  It also sets *FX3,1, which copies everything the Beeb prints to RS423
-; and so to the Pi (src/telnetd.c has the network end).  Only OSBYTEs and the
-; MOS vectors the BBC B, B+ and Master 128 share are used.  Entry &FD03 undoes
-; both, *FX3,0 included; BREAK undoes the hooks, and *FX3 with them.  The stub's
-; FRED offset is patched into &FD07 by the Pi, as in page 19.
+; The same stub as helper 19, hooked the same way (SERHOOK above), but it
+; tells the Pi "telnet mode" (&10 + MODE in the control port, where helper 19
+; says 1): what the Pi sends then goes into the MOS keyboard buffer, not the
+; RS423 input buffer, so the real keyboard keeps working beside it and nothing
+; needs *FX2.  It also sets *FX3,1, which copies everything the Beeb prints to
+; RS423 and so to the Pi (src/telnetd.c has the network end).  Only OSBYTEs and
+; the MOS vectors the BBC B, B+ and Master 128 share are used.  Entry &FD03
+; undoes both, *FX3,0 included; BREAK undoes the hooks, and *FX3 with them.
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
-INSV  = &022A
-IRQ1V = &0204
-SER_TXOLD = &FC0A       ; stub offsets, indexed by Y = the stub base
-SER_RXOLD = &FC0D
-SER_EXOLD = &FC2B
-SER_CTRL  = &FC28
-    JMP telinstall          ; &FD00: hook the vectors, start the copy of the screen
-    JMP telremove           ; &FD03: unhook them
-.telbase
-    LDY #0                  ; &FD07: stub offset, patched by the Pi (0 = none)
-    RTS
-    ASSERT telbase = &FD06
-
-; out: Y = stub offset, Z=1 if INSV already points at it.  No stub: reports it
-; and leaves the helper.
-.telprobe
-    JSR telbase
-    BEQ telnone
-    LDA &FC00,Y : CMP #&E0 : BNE telnone     ; the stub's CPX #2
-    LDA INSV+1 : CMP #&FC : BNE telprobed
-    CPY INSV
-.telprobed
-    RTS
-.telnone
-    PLA : PLA
-    LDX #msgnone-&FD00
-    JMP telprint
-
-.telinstall
-    JSR telprobe : BEQ telhooked             ; already in: just re-arm the Pi
-    LDX #msgbusy-&FD00
-    LDA IRQ1V+1 : AND #&FE : CMP #&FC : BNE telgo : JMP telprint
-.telgo
-    LDA INSV    : STA SER_TXOLD,Y            ; stash first: nothing runs the
-    LDA INSV+1  : STA SER_TXOLD+1,Y          ; stub until the vectors move
-    LDA IRQ1V   : STA SER_RXOLD,Y : STA SER_EXOLD,Y
-    LDA IRQ1V+1 : STA SER_RXOLD+1,Y : STA SER_EXOLD+1,Y
-    PHP : SEI                                ; both vectors are used in IRQs
-    STY INSV
-    LDA #&FC : STA INSV+1 : STA IRQ1V+1
-    TYA : CLC : ADC #&0C : STA IRQ1V
-    PLP
-.telhooked
-    LDA #135 : JSR OSBYTE                    ; the screen MODE (Y) ...
-    TYA : AND #7 : ORA #&10 : PHA
-    LDA #134 : JSR OSBYTE                    ; ... and the cursor (X = column, Y = row)
-    TYA : ORA #&E0 : PHA
-    TXA : ORA #&80 : PHA
-    JSR telbase                              ; Y = the stub offset again
-    PLA : STA SER_CTRL,Y                     ; &80 + column
-    PLA : STA SER_CTRL,Y                     ; &E0 + row
-    PLA : STA SER_CTRL,Y                     ; &10 + MODE: telnet mode (the Pi may raise nIRQ, into the keyboard
-                                             ; buffer) and the end of the report
-    LDA #156 : LDX #&40 : LDY #&1F : JSR OSBYTE  ; 6850: RTS high, no IRQs; keep format and divider
-    LDX #1 : JSR telfx3                      ; *FX3,1: the VDU stream to RS423 as well
-    LDX #msgon-&FD00
-    BNE telprint
-
-.telremove
-    JSR telprobe
-    BEQ telunhook
-    LDX #msgnotin-&FD00                      ; Z=0: not ours
-    BNE telprint
-.telunhook
-    PHP : SEI
-    LDA #0 : STA SER_CTRL,Y                  ; the Pi drops nIRQ first, and the stub goes back to RS423
-    LDA SER_TXOLD,Y   : STA INSV
-    LDA SER_TXOLD+1,Y : STA INSV+1
-    LDA SER_RXOLD,Y   : STA IRQ1V
-    LDA SER_RXOLD+1,Y : STA IRQ1V+1
-    PLP
-    LDX #0 : JSR telfx3                      ; *FX3,0: the screen only
-    LDX #msgoff-&FD00
-.telprint
-    LDA &FD00,X : BEQ telexit
-    JSR OSWRCH
-    INX
-    BNE telprint
-.telexit
-    JSR OSNEWL                              ; (the messages share this end of line)
-    PAGERTS
-
-.telfx3
-    LDA #3 : LDY #0 : JMP OSBYTE
-
-.msgon    EQUS "TelnetD", 0
-.msgoff   EQUS " Off", 0
-.msgnotin                              ; one text for the three ways it can fail:
-.msgbusy                               ; not hooked in, the vector busy, no stub
-.msgnone  EQUS " ?", 0
-
+    SERHOOK &10, TRUE
     PRINT "helper 20 spare bytes:", &FE00-P%
     ENDBLOCK &1400
 }
@@ -1483,13 +1481,7 @@ ORG &FD00
     GOTOPAGE EXP_KEY, 1
 
 .clearline
-    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
-    LDX #39 : LDA #' '
-.clearchar
-    JSR OSWRCH
-    DEX
-    BNE clearchar
-    RTS
+    BLANKROW
 
 .print
     PRSUB
@@ -1672,13 +1664,7 @@ ORG &FD00
     GOTOPAGE EXP_PUT2, 1
 
 .clearline
-    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
-    LDX #39 : LDA #' '
-.clearchar
-    JSR OSWRCH
-    DEX
-    BNE clearchar
-    RTS
+    BLANKROW
 
 .print
     PRSUB
@@ -1856,13 +1842,7 @@ ORG &FD00
     LDX old_fx229
     LDY #0
     JSR OSBYTE
-    LDX #0
-.vduloop
-    LDA vdutab,X
-    JSR OSWRCH
-    INX
-    CPX #vdutabend-vdutab
-    BNE vduloop
+    VDUTAB vdutab, vdutabend
     PAGERTS
 
 .vdutab

@@ -12,7 +12,10 @@
 #    cancelled with Escape (py65 too), and
 # 7. the ROM loader helpers in the shipped 6502code.bin replace an earlier
 #    copy of the same ROM, else take free sideways RAM, and never write
-#    another ROM's bank (py65, sixteen simulated banks).
+#    another ROM's bank (py65, sixteen simulated banks), and
+# 8. helpers 19 and 20 in the shipped 6502code.bin hook the Pi's serial stub
+#    one vector at a time: a stale stub of theirs is taken back, another
+#    program's IRQ1V in FRED/JIM is refused (py65).
 #
 # The ROM is not part of the firmware build, so nothing else would notice a
 # renumbering of wifi_service.h until the ROM misbehaved on real hardware.
@@ -49,5 +52,6 @@ fi
 "$PY" "$HERE/check_service.py" $images
 "$PY" "$HERE/check_explorer.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 "$PY" "$HERE/check_swr_slot.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
+"$PY" "$HERE/check_serial_helpers.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 
 echo "WIFI ROM TESTS PASSED"
