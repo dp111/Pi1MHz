@@ -643,6 +643,49 @@ static void test_fcode_short(void)
    check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
 }
 
+/* CQ-S10 (code quality 2026-10-21): MODE SELECT to a VFS LUN (>= 8) is a write
+   to read-only media - accepted and discarded, as every Beeb write to a VFS
+   volume must be: GOOD status, the parameter list read off the bus, nothing
+   stored or created.  It used to answer CHECK CONDITION / WRITE FAULT, and
+   the Beeb's FS handshakes have no timeouts. */
+static void test_vfs_mode_select_discarded(void)
+{
+   static char why[200];
+   static uint8_t cfgBefore[512], cfgAfter[512], datBefore[16], datAfter[16];
+   const uint8_t ms22[6] = { 0x15, 0, 0, 0, 22, 0 };          /* LUN 0 (+8) */
+   const uint8_t list[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0x01, 0, 0,
+                              0x01, 0x00, 0x40, 0x04, 0, 0x80, 0, 0x80, 0, 1 };
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(16, 1);
+   long cfgSize = size_of("/BeebVFS1/scsi0.cfg");
+   read_file("/BeebVFS1/scsi0.cfg", cfgBefore, sizeof cfgBefore);
+   read_file("/BeebVFS1/scsi0.dat", datBefore, sizeof datBefore);
+
+   int st = run_cmd(16, ms22, 6, list, sizeof list);
+   unsigned taken = bus_in_pos;
+   read_file("/BeebVFS1/scsi0.cfg", cfgAfter, sizeof cfgAfter);
+   read_file("/BeebVFS1/scsi0.dat", datAfter, sizeof datAfter);
+   bool same = size_of("/BeebVFS1/scsi0.cfg") == cfgSize && !memcmp(cfgBefore, cfgAfter, sizeof cfgAfter) &&
+               !memcmp(datBefore, datAfter, sizeof datAfter);
+   snprintf(why, sizeof why, "status %d (want 0), %u bytes taken (want 28), files %s", st, taken,
+            same ? "unchanged" : "CHANGED");
+   check("CQ-S10 MODE SELECT to a VFS LUN: GOOD, list read and discarded",
+         st == 0 && taken == 28u && same, why);
+
+   /* An empty VFS directory: still GOOD, and nothing is created there. */
+   f_mkdir("/BeebVFS7");
+   filesystemSetLunDirectory(16, 7);
+   st = run_cmd(16, ms22, 6, list, sizeof list);
+   FILINFO fno;
+   bool made = (f_stat("/BeebVFS7/scsi0.cfg", &fno) == FR_OK) || (f_stat("/BeebVFS7/scsi0.dat", &fno) == FR_OK);
+   snprintf(why, sizeof why, "status %d (want 0), %u bytes taken, a file %s", st, bus_in_pos,
+            made ? "WAS CREATED" : "not created");
+   check("CQ-S10 ... and to an empty VFS directory: GOOD, nothing created", st == 0 && bus_in_pos == 28u && !made, why);
+   filesystemSetLunDirectory(16, 1);
+   stop_all();
+}
+
 /* A drive with its own controller keeps its sense across REQUEST SENSE:
    the FileStore MOS asks for it after a CHECK CONDITION, then a tool asks
    again and still sees sense key 5 (measured on a real drive).  The next
@@ -2922,6 +2965,7 @@ int main(int argc, char **argv)
    test_bsfatread_failure();
    test_sense_set();
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
+   test_vfs_mode_select_discarded();
    test_reset_abandons();
    test_filestore_mode_select();
    test_fservfmt_page3_masked();

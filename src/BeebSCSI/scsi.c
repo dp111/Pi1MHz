@@ -2284,18 +2284,11 @@ static uint8_t scsiCommandModeSelect6(void)
 
    uint8_t Buffer[256]; // length is a uint8_t so 256 always suffices (avoids a VLA)
 
-   /* VFS write-protect: never create a descriptor or store parameters for
-      LUN >= 8. The VFS ROM never issues MODESELECT6 - refuse (tripwire). */
-   if (commandDataBlock.targetLUN >= 8) {
-      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
-      requestSenseData[commandDataBlock.targetLUN] = WRITE_FAULT;
-      return SCSI_STATUS;
-   }
-
    // Make sure the target LUN is started (the state owner, not the image
    // check it delegates to - a MODE SELECT with no MOUNT before it must leave
-   // the LUN in exactly the state a START would)
-   if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+   // the LUN in exactly the state a START would).  Not a VFS LUN (>= 8): its
+   // list is read below and discarded.
+   if ((commandDataBlock.targetLUN < 8) && !filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
       // a LUN for which no descriptor exists.  So here we create the LUN descriptor
       if(!filesystemCreateLunDescriptor(commandDataBlock.targetLUN)) {
@@ -2330,6 +2323,14 @@ static uint8_t scsiCommandModeSelect6(void)
    // A host reset or reselection mid-transfer leaves stale bus bytes in
    // Buffer: abandon the command rather than save them to the .cfg
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
+   /* A VFS LUN (>= 8) is read-only media: the list is accepted and dropped -
+      no descriptor made, nothing stored - and the host gets GOOD, never an
+      error its handshake could hang on. */
+   if (commandDataBlock.targetLUN >= 8) {
+      commandDataBlock.status = SCSI_STATUS_OK;
+      return SCSI_STATUS;
+   }
 
    // The list is the controller's: the Adaptec's flat list, a SCSI drive's
    // header, block descriptor and pages, or Pi1MHz's own mixed list
