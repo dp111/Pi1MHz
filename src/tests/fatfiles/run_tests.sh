@@ -19,7 +19,7 @@ cp "$S/Pi1MHz.h" "$S/ram_emulator.h" "$B/"
 cp "$S/BeebSCSI/filesystem.h" "$B/BeebSCSI/"
 cp "$S"/rpi/*.h "$B/rpi/"
 cp "$S/wifi/webserver.h" "$B/wifi/"
-cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h \
+cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$SRC"/fnv1a.h \
    "$SRC"/M5000_emulator.h "$SRC"/fujibus_service.h "$SRC"/config.c "$SRC"/config.h "$B/"
 cp "$SRC"/BeebSCSI/filesystem_storage.c "$B/BeebSCSI/"
 cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/ffunicode.c \

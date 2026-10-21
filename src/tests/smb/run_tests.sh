@@ -101,7 +101,7 @@ cat >> "$F/Pi1MHz.h" <<'STUB'
 typedef struct { uint32_t edges; } Pi1MHz_break_t;
 extern volatile Pi1MHz_break_t Pi1MHz_break;
 STUB
-cp "$SRC"/net_dns.h "$SRC"/fsroute.c "$SRC"/fsroute.h "$SRC"/services_emulator.c "$SRC"/fat_service.c \
+cp "$SRC"/net_dns.h "$SRC"/fsroute.c "$SRC"/fsroute.h "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/fnv1a.h \
    "$SRC"/services.h "$SRC"/M5000_emulator.h "$SRC"/fujibus_service.h "$SRC"/config.c "$SRC"/config.h "$F/"
 cp "$SRC"/smb/smb_client.c "$SRC"/smb/smb_client.h "$SRC"/smb/smb_crypto.c "$SRC"/smb/smb_socket.h "$F/smb/"
 ln -s "$SRC/smb/port" "$F/smb/port"

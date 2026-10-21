@@ -20,6 +20,7 @@
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
+#include "fnv1a.h"
 #include "fsroute.h"			/* f_* by path: the card, the USB drive or the share */
 #include "wifi/webserver.h"			/* cached SD free space - see case 13 */
 
@@ -534,9 +535,7 @@ static void fat_short_name(const FILINFO *fi, char out[13])
       for (size_t i = 0; i < base_len; i++)
          out[o++] = (char)toupper((unsigned char)name[i]);
    } else {
-      uint32_t h = 2166136261u;          /* FNV-1a */
-      for (const char *c = name; *c; c++)
-         h = (h ^ (unsigned char)*c) * 16777619u;
+      uint32_t h = fnv1a_str(FNV1A_BASIS, name);
       for (const char *c = name; *c && o < 4u && c != dot; c++)
          if (isalnum((unsigned char)*c))
             out[o++] = (char)toupper((unsigned char)*c);
@@ -713,12 +712,12 @@ static void fat_put_dirent(uint8_t *e, const char *short83, BYTE attr, uint32_t 
 
 static uint32_t fat_name_id(const char *dir, const char *name)
 {
-   uint32_t h = 2166136261u;
+   uint32_t h = FNV1A_BASIS;
    for (const char *c = dir; *c; c++)
-      h = (h ^ (unsigned char)tolower((unsigned char)*c)) * 16777619u;
-   h = (h ^ '/') * 16777619u;
+      h = fnv1a_step(h, (uint8_t)tolower((unsigned char)*c));
+   h = fnv1a_step(h, '/');
    for (const char *c = name; *c; c++)
-      h = (h ^ (unsigned char)tolower((unsigned char)*c)) * 16777619u;
+      h = fnv1a_step(h, (uint8_t)tolower((unsigned char)*c));
    h &= 0xFFFFFu;
    return h ? h : 1u;
 }

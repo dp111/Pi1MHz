@@ -15,6 +15,7 @@
 
 #include "fn_tnfs.h"
 #include "../net_tnfs.h"
+#include "../fnv1a.h"
 
 #define SESSIONS      2u
 #define HOST_MAX      64u
@@ -177,14 +178,6 @@ static struct {
    char     names[DIR_NAMES];
    uint32_t pool;
 } D;
-
-static uint32_t fnv(const void *p, uint32_t n)
-{
-   const uint8_t *b = p;
-   uint32_t h = 2166136261u;
-   while (n--) h = (h ^ *b++) * 16777619u;
-   return h;
-}
 
 static bool key_eq(const op_key *a, const op_key *b)
 {
@@ -606,7 +599,7 @@ bool fn_tnfs_write(fn_handle h, uint32_t offset, const void *buf, uint32_t len)
 {
    if (len == 0 || len > IO_MAX)
       return false;
-   op_key k = { .kind = OP_WRITE, .h = h, .off = offset, .len = len, .sum = fnv(buf, len) };
+   op_key k = { .kind = OP_WRITE, .h = h, .off = offset, .len = len, .sum = fnv1a_buf(FNV1A_BASIS, buf, len) };
    op_done *d = run(&k, buf);
    return d && d->ok;
 }

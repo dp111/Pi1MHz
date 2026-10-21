@@ -24,6 +24,7 @@ trap 'rm -rf "$B"' EXIT
 # the file includes, relative to itself.
 mkdir -p "$B/usb" "$B/rpi" "$B/wifi" "$B/scripts" "$B/bsp" "$B/BeebSCSI/fatfs"
 cp "$SRC"/usb/mtp_fs.c "$SRC"/usb/mtp_fs.h "$SRC"/usb/tusb_config.h "$B/usb/"
+cp "$SRC"/fnv1a.h "$B/"
 cp "$HERE"/mtp_stubs.h "$B/"
 for h in BeebSCSI/filesystem.h rpi/byteorder.h services.h wifi/sdio.h \
          rpi/asm-helpers.h rpi/systimer.h Pi1MHz.h rpi/cache.h rpi/rpi.h \
