@@ -1181,27 +1181,14 @@ static bool ttx_row_hold(const tnd_out_t *s, unsigned y)
    return false;
 }
 
-/* The line attribute each row should have: a double height row is the top half, unless
-   the row above is a top half, when it is the bottom. */
-static uint8_t ttx_lattr(const tnd_out_t *s, unsigned y)
-{
-   uint8_t prev = 0u;
-   for (unsigned r = 0u; r <= y; r++) {
-      uint8_t a = ttx_row_dh(s, r) ? (prev == 3u ? 4u : 3u) : 0u;
-      if (r == y)
-         return a;
-      prev = a;
-   }
-   return 0u;
-}
-
 static size_t ttx_put_lattr(uint8_t *dst, uint8_t a)
 {
    return put_str(dst, a == 3u ? "\x1b#3" : a == 4u ? "\x1b#4" : "\x1b#5");
 }
 
 /* Bring the terminal's line attributes into line with the model's rows, the cursor put back
-   after.  Needs absolute positions. */
+   after.  Needs absolute positions.  A double height row is the top half, unless the row
+   above is a top half, when it is the bottom. */
 static size_t ttx_sync_lattr(tnd_out_t *s, uint8_t *dst, size_t room)
 {
    size_t n = 0u;
@@ -2171,87 +2158,6 @@ void tnd_out_origin_lost(tnd_out_t *s)
    s->colok = true;                              /* the cursor's column is the Beeb's */
    s->hl_on = s->cc_on = false;
    s->npend = 0u;
-}
-
-size_t tnd_out_repaint(const tnd_out_t *s, unsigned row, uint8_t dst[TND_REPAINT_MAX])
-{
-   size_t n = 0u;
-   int first = -1, last = -1;
-
-   if (!s->sync)                                 /* the cursor is not known: nothing to draw under */
-      return 0u;
-   for (unsigned y = 0u; y < s->rows; y++)
-      for (unsigned x = 0u; x < s->cols; x++)
-         if ((s->at[y][x] & AT_KNOWN) != 0u && s->ch[y][x] != ' ') {
-            if (first < 0)
-               first = (int)y;
-            last = (int)y;
-            break;
-         }
-   if (first < 0 || (int)s->cy < first)
-      first = (int)s->cy;
-   if (last < (int)s->cy)
-      last = (int)s->cy;
-
-   if (row == s->rows) {                         /* the end: back to the Beeb's cursor and colours */
-      if ((unsigned)last > s->cy) {
-         dst[n++] = 27u; dst[n++] = '[';
-         n += put_num(dst + n, (unsigned)last - s->cy);
-         dst[n++] = 'A';
-      }
-      n += put_str(dst + n, "\x1b[0m");
-      if (s->coloured) {
-         n += sgr(dst + n, '3', phys(s, s->fg));
-         if (phys(s, s->bg) != 0u)
-            n += sgr(dst + n, '4', phys(s, s->bg));
-      }
-      n += put_str(dst + n, s->curoff ? "\x1b[?25l" : "\x1b[?25h");
-      n += put_col(dst + n, s->cx);              /* the column last */
-      return n;
-   }
-   if (row >= s->rows || (int)row < first || (int)row > last)
-      return 0u;
-
-   if (s->tele) {                                /* teletext: the row as the chip draws it */
-      uint8_t  tsgr = TTX_SGR_PLAIN;
-      uint8_t  la = ttx_lattr(s, row);
-      int      tend = ttx_row_end(s, row);
-      unsigned done;
-      n += put_str(dst + n, "\x1b[0m");
-      if (la != 0u)
-         n += ttx_put_lattr(dst + n, la);
-      if (tend >= 0)
-         n += ttx_cells(s, &tsgr, dst + n, row, 0u, (unsigned)tend, TND_REPAINT_MAX - 24u - n, &done);
-      n += put_str(dst + n, "\x1b[0m");
-      if ((int)row < last) {
-         dst[n++] = 13u;
-         dst[n++] = 10u;
-      }
-      return n;
-   }
-
-   int end = -1;                                 /* the row, without its trailing blanks */
-   for (unsigned x = 0u; x < s->cols; x++)
-      if ((s->at[row][x] & AT_KNOWN) != 0u && s->ch[row][x] != ' ')
-         end = (int)x;
-   uint8_t prev = AT_DEF;
-   n += put_str(dst + n, "\x1b[0m");
-   for (int x = 0; x <= end; x++) {
-      uint8_t at = (s->at[row][x] & AT_KNOWN) != 0u ? (uint8_t)(s->at[row][x] & ~AT_KNOWN) : AT_DEF;
-      if (n + 24u > TND_REPAINT_MAX - 8u)
-         break;                                  /* a row of colour changes at every cell: cut it off */
-      if (at != prev) {
-         n += put_attr(s, dst + n, at);
-         prev = at;
-      }
-      n += put_glyph(s, dst + n, s->ch[row][x]);
-   }
-   n += put_str(dst + n, "\x1b[0m");
-   if ((int)row < last) {
-      dst[n++] = 13u;
-      dst[n++] = 10u;
-   }
-   return n;
 }
 
 size_t tnd_out_dirty_row(tnd_out_t *s, uint8_t dst[TND_REPAINT_MAX])
