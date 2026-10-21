@@ -243,6 +243,33 @@ MACRO ESCOFF
 }
 ENDMACRO
 
+; local subroutine: blank the status row (row 23) of the explorer's screen,
+; leaving the cursor at its end.  expand as:  .clearline  BLANKROW (not CLEARLINE: CLEAR is a keyword)
+MACRO BLANKROW
+{
+    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
+    LDX #39 : LDA #' '
+.clearchar
+    JSR OSWRCH
+    DEX
+    BNE clearchar
+    RTS
+}
+ENDMACRO
+
+; send the VDU bytes from tab up to tabend (at most 255), in this page
+MACRO VDUTAB tab, tabend
+{
+    LDX #0
+.vduloop
+    LDA tab,X
+    JSR OSWRCH
+    INX
+    CPX #tabend-tab
+    BNE vduloop
+}
+ENDMACRO
+
 GUARD &FE00
 
 MACRO PAGERTS
@@ -792,13 +819,7 @@ ORG &FD00
     STA &0203
     LDA #0
     STA zp_fshand
-    LDX #0
-.vduloop
-    LDA vdutab,X
-    JSR OSWRCH
-    INX
-    CPX #vdutabend-vdutab
-    BNE vduloop
+    VDUTAB vdutab, vdutabend
     GOTOPAGE EXP_DIR, 1
 
 .stub
@@ -1460,13 +1481,7 @@ ORG &FD00
     GOTOPAGE EXP_KEY, 1
 
 .clearline
-    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
-    LDX #39 : LDA #' '
-.clearchar
-    JSR OSWRCH
-    DEX
-    BNE clearchar
-    RTS
+    BLANKROW
 
 .print
     PRSUB
@@ -1649,13 +1664,7 @@ ORG &FD00
     GOTOPAGE EXP_PUT2, 1
 
 .clearline
-    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
-    LDX #39 : LDA #' '
-.clearchar
-    JSR OSWRCH
-    DEX
-    BNE clearchar
-    RTS
+    BLANKROW
 
 .print
     PRSUB
@@ -1833,13 +1842,7 @@ ORG &FD00
     LDX old_fx229
     LDY #0
     JSR OSBYTE
-    LDX #0
-.vduloop
-    LDA vdutab,X
-    JSR OSWRCH
-    INX
-    CPX #vdutabend-vdutab
-    BNE vduloop
+    VDUTAB vdutab, vdutabend
     PAGERTS
 
 .vdutab
