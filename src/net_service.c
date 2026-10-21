@@ -16,6 +16,7 @@
 */
 
 #include <string.h>
+#include <strings.h>         /* strncasecmp */
 #include <stdio.h>
 
 #include "Pi1MHz.h"
@@ -617,16 +618,10 @@ static void net_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
 
 typedef struct { uint8_t adapter; uint16_t port; bool tls; } net_url_t;
 
-/* Case-insensitive compare of s[0..len) against an upper-case NUL literal. */
+/* s[0..len) is lit, ignoring case. */
 static bool net_ci_eq(const char *s, size_t len, const char *lit)
 {
-   size_t i;
-   for (i = 0; i < len && lit[i] != '\0'; i++) {
-      char c = s[i];
-      if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-      if (c != lit[i]) return false;
-   }
-   return i == len && lit[i] == '\0';
+   return strlen(lit) == len && strncasecmp(s, lit, len) == 0;
 }
 
 /* "a.b.c.d" -> ip_addr_t; false if not a strict dotted quad (lib/textparse.h),
