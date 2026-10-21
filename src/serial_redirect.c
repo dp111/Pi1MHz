@@ -199,10 +199,16 @@ static volatile bool     ser_brk_done;    /* ... and the Beeb has taken that tri
 static volatile uint32_t ser_brk_us;      /* ... since then */
 static uint8_t           ser_chain_lo, ser_chain_hi;   /* the exit's chain operand, put back if no reset comes */
 static volatile bool     ser_brk_req;     /* ... and it is a BREAK: the trip's routine jumps through the reset vector */
-static volatile bool     ser_brk_trip;    /* ... and the exit of the stub, after it, is JMP (&FFFC) */
-static volatile bool     ser_esc_active;  /* the trip in progress is the escape one */
 static volatile bool     ser_idle_req;    /* the Beeb's RS423 busy flag wants setting: an idle trip is waiting */
-static volatile bool     ser_idle_active; /* the trip in progress is the idle one */
+/* The trip in progress, if any: each is armed by ser_arm_next and ends with the Beeb's consume
+   (or full) write, or is put back as a request when the gate closes under it. */
+typedef enum {
+   TRIP_NONE,
+   TRIP_ESC,        /* the escape one (no byte leaves the FIFO) */
+   TRIP_BREAK,      /* ... the escape one with the stub's exit JMP (&FFFC): a BREAK */
+   TRIP_IDLE        /* the RS423 idle one */
+} ser_trip_t;
+static volatile ser_trip_t ser_trip;
 static volatile uint32_t ser_idle_tx;     /* ser_tx_count when the last idle trip was armed */
 static volatile uint32_t ser_tx_us;       /* the last byte the Beeb sent */
 static volatile bool     ser_gate_open;   /* +0C is BIT: nIRQ asserted, byte at +14 */
@@ -261,20 +267,22 @@ static void ser_gate_close(void)
    SER_LOG('x', ser_gate_open);
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);
-   if (ser_esc_active) {                     /* an escape trip that never finished: INSV again, ask again */
-      ser_esc_active = false;
+   switch (ser_trip) {                       /* a trip that never finished: INSV again, ask again */
+   case TRIP_BREAK:                          /* ... a BREAK as a BREAK: the exit is JMP (&FFFC) already */
+      ser_brk_req = true;
+      /* fall through */
+   case TRIP_ESC:
       ser_esc_req = true;
-      if (ser_brk_trip) {                    /* ... a BREAK as a BREAK: the exit is JMP (&FFFC) already */
-         ser_brk_trip = false;
-         ser_brk_req = true;
-      }
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
-   }
-   if (ser_idle_active) {                    /* ... and the same for an idle trip */
-      ser_idle_active = false;
+      break;
+   case TRIP_IDLE:
       ser_idle_req = true;
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+      break;
+   case TRIP_NONE:
+      break;
    }
+   ser_trip = TRIP_NONE;
 }
 
 /* Point the stub's JSR at its trip routine, storing byte at addr. */
@@ -290,7 +298,7 @@ static void ser_trip_arm(uint16_t addr, uint8_t byte)
 static void ser_idle_arm(void)
 {
    ser_idle_req = false;
-   ser_idle_active = true;
+   ser_trip = TRIP_IDLE;
    ser_idle_tx = ser_tx_count;
    ser_trip_arm(SER_MOS_RSBUSY, 0x80u);
 }
@@ -305,14 +313,13 @@ static bool ser_arm_next(void);
 static void ser_esc_arm(void)
 {
    ser_esc_req = false;
-   ser_esc_active = true;
    /* The routine stores &80 in &FF, and the trip ends as any other: the Beeb's consume
       (or full) write clears our nIRQ.  A BREAK instead turns the stub's last jump, which
       hands the interrupt on to the MOS, into JMP (&FFFC): the Beeb is reset with nothing
       left asserted (a reset taken inside the trip itself leaves nIRQ low and hangs it). */
-   ser_brk_trip = ser_brk_req;               /* the consume that ends this trip sets the exit */
+   ser_trip = ser_brk_req ? TRIP_BREAK : TRIP_ESC;   /* the consume that ends a BREAK trip sets the exit */
    ser_brk_req = false;
-   if (ser_brk_trip) {
+   if (ser_trip == TRIP_BREAK) {
       /* The exit is made JMP (&FFFC) now, while the gate is shut and no interrupt can be in the
          stub, and not when the trip's consume comes: written then it raced the 6502 to the exit
          (about 15 us), and a late write lost the BREAK and left &FFFC as the chain operand, so a
@@ -371,23 +378,29 @@ static void ser_tx_byte(unsigned int gpio)
 static void ser_rx_consume(unsigned int gpio)
 {
    (void)gpio;
-   SER_LOG('c', (ser_gate_open ? 1u : 0u) | (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
+   ser_trip_t trip = ser_trip;
+   SER_LOG('c', (ser_gate_open ? 1u : 0u) | (trip == TRIP_ESC || trip == TRIP_BREAK ? 2u : 0u)
+                | (trip == TRIP_IDLE ? 4u : 0u));
    if (!ser_gate_open)
       return;
-   if (ser_esc_active) {                     /* that trip was the escape one: no byte left the FIFO */
-      ser_esc_active = false;
+   switch (trip) {
+   case TRIP_ESC:                            /* that trip was the escape one: no byte left the FIFO */
+   case TRIP_BREAK:
       SER_COUNT(ser_escapes);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
-   } else if (ser_idle_active) {             /* ... the idle one: nor here */
-      ser_idle_active = false;
+      break;
+   case TRIP_IDLE:                           /* ... the idle one: nor here */
       SER_COUNT(ser_idles);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
-   } else {
+      break;
+   case TRIP_NONE:
       if (fifo_used(&rx) == 0u)
          return;
       rx.head++;
       ser_rx_count++;
+      break;
    }
+   ser_trip = TRIP_NONE;
 #ifdef DEBUG
    {
       uint32_t now = RPI_GetSystemTime();
@@ -407,8 +420,7 @@ static void ser_rx_consume(unsigned int gpio)
    }
 #endif
    ser_gate_us = Pi1MHz_now_us;
-   if (ser_brk_trip) {                       /* nIRQ goes high below, then the Beeb jumps to its reset */
-      ser_brk_trip = false;
+   if (trip == TRIP_BREAK) {                 /* nIRQ goes high below, then the Beeb jumps to its reset */
       ser_brk_done = true;
       ser_write(SER_EXIT, 0x6Cu);
       ser_write(SER_EXIT_OLD, 0xFCu);
@@ -426,8 +438,8 @@ static void ser_rx_consume(unsigned int gpio)
 
 static void ser_rx_full(unsigned int gpio)
 {
-   SER_LOG('f', (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
-   if (ser_esc_active || ser_idle_active) {  /* a trip's routine returns the carry it came with */
+   SER_LOG('f', (ser_trip == TRIP_ESC || ser_trip == TRIP_BREAK ? 2u : 0u) | (ser_trip == TRIP_IDLE ? 4u : 0u));
+   if (ser_trip != TRIP_NONE) {              /* a trip's routine returns the carry it came with */
       ser_rx_consume(gpio);
       return;
    }
@@ -445,13 +457,11 @@ static void ser_rx_full(unsigned int gpio)
 static void ser_after_break(void)
 {
    ser_gate_close();
-   ser_esc_active = false;
+   ser_trip = TRIP_NONE;
    ser_esc_req = false;
-   ser_idle_active = false;
    ser_idle_req = true;                         /* whatever was sent before, the busy flag starts right */
    ser_brk_req = false;
    ser_backoff = false;
-   ser_brk_trip = false;
    ser_brk_armed = false;
    ser_brk_done = false;
    ser_write(SER_EXIT, OP_RTI);                 /* the chain operand is the Beeb's, written when it hooked in */
@@ -593,7 +603,7 @@ void serial_redirect_drop_keys(uint8_t keep_after)
    if (!ser_hooked || !ser_telnet)
       return;
    unsigned int cpsr = _disable_interrupts_cspr();
-   if (!ser_esc_active && !ser_idle_active && !ser_brk_done)   /* a trip in flight finishes as it is */
+   if (ser_trip == TRIP_NONE && !ser_brk_done)   /* a trip in flight finishes as it is */
       ser_gate_close();
    if (fifo_used(&rx) != 0u && fifo_used(&rx) < SER_FIFO_SIZE && ser_rx_count != 0u
        && rx.buf[(rx.head - 1u) & SER_FIFO_MASK] == keep_after)
@@ -670,7 +680,7 @@ static void serial_redirect_poll(void)
    }
 
    /* Output has stopped: give the Beeb its RS423 idle flag back (see the top; telnet mode only). */
-   if (telnet && !ser_idle_req && !ser_idle_active && ser_tx_count != ser_idle_tx
+   if (telnet && !ser_idle_req && ser_trip != TRIP_IDLE && ser_tx_count != ser_idle_tx
        && (Pi1MHz_now_us - ser_tx_us) > SER_IDLE_US)
       ser_idle_req = true;
 
@@ -759,9 +769,8 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_hooked = false;             /* a reset has put the MOS vectors back */
    ser_telnet = false;             /* ... and the stub below is in RS423 mode again */
    ser_esc_req = false;
-   ser_esc_active = false;
+   ser_trip = TRIP_NONE;
    ser_idle_req = false;
-   ser_idle_active = false;
    ser_backoff = false;
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);
@@ -789,7 +798,6 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    }
    ser_brk_armed = false;
    ser_brk_done = false;
-   ser_brk_trip = false;
    stub_at = address;
    if (address >= SER_ESCR_OFF)
       for (unsigned int i = 0u; i < sizeof ser_escr; i++)
