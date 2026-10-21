@@ -43,7 +43,6 @@ uint32_t serial_redirect_key_gen(void);     /* ... counted */
 uint32_t serial_redirect_key_other_gen(void); /* every other byte taken (build 13) */
 bool serial_redirect_lit_ok(void);          /* the ROM reads a byte after LITKEY (&FB) as it is (build 13) */
 uint32_t serial_redirect_rx_count(void);    /* bytes put into the Beeb's buffer */
-uint32_t serial_redirect_tx_count(void);    /* bytes the Beeb has sent */
 uint32_t serial_redirect_reset_gen(void);   /* ... and one that counts the BBC's resets */
 uint32_t serial_redirect_unseen_gen(void);  /* ... and the ROM filing system operations, whose output RS423 never sees */
 uint8_t  serial_redirect_beeb_mode(void);
@@ -53,7 +52,9 @@ size_t serial_redirect_write(const uint8_t *src, size_t len);
 /* Telnet mode (helper 20) only, main loop only: raise the Beeb's ESCAPE
    condition and discard what is queued for its keyboard.  A no-op otherwise. */
 void serial_redirect_escape(void);
-void serial_redirect_drop_keys(void);      /* the keys not yet given to the Beeb go (a new session) */
+void serial_redirect_drop_keys(uint8_t keep_after);   /* the keys not yet given to the Beeb go (a new session), but
+                                                         the one after keep_after if that was the last given */
+void serial_redirect_telnetd_refresh(void); /* telnetd_enabled() changed: the ROM's TELNET byte says so */
 void serial_redirect_shift(void);           /* SHIFT pressed once (paged mode), read by the auto-start ROM's KEYV */
 void serial_redirect_break(void);       /* a BREAK, as the BREAK key: see the .c */
 

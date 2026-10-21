@@ -196,7 +196,6 @@ static volatile bool     ser_brk_armed;   /* the stub's exit is JMP (&FFFC): a r
 static volatile bool     ser_brk_done;    /* ... and the Beeb has taken that trip: no nIRQ until it is hooked again */
 static volatile uint32_t ser_brk_us;      /* ... since then */
 static uint8_t           ser_chain_lo, ser_chain_hi;   /* the exit's chain operand, put back if no reset comes */
-static volatile uint32_t ser_brk_lost;    /* BREAKs that no reset followed (telnetd_debug) */
 static volatile bool     ser_brk_req;     /* ... and it is a BREAK: the trip's routine jumps through the reset vector */
 static volatile bool     ser_brk_trip;    /* ... and the exit of the stub, after it, is JMP (&FFFC) */
 static volatile bool     ser_esc_active;  /* the trip in progress is the escape one */
@@ -518,6 +517,8 @@ static void ser_control(unsigned int gpio)
       ser_write(SER_INBUF, (uint8_t)(telnet ? 0u : 1u));
       rx.head = rx.tail;
       ser_esc_req = false;
+      if (!telnet)
+         ser_idle_req = false;                  /* the idle trip is telnet's: none waits for the modem */
    }
    if (!ser_hooked) {
       ser_gate_close();
@@ -575,11 +576,6 @@ bool serial_redirect_lit_ok(void)
 uint32_t serial_redirect_rx_count(void)
 {
    return ser_rx_count;
-}
-
-uint32_t serial_redirect_tx_count(void)
-{
-   return ser_tx_count;
 }
 
 /* Counts the auto-start ROM's reports of a ROM filing system operation (service
@@ -647,15 +643,21 @@ void serial_redirect_escape(void)
 }
 
 /* Throw away the keys not yet given to the Beeb, without an ESCAPE: a new session must not
-   have the last one's type-ahead typed into it (a client that left with a backlog). */
-void serial_redirect_drop_keys(void)
+   have the last one's type-ahead typed into it (a client that left with a backlog).  If the
+   last byte given was keep_after (telnetd's LITKEY), the Beeb is waiting for the byte after
+   it, which stays: otherwise the next session's first key would be read in its place. */
+void serial_redirect_drop_keys(uint8_t keep_after)
 {
    if (!ser_hooked || !ser_telnet)
       return;
    unsigned int cpsr = _disable_interrupts_cspr();
    if (!ser_esc_active && !ser_idle_active && !ser_brk_done)   /* a trip in flight finishes as it is */
       ser_gate_close();
-   rx.head = rx.tail;
+   if (fifo_used(&rx) != 0u && fifo_used(&rx) < SER_FIFO_SIZE && ser_rx_count != 0u
+       && rx.buf[(rx.head - 1u) & SER_FIFO_MASK] == keep_after)
+      rx.tail = rx.head + 1u;
+   else
+      rx.head = rx.tail;
    ser_backoff = false;
    _restore_cpsr(cpsr);
 }
@@ -663,6 +665,12 @@ void serial_redirect_drop_keys(void)
 /* SHIFT for the Beeb, pressed once: the ROM's SHIFT byte in its workspace, which its KEYV
    handler reads and clears (see the top).  Telnet mode only, and only useful with the
    auto-start ROM (serial_redirect_scan_ok). */
+void serial_redirect_telnetd_refresh(void)
+{
+   if (ser_enabled && ser_base >= SER_WS_OFF)
+      Pi1MHz_MemoryWrite((uint32_t)ser_base - SER_WS_OFF + SER_WS_TELNET, telnetd_enabled() ? 1u : 0u);
+}
+
 void serial_redirect_shift(void)
 {
    if (!ser_hooked || !ser_telnet || ser_base < SER_WS_OFF)
@@ -712,7 +720,6 @@ static void serial_redirect_poll(void)
          ser_write(SER_EXIT, OP_RTI);
          ser_write(SER_EXIT_OLD, ser_chain_lo);
          ser_write(SER_EXIT_OLD + 1u, ser_chain_hi);
-         ser_brk_lost++;
       }
       _restore_cpsr(cpsr);
    }
@@ -759,7 +766,7 @@ static void serial_redirect_poll(void)
       ser_backoff_stall = false;
    }
 
-   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req)) {
+   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || (ser_idle_req && ser_telnet))) {
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_hooked && !ser_gate_open && !ser_brk_done && ser_arm_next()) {      /* the trip or byte first ... */
          ser_write(SER_GATE, OP_BIT);                              /* ... then the gate */

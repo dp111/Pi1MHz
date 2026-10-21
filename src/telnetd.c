@@ -70,6 +70,8 @@
 #define HOOK_SAME_BOOT_US 30000000u     /* hooks within this of each other are one boot (the ROM, then HELPERS) */
 #define LOGIN_MAX    64u                 /* as the web interface's user name and password may be */
 #define LOGIN_US     30000000u           /* a session must be logged in by then */
+#define FIN_QUIET_US 1000000u            /* client closed: the Beeb's answer to the last key, this long */
+#define FIN_STUCK_US 10000000u           /* client closed: nothing moved this long, the rest is dropped */
 #define BEEB_PER_POLL 256u               /* Beeb bytes translated per main-loop pass */
 #define KEEPALIVE_US 30000000u           /* a telnet NOP this often when idle, see telnetd_poll */
 #define STALE_US     10000000u           /* a session that has not moved for this long, with
@@ -116,7 +118,6 @@ static uint32_t g_taken_seen, g_taken_us;        /* keys taken, and when the cou
 static uint32_t g_other_seen;                    /* other keys taken already looked at */
 static bool     g_silent_wait;                   /* a key was taken: watching for output after it */
 static uint32_t g_silent_us, g_silent_tx, g_silent_scan_us;   /* g_silent_tx: g_out.drawn when the key was taken */
-static bool            g_repaint;             /* a new terminal is being drawn from the model */
 static bool            g_scan_pending;        /* a new session still has to ask the Beeb for what is on its screen */
 static bool            g_scan_merge;          /* ... and compare it with the model, which has been drawn */
 static bool            g_unseen;              /* the ROM filing system printed where RS423 cannot see: a scan, once it stops */
@@ -124,8 +125,6 @@ static bool            g_unseen;              /* the ROM filing system printed w
 static bool            g_break_asked;         /* F12 was pressed: the next hook follows a BREAK */
 static tnd_banner_t    g_ban;                     /* what the Beeb printed just after the helper hooked in */
 static uint32_t        g_banner_until;            /* banners are read until then */
-static unsigned        g_repaint_row;
-static uint8_t         g_mode = 7u;           /* the Beeb's mode, until it is told otherwise */
 
 static uint8_t   g_stage;
 static uint32_t  g_start_us;
@@ -159,6 +158,11 @@ static tnd_login_t g_login;              /* wrong passwords per address, lockout
 static uint32_t  g_peer_addr;            /* the session's address, for those */
 static uint32_t  g_login_input_us;       /* when the session at the login prompt last had a key */
 static bool      g_login_cr;             /* ... and that key was CR (a LF after it is the same RETURN) */
+static uint8_t   g_hold[2u * LOGIN_MAX + 2u];   /* login keys typed during the hold, taken after it */
+static unsigned  g_hold_n;
+static bool      g_fin;                  /* the client closed its side: the session ends once its keys are in */
+static uint32_t  g_fin_us;               /* ... and when the keys or the output last moved */
+static bool      g_bind_failed;          /* telnetd_port is set but could not be listened on */
 static bool      g_close_after;          /* close once the output has gone */
 static bool      g_att_known, g_att;     /* last attachment told to the client */
 static char      g_peer[20];
@@ -268,20 +272,12 @@ static void k_push(uint8_t k)
 
 /* ---- the session -------------------------------------------------------- */
 
-static bool cfg_flag(const char *key, bool dflt)
-{
-   const char *v = config_get(key);
-   if (v == NULL || v[0] == '\0')
-      return dflt;
-   return !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F');
-}
-
 /* Telnet has its own user name and password (telnetd_user, telnetd_password), never the web
    interface's: telnet sends them in the clear.  Without them a session is refused, unless
    telnetd_login=0 says the daemon is to be open to the network. */
 static bool login_open(void)
 {
-   return !cfg_flag("telnetd_login", true);
+   return !config_get_flag("telnetd_login", true);
 }
 
 /* A user name, and a telnetd_password line, which may be empty: then the password is RETURN. */
@@ -322,8 +318,9 @@ static void pend_free(void)
 
 static void session_reset(void)
 {
-   g_repaint = false;
    g_login_cr = false;
+   g_hold_n = 0u;
+   g_fin = false;
    g_connecting = false;
    pend_free();
    g_khead = g_ktail = 0u;
@@ -398,8 +395,11 @@ static void send_banners(void)                   /* what came up when the Beeb s
 
 static void login_key(uint8_t k)
 {
-   if (tnd_login_held(&g_login))                 /* after a wrong password, on any connection: ignored a while */
+   if (tnd_login_held(&g_login)) {               /* after a wrong password, on any connection: kept a while, */
+      if (g_hold_n < sizeof g_hold)              /* not dropped (a user name typed straight after "Login */
+         g_hold[g_hold_n++] = k;                 /* incorrect" would lose letters and fail again) */
       return;
+   }
    g_login_input_us = Pi1MHz_now_us;
    if (k == 10u) {                               /* LF ends the line too (nc on the raw port sends it */
       bool after_cr = g_login_cr;                /* alone); straight after a CR it is the same RETURN */
@@ -552,40 +552,25 @@ static void client_byte(uint8_t c, uint32_t now_us)
 /* Is a lone ESC (the ESCAPE key, not the start of a cursor key's ESC [ or ESC O) waiting in the
    client data not yet read?  ESCAPE is meant to cut through type-ahead, but what is still in TCP
    waits behind a full key ring: a client sending faster than the Beeb takes keys (a paste, a
-   stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  Telnet
-   commands are skipped; an ESC that ends the data counts once nothing more has come for 300 ms. */
+   stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  The scan
+   (tnd_in_ahead_*) skips telnet commands; an ESC that ends the data counts once nothing more has
+   come for 300 ms. */
 static bool esc_ahead(uint32_t now_us)
 {
-   unsigned st = 0u;
+   tnd_ahead_t a;
    const struct pbuf *q = g_pq;
    u16_t off = g_pqoff;
 
+   tnd_in_ahead_start(&g_in, &a);
    while (q != NULL) {
       const uint8_t *d = (const uint8_t *)q->payload;
-      for (; off < q->len; off++) {
-         uint8_t c = d[off];
-         switch (st) {
-         case 0:
-            if (c == 0xFFu && !g_in.notelnet) st = 1u;
-            else if (c == 27u) st = 4u;
-            break;
-         case 1:                                  /* after IAC */
-            st = (c == 250u) ? 2u : (c >= 251u && c <= 254u) ? 3u : 0u;
-            break;
-         case 2: if (c == 0xFFu) st = 5u; break;  /* in a subnegotiation */
-         case 5: st = (c == 240u) ? 0u : 2u; break;
-         case 3: st = 0u; break;                  /* the option of WILL, WONT, DO, DONT */
-         default:                                 /* after ESC */
-            if (c != '[' && c != 'O' && c != 'P')   /* CSI, SS3, DCS: sequences, not the ESCAPE key */
-               return true;
-            st = 0u;
-            break;
-         }
-      }
+      for (; off < q->len; off++)
+         if (tnd_in_ahead_byte(&a, d[off]))
+            return true;
       q = q->next;
       off = 0u;
    }
-   return st == 4u && (now_us - g_recv_us) > 300000u;
+   return tnd_in_ahead_esc_end(&a) && (now_us - g_recv_us) > 300000u;
 }
 
 /* The boot banners (tnd_banner_byte): read for the first few seconds after a start, and kept for
@@ -742,9 +727,13 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
       (void)session_close(true);
       return ERR_ABRT;
    }
-   if (p == NULL) {                             /* the client closed */
+   if (p == NULL) {                             /* the client closed its side ... */
       g_why = "client closed";
-      return session_close(false) ? ERR_ABRT : ERR_OK;
+      if (g_stage != S_LIVE || (g_pend == NULL && g_khead == g_ktail))
+         return session_close(false) ? ERR_ABRT : ERR_OK;
+      g_fin = true;                             /* ... after sending more than the Beeb has taken yet */
+      g_fin_us = Pi1MHz_now_us;                 /* (cat prog | nc): it is typed in, then the session ends */
+      return ERR_OK;
    }
 
    /* The data is ours now.  It is read into the key ring as fast as the Beeb
@@ -830,7 +819,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_pcb = newpcb;
    g_sessions++;
    session_reset();
-   serial_redirect_drop_keys();                 /* nothing the last client typed ahead is typed into this one */
+   serial_redirect_drop_keys(LIT_KEY);          /* nothing the last client typed ahead is typed into this one */
    g_start_us = g_tx_us = g_prog_us = Pi1MHz_now_us;
    snprintf(g_peer, sizeof g_peer, "%s", ip4addr_ntoa(ip_2_ip4(&newpcb->remote_ip)));
    g_peer_addr = addr;
@@ -858,8 +847,6 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
       screen memory), and then the terminal is drawn again from the Beeb's characters. */
    g_scan_pending = true;
    g_scan_merge = g_out.sync && !tnd_out_blank(&g_out);
-   g_repaint = false;                           /* drawn in place once connected (connect_done) */
-   g_repaint_row = 0u;
    g_connecting = false;
    if (!rawport) {                              /* the raw port: no negotiation, nothing but text */
       uint8_t g[TND_GREETING_LEN];
@@ -1027,7 +1014,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_break_asked = false;
       if (reset || serial_redirect_beeb_mode() != g_out.mode)
          tnd_out_assume_mode(&g_out, serial_redirect_beeb_mode());
-      if (g_out.mode != g_mc_mode)
+      if (g_debug && g_out.mode != g_mc_mode)
          mode_changed('h');
       serial_redirect_beeb_cursor(&col, &row);
       tnd_out_at(&g_out, col, row);
@@ -1040,7 +1027,6 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
             snprintf(cup, sizeof cup, "\x1b[0m\x1b[?25h\x1b[2J\x1b[%u;%uH", (unsigned)row + 1u, (unsigned)col + 1u);
             o_str(cup);                        /* cleared, and the cursor where the Beeb's is */
             g_out.origin_ok = true;
-            g_repaint = false;
          }
          tnd_banner_reset(&g_ban);             /* the banners of the last start are no longer true ... */
          g_banner_until = Pi1MHz_now_us + 4000000u;   /* ... and the next four seconds hold the new ones */
@@ -1066,18 +1052,19 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    /* What the Beeb printed.  With a client to show it to it is translated, and
       the rest waits in the Beeb's buffer while the output buffer is full;
       with none (or before login) it is read and dropped. */
-   if (beeb_attached && !((g_repaint || g_connecting) && g_stage == S_LIVE)) {   /* held while connecting */
+   if (beeb_attached && !(g_connecting && g_stage == S_LIVE)) {   /* held while connecting */
       for (unsigned i = 0u; i < BEEB_PER_POLL; i++) {
          if (live && o_room() < TND_OUT_MAX + 2u)
             break;
          if (serial_redirect_read(&c, 1u) == 0u)
             break;
-         g_mc_ring[g_mc_n++ % MC_RING] = c;
+         if (g_debug)
+            g_mc_ring[g_mc_n++ % MC_RING] = c;
          if (live)
             beeb_byte(c);
          else
             beeb_follow(c);
-         if (g_out.mode != g_mc_mode)
+         if (g_debug && g_out.mode != g_mc_mode)
             mode_changed('v');
       }
    }
@@ -1139,6 +1126,31 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    if (g_stage != S_LIVE && !g_close_after && (now_us - g_start_us) >= LOGIN_US) {
       o_str("\r\nLogin timed out\r\n");          /* once: the session closes when it has gone */
       g_close_after = true;
+      (void)tnd_login_fail(&g_login, g_peer_addr);   /* a failure too: holding the prompt by typing now and */
+   }                                              /* then, reconnecting each time, ends in a lockout */
+
+   if (g_hold_n != 0u && !tnd_login_held(&g_login) && g_stage != S_LIVE && !g_close_after) {
+      uint8_t  k[sizeof g_hold];
+      unsigned n = g_hold_n;
+      memcpy(k, g_hold, n);                      /* what was typed during the hold, in order (a wrong */
+      g_hold_n = 0u;                             /* password among it starts another hold: the rest waits) */
+      for (unsigned i = 0u; i < n; i++)
+         login_key(k[i]);
+   }
+
+   /* The client closed its side with keys still to go in: once they are in and the output has
+      gone, or nothing has moved for FIN_STUCK_US, the session ends. */
+   if (g_fin) {
+      static uint32_t left;
+      uint32_t        now_left = (g_pend != NULL ? 1u : 0u) + (g_ktail - g_khead) + (uint32_t)(g_olen - g_opos);
+      if (now_left != left) {
+         left = now_left;
+         g_fin_us = now_us;
+      }
+      if ((now_left == 0u && (now_us - g_fin_us) >= FIN_QUIET_US) || (now_us - g_fin_us) >= FIN_STUCK_US) {
+         (void)session_close(false);
+         return;
+      }
    }
 
    /* lwIP's own retransmission gives up on a silent client only after minutes.
@@ -1183,7 +1195,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       g_win_gen = g_in.win_gen;
       if (!g_win_first) {
          g_win_first = true;                     /* the first: the connecting phase looks at it */
-      } else if (g_ansi && !g_repaint && !g_connecting) {
+      } else if (g_ansi && !g_connecting) {
          uint8_t rb[TND_COPY_MAX];
          o_put(rb, tnd_out_redraw(&g_out, rb));   /* resized: drawn again by position */
       }
@@ -1254,21 +1266,6 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
 
-   if (g_repaint && !naws_wait && g_stage == S_LIVE && g_pcb != NULL && o_room() >= TND_REPAINT_MAX + 2u) {
-      uint8_t rb[TND_REPAINT_MAX];
-      size_t  rn = tnd_out_repaint(&g_out, g_repaint_row, rb);
-      if (rn != 0u)
-         o_put(rb, rn);
-      if (++g_repaint_row > g_out.rows) {
-         g_repaint = false;
-         tnd_out_origin_lost(&g_out);            /* the terminal's rows are under the greeting: not the Beeb's */
-         if (beeb_attached) {                    /* the screen says it all: no "attached" line over it */
-            g_att_known = true;
-            g_att = true;
-         }
-      }
-   }
-
    /* A terminal that has just come is shown what is on the Beeb's screen: the ROM reads it and
       sends it (silently), and the terminal is cleared and drawn from that.  Once the greeting
       and the model's own picture are out. */
@@ -1293,7 +1290,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       g_out.rescan = false;
       g_scan_pending = true;
    }
-   if (g_scan_pending && g_ansi && g_stage == S_LIVE && !g_repaint && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
+   if (g_scan_pending && g_ansi && g_stage == S_LIVE && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
        && serial_redirect_scan_ok() && g_khead == g_ktail) {
       g_scan_pending = false;
       if (g_scan_merge) {
@@ -1305,7 +1302,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    /* A narrow text window that scrolled or was cleared is drawn again from the model,
       a row at a time, once the Beeb has nothing more to print for now. */
-   if (g_out.dirty && g_stage == S_LIVE && g_pcb != NULL && !g_repaint && !serial_redirect_pending()
+   if (g_out.dirty && g_stage == S_LIVE && g_pcb != NULL && !serial_redirect_pending()
        && o_room() >= TND_REPAINT_MAX + 2u) {
       uint8_t db[TND_REPAINT_MAX];
       size_t  dn = tnd_out_dirty_row(&g_out, db);
@@ -1347,7 +1344,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
    /* Only a Beeb that has gone is said: a line printed when it comes back (it used to say
       "[BBC attached - press RETURN]") would push the terminal's rows one away from the Beeb's
       just after a reset had put them in step, and the copy cursor's mark then landed a row off. */
-   if (g_stage == S_LIVE && !g_repaint && !g_connecting && (!g_att_known || beeb_attached != g_att)) {
+   if (g_stage == S_LIVE && !g_connecting && (!g_att_known || beeb_attached != g_att)) {
       if (!beeb_attached) {
          o_str("[BBC not attached: on the BBC type X%=20:CALL &FC88]\r\n");
          tnd_out_origin_lost(&g_out);           /* that line moved the rows: not the Beeb's now */
@@ -1373,9 +1370,17 @@ static long telnetd_port_cfg(void)
    return (port > 0 && port <= 65535) ? port : 0;
 }
 
+/* Before WiFi is up (the ROM asks at every reset) the setting is the answer; once a listen has
+   failed, it is off, so the ROM does not hook the Beeb's output to a daemon nobody can reach. */
 bool telnetd_enabled(void)
 {
-   return telnetd_port_cfg() != 0;
+   return telnetd_port_cfg() != 0 && !g_bind_failed;
+}
+
+static void telnetd_listen_failed(void)
+{
+   g_bind_failed = true;
+   serial_redirect_telnetd_refresh();
 }
 
 void telnetd_init(void)
@@ -1402,32 +1407,39 @@ void telnetd_init(void)
    if (serial_redirect_address() == 0u)      /* Serial_addr=-1: nothing to attach to, and no poll */
       return;
 
-   g_ansi_cfg = cfg_flag("telnetd_ansi", true);
+   g_ansi_cfg = config_get_flag("telnetd_ansi", true);
    g_ansi = g_ansi_cfg;
-   g_utf8 = cfg_flag("telnetd_utf8", true);
-   g_copy = cfg_flag("telnetd_copycursor", true);
-   g_tek = cfg_flag("telnetd_tek", true);
-   g_debug = cfg_flag("telnetd_debug", false);
+   g_utf8 = config_get_flag("telnetd_utf8", true);
+   g_copy = config_get_flag("telnetd_copycursor", true);
+   g_tek = config_get_flag("telnetd_tek", true);
+   g_debug = config_get_flag("telnetd_debug", false);
    tnd_out_reset(&g_out, g_utf8);
    {
       const char *m = config_get("telnetd_mode");
       long mode = (m != NULL && m[0] != '\0') ? strtol(m, NULL, 10) : 7;
-      g_mode = (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7);
-      tnd_out_assume_mode(&g_out, g_mode);
+      tnd_out_assume_mode(&g_out, (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7));
       g_mc_mode = g_out.mode;                   /* the MODE changes count from here */
    }
 
    l = tcp_new_ip_type(IPADDR_TYPE_V4);
-   if (l == NULL)
+   if (l == NULL) {
+      telnetd_listen_failed();
       return;
+   }
    if (tcp_bind(l, IP_ADDR_ANY, (u16_t)port) != ERR_OK) {
       tcp_close(l);
+      telnetd_listen_failed();
       return;
    }
    g_listener = tcp_listen_with_backlog(l, 2u);
    if (g_listener == NULL) {
       tcp_close(l);
+      telnetd_listen_failed();
       return;
+   }
+   if (g_bind_failed) {                         /* listening after all (a later init) */
+      g_bind_failed = false;
+      serial_redirect_telnetd_refresh();
    }
    tcp_arg(g_listener, NULL);
    tcp_accept(g_listener, td_accept);

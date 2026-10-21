@@ -1116,6 +1116,68 @@ static void test_review_fixes_2(void)
    CHECK(!s.smerge, "a reset ends a screen read");
 }
 
+/* The daemon's look ahead for a lone ESC behind a backlog (was telnetd.c esc_ahead, which always
+   started from nothing: a backlog cut inside a NAWS whose size is 27, or a DCS reply's ESC \,
+   read as the ESCAPE key, and every key after it was dropped). */
+static bool ahead(tnd_in_t *in, const char *data, size_t len, bool *esc_end)
+{
+   tnd_ahead_t a;
+   tnd_in_ahead_start(in, &a);
+   for (size_t i = 0; i < len; i++)
+      if (tnd_in_ahead_byte(&a, (uint8_t)data[i])) { *esc_end = false; return true; }
+   *esc_end = tnd_in_ahead_esc_end(&a);
+   return false;
+}
+#define AHEAD(in, lit, e) ahead(in, lit, sizeof(lit) - 1, e)
+
+static void test_esc_ahead(void)
+{
+   tnd_in_t in;
+   bool e;
+
+   tnd_in_reset(&in); in_reset();
+   CHECK(AHEAD(&in, "abc\x1b" "x", &e), "a lone ESC before a letter is found");
+   CHECK(!AHEAD(&in, "ab\x1b[A\x1bOP", &e) && !e, "cursor and function keys are not");
+   CHECK(!AHEAD(&in, "ab\x1b", &e) && e, "an ESC at the end: lone once nothing more comes");
+   CHECK(!AHEAD(&in, "\xff\xfa\x1f\x00\x50\x00\x1b\xff\xf0" "a", &e) && !e, "a NAWS 27 rows high is not an ESC");
+
+   FEED(&in, "\xff\xfa\x1f\x00\x50");              /* the backlog cut inside a NAWS: the rest is ahead */
+   CHECK(!AHEAD(&in, "\x00\x1b\xff\xf0" "a", &e) && !e, "... nor when the read stopped inside it");
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\x1bP>|XTerm(3");                    /* inside the terminal's DCS reply */
+   CHECK(!AHEAD(&in, "79)\x1b\\" "a", &e) && !e, "a DCS reply's ESC \\ is not the ESCAPE key");
+   tnd_in_reset(&in); in_reset();
+   FEED(&in, "\x1b[1");
+   CHECK(!AHEAD(&in, "5~a", &e), "the rest of a CSI is not");
+   CHECK(AHEAD(&in, "5~\x1b" "a", &e), "but a lone ESC after it is");
+   tnd_in_reset(&in); in_reset(); in.raw = true; in.notelnet = true;
+   CHECK(AHEAD(&in, "a\x1b[", &e), "teletype mode: any ESC is the key");
+}
+
+/* More addresses than the table holds cannot push a lockout out and get fresh tries. */
+static void test_login_many_addrs(void)
+{
+   tnd_login_t l;
+   uint32_t t = 1000u;
+   tnd_login_reset(&l);
+   tnd_login_tick(&l, t);
+   for (uint32_t a = 1u; a <= TND_LOGIN_ADDRS; a++) {     /* every slot locked out */
+      tnd_login_fail(&l, a); tnd_login_fail(&l, a);
+      CHECK(tnd_login_fail(&l, a), "address %u locked", (unsigned)a);
+      tnd_login_tick(&l, t += TND_HOLD_US);
+   }
+   tnd_login_fail(&l, 100u);                               /* a 9th, 10th ... address */
+   tnd_login_fail(&l, 101u);
+   CHECK(tnd_login_fail(&l, 102u), "the addresses beyond the table share one count: the third failure locks them");
+   CHECK(tnd_login_locked(&l, 103u), "... and a new address is refused while it lasts");
+   bool kept = true;
+   for (uint32_t a = 1u; a <= TND_LOGIN_ADDRS; a++)
+      if (!tnd_login_locked(&l, a)) kept = false;
+   CHECK(kept, "no lockout was pushed out to make room");
+   tnd_login_tick(&l, t += TND_LOCK_US);
+   CHECK(!tnd_login_locked(&l, 103u), "once the locks run out a new address may try");
+}
+
 static void test_output_vdu21(void)
 {
    tnd_out_t s; tnd_out_reset(&s, true);
@@ -1589,6 +1651,8 @@ int main(void)
    test_output_teletext();
    test_review_fixes_full();
    test_review_fixes_2();
+   test_esc_ahead();
+   test_login_many_addrs();
    test_output_teletext_chip();
    test_tek();
    test_output_robustness();

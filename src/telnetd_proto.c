@@ -519,6 +519,107 @@ size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS])
    return 0u;
 }
 
+/* The look ahead's states: a byte stream's place, as tnd_in_byte's, without its data. */
+enum { A_NORMAL, A_IAC, A_OPT, A_SB, A_SBIAC, A_ESC, A_CSI, A_SS3, A_DCS0, A_DCS, A_DCSESC };
+
+static uint8_t ahead_state(uint8_t st)
+{
+   switch (st) {
+   case I_IAC:    return A_IAC;
+   case I_OPT:    return A_OPT;
+   case I_SB:     return A_SB;
+   case I_SBIAC:  return A_SBIAC;
+   case I_ESC:    return A_ESC;
+   case I_CSI:    return A_CSI;
+   case I_SS3:    return A_SS3;
+   case I_DCS0:   return A_DCS0;
+   case I_DCS:    return A_DCS;
+   case I_DCSESC: return A_DCSESC;
+   default:       return A_NORMAL;
+   }
+}
+
+void tnd_in_ahead_start(const tnd_in_t *s, tnd_ahead_t *a)
+{
+   a->st = ahead_state(s->state);
+   a->ret = ahead_state(s->after);
+   a->raw = s->raw;
+   a->notelnet = s->notelnet;
+}
+
+bool tnd_in_ahead_byte(tnd_ahead_t *a, uint8_t c)
+{
+   if (c == TN_IAC && !a->notelnet && a->st != A_IAC && a->st != A_OPT && a->st != A_SB && a->st != A_SBIAC) {
+      if (a->st != A_NORMAL)
+         a->ret = a->st;
+      a->st = A_IAC;
+      return false;
+   }
+   switch (a->st) {
+   case A_IAC:
+      if (c == TN_SB)
+         a->st = A_SB;
+      else if (c >= TN_WILL && c <= TN_DONT)
+         a->st = A_OPT;
+      else {
+         a->st = a->ret;
+         a->ret = A_NORMAL;
+      }
+      return false;
+   case A_OPT:
+      a->st = a->ret;
+      a->ret = A_NORMAL;
+      return false;
+   case A_SB:
+      if (c == TN_IAC)
+         a->st = A_SBIAC;
+      return false;
+   case A_SBIAC:
+      if (c == TN_SE) {
+         a->st = a->ret;
+         a->ret = A_NORMAL;
+      } else {
+         a->st = A_SB;
+      }
+      return false;
+   case A_ESC:
+      if (c == '[') a->st = A_CSI;
+      else if (c == 'O') a->st = A_SS3;
+      else if (c == 'P') a->st = A_DCS0;
+      else return true;                         /* not a sequence: the ESC was the key */
+      return false;
+   case A_CSI:
+      if (c >= 0x40u && c <= 0x7Eu)
+         a->st = A_NORMAL;
+      return false;
+   case A_SS3:
+      a->st = A_NORMAL;
+      return false;
+   case A_DCS0:
+      a->st = (c == '>') ? A_DCS : (c == 27u) ? A_ESC : A_NORMAL;
+      return false;
+   case A_DCS:
+      if (c == 27u) a->st = A_DCSESC;
+      else if (c == 7u) a->st = A_NORMAL;
+      return false;
+   case A_DCSESC:
+      a->st = A_NORMAL;
+      return false;
+   default:
+      if (c == 27u) {
+         if (a->raw)                            /* teletype mode: ESC is the ESCAPE key, always */
+            return true;
+         a->st = A_ESC;
+      }
+      return false;
+   }
+}
+
+bool tnd_in_ahead_esc_end(const tnd_ahead_t *a)
+{
+   return a->st == A_ESC;
+}
+
 /* ---- Beeb -> terminal ---------------------------------------------------- */
 
 /* How many parameter bytes follow each VDU code (the Beeb User Guide's VDU
@@ -2384,8 +2485,8 @@ void tnd_login_tick(tnd_login_t *l, uint32_t now_us)
    if (dt == 0u)
       return;
    l->hold_left_us = count_down(l->hold_left_us, dt);
-   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++) {
-      tnd_login_addr_t *e = &l->a[i];
+   for (unsigned i = 0u; i <= TND_LOGIN_ADDRS; i++) {
+      tnd_login_addr_t *e = (i < TND_LOGIN_ADDRS) ? &l->a[i] : &l->over;
       if (!e->used)
          continue;
       e->lock_left_us = count_down(e->lock_left_us, dt);
@@ -2407,13 +2508,15 @@ static tnd_login_addr_t *login_find(tnd_login_t *l, uint32_t addr, bool make)
    }
    if (!make)
       return NULL;
-   if (spare == NULL) {                         /* full: the one closest to being forgotten, never a locked one if avoidable */
-      spare = &l->a[0];
-      for (unsigned i = 1u; i < TND_LOGIN_ADDRS; i++) {
+   if (spare == NULL) {                         /* full: the unlocked one closest to being forgotten */
+      for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++) {
          tnd_login_addr_t *e = &l->a[i];
-         if ((e->lock_left_us == 0u) > (spare->lock_left_us == 0u)
-             || ((e->lock_left_us == 0u) == (spare->lock_left_us == 0u) && e->decay_left_us < spare->decay_left_us))
+         if (e->lock_left_us == 0u && (spare == NULL || e->decay_left_us < spare->decay_left_us))
             spare = e;
+      }
+      if (spare == NULL) {                      /* every one locked out: the shared count */
+         l->over.used = true;
+         return &l->over;
       }
    }
    memset(spare, 0, sizeof *spare);
@@ -2424,10 +2527,14 @@ static tnd_login_addr_t *login_find(tnd_login_t *l, uint32_t addr, bool make)
 
 bool tnd_login_locked(const tnd_login_t *l, uint32_t addr)
 {
-   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++)
+   bool all_locked = true;
+   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++) {
       if (l->a[i].used && l->a[i].addr == addr)
          return l->a[i].lock_left_us != 0u;
-   return false;
+      if (!l->a[i].used || l->a[i].lock_left_us == 0u)
+         all_locked = false;
+   }
+   return all_locked && l->over.lock_left_us != 0u;   /* not in the table: the shared count's lock */
 }
 
 bool tnd_login_held(const tnd_login_t *l)

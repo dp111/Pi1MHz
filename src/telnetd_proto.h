@@ -115,6 +115,21 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
    possible UTF-8 lead.  Returns keys released (0 to TND_IN_KEYS). */
 size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS]);
 
+/* A look ahead through client data not read yet (the daemon's backlog, waiting behind a full key
+   ring) for a lone ESC: the ESCAPE key, which is to cut through the backlog, and not the start of a
+   cursor key's sequence.  It starts from where tnd_in_byte is, so the bytes of a subnegotiation (a
+   window 27 rows high) or of a DCS string (its ESC \ terminator) are not taken for one; telnet
+   commands are skipped.  tnd_in_ahead_byte is true at a lone ESC; tnd_in_ahead_esc_end is true if
+   the data ended just after an ESC (a lone one once nothing more comes). */
+typedef struct {
+   uint8_t st;
+   uint8_t ret;                 /* the state a telnet command goes back to */
+   bool    raw, notelnet;
+} tnd_ahead_t;
+void   tnd_in_ahead_start(const tnd_in_t *s, tnd_ahead_t *a);
+bool   tnd_in_ahead_byte(tnd_ahead_t *a, uint8_t c);
+bool   tnd_in_ahead_esc_end(const tnd_ahead_t *a);
+
 /* The key codes the translator produces, as the MOS keyboard buffer holds them
    (what OSBYTE 138 / INSV into buffer 0 takes): cursor left/right/down/up are
    140/141/142/143 and COPY is 139 (GET returns 136-139 and 135 under *FX4,1:
@@ -283,7 +298,8 @@ bool tnd_stalled(bool pending, uint32_t now_us, uint32_t progress_us, uint32_t l
    machine.  Every third from an address locks that address out, for TND_LOCK_US the first time and
    twice as long each time after (to TND_LOCK_MAX_US); a right login clears its count.  After any
    wrong password every login prompt ignores what is typed for TND_HOLD_US, whichever connection.
-   An address's failures are forgotten after TND_FAIL_DECAY_US without one.  The timers count the
+   An address's failures are forgotten after TND_FAIL_DECAY_US without one; a lockout is never
+   forgotten early to make room.  The timers count the
    time left down in tnd_login_tick (every main-loop pass), so the 32-bit microsecond clock wrapping
    cannot make an old failure look recent. */
 #define TND_LOGIN_ADDRS    8u
@@ -300,6 +316,9 @@ typedef struct {
 } tnd_login_addr_t;
 typedef struct {
    tnd_login_addr_t a[TND_LOGIN_ADDRS];
+   tnd_login_addr_t over;                       /* every address not in a[] while all of a[] is locked out:
+                                                   they share one count, so more addresses than a[] holds
+                                                   cannot each get fresh tries by pushing a lockout out */
    uint32_t         hold_left_us;
    uint32_t         last_us;
    bool             started;
