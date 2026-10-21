@@ -55,6 +55,7 @@
 
 #include "Pi1MHz.h"
 #include "config.h"
+#include "lib/textparse.h"
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
@@ -1380,12 +1381,11 @@ void telnetd_attach(void)
    as <name>_addr=-1 does for every other device (it has no FRED address of its own). */
 static long telnetd_port_cfg(void)
 {
-   const char *v = config_get("telnetd_port");
-   uint8_t     unused = 0u;
-   long        port = (v != NULL) ? strtol(v, NULL, 10) : 0;
+   uint16_t port = 0u;
+   uint8_t  unused = 0u;
    if (config_emulator_override("Telnetd", &unused) < 0)
       return 0;
-   return (port > 0 && port <= 65535) ? port : 0;
+   return text_parse_port_str(config_get("telnetd_port"), &port) ? (long)port : 0;
 }
 
 /* Before WiFi is up (the ROM asks at every reset) the setting is the answer; once a listen has
@@ -1464,9 +1464,8 @@ void telnetd_init(void)
    g_port = (uint16_t)port;
 
    {                                            /* telnetd_raw_port: teletype mode, no telnet (nc, PuTTY "Raw") */
-      const char *v = config_get("telnetd_raw_port");
-      long rp = (v != NULL) ? strtol(v, NULL, 10) : 0;
-      if (rp > 0 && rp <= 65535 && rp != port) {
+      uint16_t rp = 0u;
+      if (text_parse_port_str(config_get("telnetd_raw_port"), &rp) && (long)rp != port) {
          struct tcp_pcb *rl = tcp_new_ip_type(IPADDR_TYPE_V4);
          if (rl != NULL && tcp_bind(rl, IP_ADDR_ANY, (u16_t)rp) == ERR_OK) {
             g_raw_listener = tcp_listen_with_backlog(rl, 2u);

@@ -27,6 +27,7 @@
 #include "net_telnet.h"
 #include "config.h"
 #include "net_dns.h"            /* net_dns_lookup: the DHCP domain on bare names */
+#include "lib/textparse.h"     /* text_parse_ipv4_str, text_parse_port */
 #include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
 #include "lwip/opt.h"               /* LWIP_ALTCP_TLS, from lwipopts.h         */
 #if defined(LWIP_ALTCP_TLS) && LWIP_ALTCP_TLS
@@ -639,23 +640,12 @@ static bool net_ci_eq(const char *s, size_t len, const char *lit)
    return i == len && lit[i] == '\0';
 }
 
-/* "a.b.c.d" -> ip_addr_t; false if not a dotted quad. */
+/* "a.b.c.d" -> ip_addr_t; false if not a strict dotted quad (lib/textparse.h),
+   so a numeric host name still goes to DNS. */
 static bool net_parse_dotted(const char *s, ip_addr_t *ip)
 {
-   unsigned int oct[4], n = 0, v = 0, digits = 0;
-   for (; ; s++) {
-      if (*s >= '0' && *s <= '9') {
-         v = v * 10u + (unsigned int)(*s - '0');
-         if (v > 255u || ++digits > 3u) return false;
-      } else if (*s == '.' || *s == '\0') {
-         if (digits == 0u || n >= 4u) return false;
-         oct[n++] = v; v = 0; digits = 0;
-         if (*s == '\0') break;
-      } else {
-         return false;
-      }
-   }
-   if (n != 4u) return false;
+   uint8_t oct[4];
+   if (!text_parse_ipv4_str(s, oct)) return false;
    IP_ADDR4(ip, oct[0], oct[1], oct[2], oct[3]);
    return true;
 }
@@ -691,13 +681,9 @@ static bool net_url_parse(const char *url, net_url_t *out,
    host[i] = '\0';
 
    if (*e == ':') {
-      uint32_t port = 0u;
-      for (e++; *e >= '0' && *e <= '9'; e++) {
-         port = port * 10u + (uint32_t)(*e - '0');
-         if (port > 65535u) return false;       /* reject before it wraps */
-      }
-      if (port == 0u) return false;
-      out->port = (uint16_t)port;
+      const char *d = ++e;
+      while (*e >= '0' && *e <= '9') e++;
+      if (!text_parse_port(d, (size_t)(e - d), &out->port)) return false;
    }
    if (out->port == 0u) return false;          /* TCP/UDP need an explicit port */
 

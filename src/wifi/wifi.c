@@ -11,6 +11,7 @@
 #include "../rpi/rpi.h"
 #include "../config.h"
 #include "../telnetd.h"
+#include "../lib/textparse.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -270,42 +271,16 @@ static void wifi_debug_log(const char *format, ...)
 #endif
 }
 
+/* A strict dotted quad (lib/textparse.h): copied to dest as text, and to
+   parsed_address as octets when that is wanted. */
 static bool wifi_parse_ipv4(const char *value, char *dest, size_t dest_size,
                            wifi_ipv4_addr_t *parsed_address)
 {
-   unsigned int octet = 0;
-   unsigned int octet_count = 0;
-   bool have_digit = false;
-   const char *src = value;
-
-   if (value == NULL || value[0] == '\0' || dest == NULL || dest_size == 0)
+   if (value == NULL || dest == NULL || dest_size == 0)
       return false;
 
-   while (*src != '\0') {
-      if (*src >= '0' && *src <= '9') {
-         have_digit = true;
-         octet = (octet * 10u) + (unsigned int)(*src - '0');
-         if (octet > 255u)
-            return false;
-      } else if (*src == '.') {
-         if (!have_digit || octet_count >= 3u)
-            return false;
-         if (parsed_address != NULL)
-            parsed_address->octets[octet_count] = (uint8_t)octet;
-         ++octet_count;
-         octet = 0;
-         have_digit = false;
-      } else {
-         return false;
-      }
-      ++src;
-   }
-
-   if (!have_digit || octet_count != 3u)
+   if (!text_parse_ipv4_str(value, parsed_address != NULL ? parsed_address->octets : NULL))
       return false;
-
-   if (parsed_address != NULL)
-      parsed_address->octets[octet_count] = (uint8_t)octet;
 
    strlcpy(dest, value, dest_size);
    return true;
@@ -400,23 +375,13 @@ static bool wifi_copy_cmdline_prop(char *dest, size_t dest_size, const char *pri
    return true;
 }
 
+/* The value as a port (lib/textparse.h), or default_port if it is unset or
+   not one - 0 included, which no listener can bind. */
 static uint16_t wifi_parse_port(const char *value, uint16_t default_port)
 {
-   unsigned int port = 0;
+   uint16_t port = 0u;
 
-   if (value == NULL || value[0] == '\0')
-      return default_port;
-
-   while (*value != '\0') {
-      if (*value < '0' || *value > '9')
-         return default_port;
-      port = (port * 10u) + (unsigned int)(*value - '0');
-      if (port > 65535u)
-         return default_port;
-      ++value;
-   }
-
-   return (uint16_t)port;
+   return text_parse_port_str(value, &port) ? port : default_port;
 }
 
 static uint8_t wifi_parse_u8(const char *value, uint8_t default_value)

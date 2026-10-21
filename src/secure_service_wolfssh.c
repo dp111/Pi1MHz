@@ -14,6 +14,7 @@
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"
 #include "net_dns.h"
+#include "lib/textparse.h"
 #include "lwip/altcp.h"
 #include "lwip/dns.h"
 #include "lwip/err.h"
@@ -460,7 +461,6 @@ static int parse_url(const char *url)
 {
     const char *start, *end, *colon;
     size_t length;
-    unsigned long port = 0;
     if (strncmp(url, "TCP://", 6u) != 0) return -1;
     start = url + 6u;
     end = strchr(start, '/');
@@ -471,14 +471,8 @@ static int parse_url(const char *url)
     length = (size_t)(colon - start - 1);
     if (length == 0u || length >= sizeof(client.host)) return -1;
     memcpy(client.host, start, length); client.host[length] = '\0';
-    for (const char *p = colon; p < end; p++) {
-        if (*p < '0' || *p > '9') return -1;
-        port = port * 10u + (unsigned long)(*p - '0');
-        if (port > 65535u) return -1;
-    }
-    if (port == 0u) return -1;
-    client.port = (uint16_t)port;
-    if (port == 22u) {
+    if (!text_parse_port(colon, (size_t)(end - colon), &client.port)) return -1;
+    if (client.port == 22u) {
         if (length >= sizeof(client.host_id)) return -1;
         memcpy(client.host_id, client.host, length + 1u);
     } else {

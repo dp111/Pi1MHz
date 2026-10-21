@@ -36,6 +36,7 @@
 #include "rpi/systimer.h"
 #include "teletext_emulator.h"
 #include "config.h"
+#include "lib/textparse.h"
 
 #include "wifi/wifi.h"
 #include "wifi/wifi_lwip.h"
@@ -450,59 +451,25 @@ static void teletext_poll(void)
 
 /* ---- configuration -------------------------------------------------------*/
 
+/* "a.b.c.d[:port]": a strict dotted quad and an optional port (both
+   lib/textparse.h); TELETEXT_DEFAULT_PORT when there is no ":port". */
 static bool ttx_parse_endpoint(const char *s, uint32_t *ip_be, uint16_t *port)
 {
-   if (s == NULL)
+   uint8_t     oct[4];
+   const char *p = text_parse_ipv4(s, oct);
+   uint16_t    pt = (uint16_t)TELETEXT_DEFAULT_PORT;
+
+   if (p == NULL)
       return false;
-
-   uint32_t oct[4] = { 0u, 0u, 0u, 0u };
-   uint32_t idx = 0u, val = 0u;
-   bool any = false;
-   const char *p = s;
-
-   for (;;) {
-      char ch = *p;
-      if (ch >= '0' && ch <= '9') {
-         val = val * 10u + (uint32_t)(ch - '0');
-         if (val > 255u)
-            return false;
-         any = true;
-         p++;
-      } else if (ch == '.') {
-         if (!any || idx >= 3u)
-            return false;
-         oct[idx++] = val;
-         val = 0u;
-         any = false;
-         p++;
-      } else {
-         break;
-      }
-   }
-   if (idx != 3u || !any)
-      return false;
-   oct[3] = val;
-
-   uint16_t pt = (uint16_t)TELETEXT_DEFAULT_PORT;
    if (*p == ':') {
-      uint32_t pv = 0u;
-      bool pany = false;
-      p++;
-      while (*p >= '0' && *p <= '9') {
-         pv = pv * 10u + (uint32_t)(*p - '0');
-         if (pv > 65535u)
-            return false;
-         pany = true;
-         p++;
-      }
-      if (!pany)
+      if (!text_parse_port_str(p + 1, &pt))
          return false;
-      pt = (uint16_t)pv;
-   }
-   if (*p != '\0')
+   } else if (*p != '\0') {
       return false;
+   }
 
-   *ip_be = oct[0] | (oct[1] << 8) | (oct[2] << 16) | (oct[3] << 24);
+   *ip_be = (uint32_t)oct[0] | ((uint32_t)oct[1] << 8)
+          | ((uint32_t)oct[2] << 16) | ((uint32_t)oct[3] << 24);
    *port  = pt;
    return true;
 }

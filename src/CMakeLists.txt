@@ -291,6 +291,7 @@ set(core_files
    Pi1MHz.c
    config.c
    config.h
+   lib/textparse.c
    ram_emulator.c
    helpers.c
    chainboot.c
