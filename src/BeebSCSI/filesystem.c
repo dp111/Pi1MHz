@@ -199,7 +199,12 @@ static struct filesystemStateStruct
    uint32_t driveGeneration;           // changes when LUNs 0-7 are no longer the same drives
 } filesystemState;
 
-NOINIT_SECTION static char fileName[256];       // String for storing LFN filename
+
+// The shipped default descriptor, for a LUN whose .cfg is missing: a create
+// (filesystemCreateLunDescriptor, filesystemWriteAttributesAdding) copies it
+// to the LUN's .cfg; a start or MODE SENSE (filesystemCheckExtAttributes)
+// only parses it into memory - mounting never writes.
+static const char defaultLunDescriptor[] = "/Pi1MHz/defscsi.cfg";
 NOINIT_SECTION static char fatDirectory[256];      // String for storing FAT directory (for FAT transfer operations)
 
 NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
@@ -618,11 +623,6 @@ void filesystemReset(void)
    // one-shot flag would be spent).
    videoplayer_media_changed();
 
-   // Note: ADFS does not send a SCSI STARTSTOP command on reboot... it assumes that LUN 0 is already started.
-   // This is theoretically incorrect... the host should not assume anything about the state of a SCSI LUN.
-   // However, in order to support this buggy implementation we have to start LUN 0 here.
-  // filesystemSetLunStatus(0, true);
-
    return true;
 }
 
@@ -981,6 +981,7 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 // Check that the currently selected LUN directory exists (and, if not, create it)
 static bool filesystemCheckLunDirectory(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FRESULT fsResult;
    DIR dirObject;
    // Is the file system mounted?
@@ -1053,6 +1054,7 @@ bool filesystemVFSVolumePresent(void)
    }
    if (stale) {
       FILINFO fno;
+      char fileName[256];
       filesystemVFSFilePath(filesystemState.lunDirectoryVFS, VFS_VIDEO_FILENAME, fileName, sizeof(fileName));
       vfs_vol_present = (fsr_stat(fileName, &fno) == FR_OK);
       vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
@@ -1065,6 +1067,7 @@ bool filesystemVFSVolumePresent(void)
    only the menu scan asks, once per directory. */
 bool filesystemVFSDatPresent(void)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
    filesystemVFSFilePath(filesystemState.lunDirectoryVFS, "scsi0.dat", fileName, sizeof(fileName));
    return fsr_stat(fileName, &fno) == FR_OK;
@@ -1076,6 +1079,7 @@ bool filesystemVFSDatPresent(void)
    lets it stop remounting each one just to look. */
 uint8_t filesystemVFSDirType(uint8_t dir)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
    filesystemVFSFilePath(dir, "scsi0.dat", fileName, sizeof(fileName));
    if (fsr_stat(fileName, &fno) == FR_OK)
@@ -1104,6 +1108,7 @@ bool filesystemVFSDirPresent(uint8_t dir)
 
 bool filesystemCheckLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    uint32_t lunFileSize;
    FRESULT fsResult;
    if (filesystemState.fsLunStatus[lunNumber])
@@ -1351,6 +1356,7 @@ uint8_t filesystemGetLunDirectoryVFS(void)
 // Function to create a new LUN image (makes an empty .dat file)
 bool filesystemCreateLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FRESULT fsResult;
    FIL fileObject;
 
@@ -1394,6 +1400,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 // goes again, so a refused command leaves nothing behind.  Only an empty one is removed.
 void filesystemRemoveEmptyLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
 
    if (lunNumber >= 8 || config_beeb_write_protected())
@@ -1406,6 +1413,7 @@ void filesystemRemoveEmptyLunImage(uint8_t lunNumber)
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    if (lunNumber >7 || config_beeb_write_protected())
    {
       // VFS never creates .cfg; write-protect blocks .cfg auto-create too
@@ -1419,7 +1427,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
       return true;
 
-   if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_readfile(defaultLunDescriptor, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
       // now parse the new file
@@ -1468,6 +1476,7 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
    open and media change, so this is rare and a fresh parse is fine. */
 bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *out)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    if (dir == (uint8_t)filesystemState.lunDirectoryVFS) {
       const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
       if (v->v.integer && v->length) {
@@ -1524,6 +1533,7 @@ bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
       more than the side currently being asked about. */
    if ((int16_t)dir != vfs_cfg_dir) {
       parserkeyvalue values[NUM_KEYS] = {0};
+      char fileName[256];
       vfs_cfg_dir = (int16_t)dir;
       vfs_cfg_title[0] = '\0';
       vfs_cfg_desc[0]  = '\0';
@@ -1563,6 +1573,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
       return false;                  /* drive empty: no cfg churn */
    if (!filesystemCheckExtAttributes(lunNumber))
    {
+      char fileName[256];
       FIL fileObject;
       FRESULT fsResult;
       // Check if the LUN descriptor file (.dsc) is present
@@ -1645,6 +1656,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 // line for (NULL: none) - a rewrite otherwise only replaces the lines it finds.
 static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append[])
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    // Write-protect: ignore the .cfg overwrite but report success (true, NOT
    // the VFS branch's false) so a mounted ADFS never sees a CHECK_COND.
    if (config_beeb_write_protected()) return true;
@@ -1670,7 +1682,7 @@ static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg overwritten Successful\r\n"));
    } else {
       // assume no cfg file so create one
-      written = parse_rewritefile_adding("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
+      written = parse_rewritefile_adding(defaultLunDescriptor, fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
       if (written && debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
    }
    lba->length = lbaLength;
@@ -1751,6 +1763,7 @@ bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, u
 // Function to format a LUN image
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FIL fileObject;
    FRESULT fsResult;
 
@@ -1856,8 +1869,7 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    }
    else
    {
-      snprintf(fileName, sizeof(fileName), "/Pi1MHz/defscsi.cfg");
-      parse_readfile(fileName,0, scsiattributes, filesystemState.keyvalues[lunNumber]);
+      parse_readfile(defaultLunDescriptor, 0, scsiattributes, filesystemState.keyvalues[lunNumber]);
 
       // LUN extended attributes file is not present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
