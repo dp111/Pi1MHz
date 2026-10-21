@@ -851,6 +851,17 @@ def main(path):
         r = run_remv(rom, x, v, c, 0x41, 0 if c == 0 else 1)
         check(r["sp_after"] == r["sp_before"], f"REMV X={x} V={v} C={c}: stack balanced")
 
+    # Service &0D (a ROM filing system operation) tells the Pi only when its stub is hooked in with
+    # telnetd on (build 20; build 19 wrote into FRED wherever INSV pointed there)
+    fc = tuple(range(0xFC00, 0xFD00))
+    r = call(rom, 0x0D, 6, 0, pokes={0x22A: 0xCC, 0x22B: 0xFC}, watch=fc)
+    check(r["writes"] == [(0xFCF4, 0x22)], f"service &0D, hooked in: the ROMFS marker to the stub's control port: {r['writes']}")
+    r = call(rom, 0x0D, 6, 0, pokes={0x22A: 0xCC, 0x22B: 0xFC}, watch=fc, telnet_on=0)
+    check(r["writes"] == [], f"service &0D with telnetd off: nothing written to FRED: {r['writes']}")
+    r = call(rom, 0x0D, 6, 0, pokes={0x22A: 0x10, 0x22B: 0xFC}, watch=fc)
+    check(r["writes"] == [], f"service &0D with INSV another device's in FRED: nothing written there: {r['writes']}")
+    check(r["regs"] == (0x0D, 6, 0), f"service &0D: A, X and Y passed on: {r['regs']}")
+
     # 8. ROM build 11: a cursor key, COPY or RETURN that a program takes out of the keyboard
     # buffer is told to the Pi (&24 to the stub's control port), so the copy cursor it draws moves
     # only when the Beeb's does; A, X, Y and the result are as the MOS gave them

@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 19           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 20           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -203,7 +203,9 @@ GUARD &C000
 \ at the stub the helper installed before it, which the helper takes for another
 \ program's hook and gives up.  A stub is recognised by its first two bytes (CPX #2) and
 \ the vector pointing 12 into it; it kept the vector it replaced at +0D, which goes back.
-.unstale        lda IRQ1V+1
+.unstale        php                         \ the vector's two bytes with interrupts off (build 20):
+                sei                         \ an IRQ between them would go through half of each
+                lda IRQ1V+1
                 cmp #&FC
                 bne unsx
                 lda IRQ1V
@@ -220,7 +222,8 @@ GUARD &C000
                 sta IRQ1V
                 lda &FC0E,x
                 sta IRQ1V+1
-.unsx           rts
+.unsx           plp
+                rts
 
 .pause          ldx #0                      \ about 0.16 s at 2 MHz
                 ldy #0
@@ -572,13 +575,20 @@ GUARD &C000
 
 \ Tell the Pi this was a reset: its reset line is not touched by a software BREAK.
 \ The stub's control port is at +28, and INSV points at the stub once it is hooked in.
+\ Only with telnetd on and INSV the stub itself (build 20): otherwise the byte would land
+\ in whatever else INSV points into in FRED, on every ROM filing system operation.
 .marker         pha
+                lda TELNETON
+                and #1
+                beq mkx
                 lda INSV+1
-                cmp #&FC
+                cmp #>STUB
                 bne mkx
-                ldy INSV
+                lda INSV
+                cmp #<STUB
+                bne mkx
                 pla
-                sta &FC28,y
+                sta STUB+&28
                 rts
 .mkx            pla
                 rts
