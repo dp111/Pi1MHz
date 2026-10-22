@@ -54,10 +54,21 @@ size_t serial_redirect_write(const uint8_t *src, size_t len);
 /* Telnet mode (helper 20) only, main loop only: raise the Beeb's ESCAPE
    condition and discard what is queued for its keyboard.  A no-op otherwise. */
 void serial_redirect_escape(void);
+/* The ESCAPE key as the keyboard's (the escape character, *FX229, *FX200, escape event 6), then
+   serial_redirect_escape_result: 0 while it is going, else one of these, once. */
+#define SER_ESC_RAISED 1u          /* ESCAPE: the keys behind it go, as at the keyboard */
+#define SER_ESC_CHAR   2u          /* a character (27) for the buffer: the caller puts it in, in order */
+#define SER_ESC_OFF    3u          /* ignored (*FX200) */
+#define SER_ESC_EVENT  4u          /* escape event 6 raised, no ESCAPE */
+void serial_redirect_escape_key(void);
+uint8_t serial_redirect_escape_result(void);
 void serial_redirect_drop_keys(uint8_t keep_after);   /* the keys not yet given to the Beeb go (a new session), but
                                                          the one after keep_after if that was the last given */
 void serial_redirect_telnetd_refresh(void); /* telnetd_enabled() changed: the ROM's TELNET byte says so */
 void serial_redirect_shift(void);           /* SHIFT pressed once (paged mode), read by the auto-start ROM's KEYV */
-void serial_redirect_break(void);       /* a BREAK, as the BREAK key: see the .c */
+void serial_redirect_break(uint8_t how);  /* a BREAK, as the BREAK key (SER_BRK_*): see the .c */
+#define SER_BRK_PLAIN  0u
+#define SER_BRK_SHIFT  1u          /* SHIFT-BREAK: the boot */
+#define SER_BRK_CTRL   2u          /* CTRL-BREAK, as a power-on reset (see the .c) */
 
 #endif

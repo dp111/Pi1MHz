@@ -22,6 +22,7 @@
 #include "lwip/tcp.h"
 #include "lwip/altcp.h"
 #include "lwip/priv/tcp_priv.h"
+#include "wifi/wifi.h"
 
 static int failures, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { failures++; \
@@ -92,6 +93,10 @@ bool config_get_flag(const char *key, bool dflt)
    return v[0] != '0';
 }
 
+/* The network config: the greeting names the Pi by its hostname. */
+static wifi_config_t wcfg;
+const wifi_config_t *wifi_get_config(void) { return &wcfg; }
+
 int config_emulator_override(const char *name, uint8_t *addr)
 {
    (void)name;
@@ -142,7 +147,11 @@ size_t serial_redirect_write(const uint8_t *src, size_t len)
 }
 
 void serial_redirect_escape(void) { n_escape++; if (trace) printf("  ESCAPE\n"); }
-void serial_redirect_break(void) { n_break++; if (trace) printf("  BREAK\n"); }
+/* The ESCAPE key: the Beeb's settings are the MOS's defaults, so it is ESCAPE, decided at once. */
+static uint8_t esc_result;
+void serial_redirect_escape_key(void) { n_escape++; esc_result = SER_ESC_RAISED; if (trace) printf("  ESCAPE\n"); }
+uint8_t serial_redirect_escape_result(void) { uint8_t r = esc_result; esc_result = 0u; return r; }
+void serial_redirect_break(uint8_t how) { n_break++; if (trace) printf("  BREAK %u\n", how); }
 void serial_redirect_shift(void) { n_shift++; if (trace) printf("  SHIFT\n"); }
 void serial_redirect_telnetd_refresh(void) { n_refresh++; if (trace) printf("  REFRESH\n"); }
 void serial_redirect_drop_keys(uint8_t keep_after)

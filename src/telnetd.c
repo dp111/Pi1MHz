@@ -61,6 +61,7 @@
 #include "telnetd.h"
 #include "telnetd_proto.h"
 #include "net_telnet.h"           /* telnet_escape */
+#include "wifi/wifi.h"
 
 #define KRING_SIZE   4096u               /* power of two */
 #define KRING_MASK   (KRING_SIZE - 1u)
@@ -70,6 +71,7 @@
    bytes, are what the link runs out of (a stream from the Beeb reached the client at ~350 bytes/s). */
 #define OUT_BATCH    1024u
 #define OUT_HOLD_US  8000u
+#define OUT_HOLD_BUSY_US 50000u          /* ... and the longest wait for a whole segment while much is in flight */
 #define HOOK_SAME_BOOT_US 30000000u     /* hooks within this of each other are one boot (the ROM, then HELPERS) */
 #define LOGIN_MAX    64u                 /* as the web interface's user name and password may be */
 #define LOGIN_US     30000000u           /* a session must be logged in by then */
@@ -148,6 +150,7 @@ static bool logged_in(void)
    the terminal drawn again from the model, since a console that shrinks moves its rows. */
 #define NAWS_WAIT_US 500000u
 static uint8_t  g_win_gen;                      /* the last size acted on (tnd_in_t's win_gen) */
+static uint8_t  g_mode_gen;                     /* the client's last line or character mode acted on (tnd_in_t's mode_gen) */
 static bool     g_win_first;                    /* the first size has been acted on */
 
 /* A new session (once logged in) is "connecting" for a moment: under the boot banners the line
@@ -186,11 +189,24 @@ static unsigned long g_drop_obuf;
 static int       g_drop_rxblk;
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
-static bool      g_esc_cut;              /* a lone ESC is waiting behind the backlog: the keys before it go */
+static bool      g_esc_cut;              /* an ESCAPE or BREAK is waiting behind the backlog: the keys before it go */
+static bool      g_esc_wait;             /* an ESCAPE key is being decided on the Beeb (serial_redirect_escape_key):
+                                            the keys behind it wait in the ring */
+static uint32_t  g_esc_wait_us;
+static uint32_t  g_esc_pos;              /* ... where in the ring it came (g_ktail then): a character goes there */
+static uint8_t   g_esc_more;             /* ESCAPE keys that came while one was being decided */
+#define ESC_WAIT_US  1500000u            /* no answer in this long: carry on (the Pi gives up at 0.4 s) */
 static uint32_t  g_recv_us;              /* when client data last came */
-static struct pbuf *g_pend;              /* client data taken from lwIP but not yet turned into keys */
-static struct pbuf *g_pq;                /* ... the segment of it being read */
-static u16_t     g_pqoff;                /* ... and how far into that segment */
+/* Client data taken from lwIP but not yet turned into keys, copied out of its pbufs as it comes.
+   Holding the pbufs themselves held lwIP's receive pool: the window is 64 KB, but a client sending
+   small segments (a stream to TERM, a fast paste) pins a pool pbuf for each, and the 96 ran out -
+   the driver could then receive nothing, not even the ACKs for our output, which retransmitted
+   until lwIP gave up, and keys typed meanwhile never came in.  The window is still opened only for
+   what has been read (tcp_recved), and it is smaller than this buffer, so the client cannot overrun it. */
+#define INBUF_SIZE 65536u                /* power of two, more than TCP_WND */
+static uint8_t   g_inbuf[INBUF_SIZE];
+static uint32_t  g_in_head, g_in_tail;   /* read, write */
+static uint32_t  g_in_drops;             /* bytes that did not fit (should never be; telnetd_debug) */
 
 static tnd_in_t  g_in;
 static tnd_out_t g_out;
@@ -253,6 +269,14 @@ static bool o_put(const void *p, size_t n)
 static bool o_str(const char *s)
 {
    return o_put(s, strlen(s));
+}
+
+/* The Pi's name in the greeting: its network hostname (wifi_hostname), as the web pages show it, so
+   several Pi1MHz on one network can be told apart; "Pi1MHz" when none is set. */
+static const char *td_name(void)
+{
+   const wifi_config_t *c = wifi_get_config();
+   return (c != NULL && c->hostname[0] != '\0') ? c->hostname : "Pi1MHz";
 }
 
 /* The byte the Pi puts in the Beeb's keyboard buffer to ask for the screen: the auto-start
@@ -321,10 +345,7 @@ static bool credentials_ok(void)
 
 static void pend_free(void)
 {
-   if (g_pend != NULL)
-      pbuf_free(g_pend);
-   g_pend = g_pq = NULL;
-   g_pqoff = 0u;
+   g_in_head = g_in_tail;
 }
 
 static void session_reset(void)
@@ -343,6 +364,8 @@ static void session_reset(void)
       to come, a key being watched for a silent screen, a scan key counted in the ring just emptied */
    g_lit_next = false;
    g_esc_cut = false;
+   g_esc_wait = false;
+   g_esc_more = 0u;
    g_silent_wait = false;
    g_scan_keys = 0u;
    g_scan = SCAN_NONE;
@@ -388,7 +411,9 @@ static void connect_start(void)
    g_conn_us = g_dot_us = Pi1MHz_now_us;
    g_warn_until = 0u;
    g_warned = false;
-   o_str("\r\nPi1MHz telnet - connecting");
+   o_str("\r\n");
+   o_str(td_name());
+   o_str(" telnet - connecting");
 }
 
 static void send_banners(void)                   /* what came up when the Beeb started */
@@ -470,7 +495,15 @@ static uint32_t keys_waiting(void)
 {
    uint32_t taken = serial_redirect_beeb->key_gen + serial_redirect_beeb->key_other_gen;
    uint32_t w = serial_redirect_rx_count() - taken - g_keys_base;
-   return w > 0x80000000u ? 0u : w;
+   if (w > 0x80000000u) {
+      /* More taken than put in since the buffer was last counted empty: the ESCAPE that set the
+         base had not emptied the Beeb's buffer yet (the program empties it when it acknowledges
+         the ESCAPE, and can take a key before that).  Counted again from here, or every count
+         after would be that many short (T-17's "3 waiting" read 2 after an earlier ESCAPE). */
+      g_keys_base = serial_redirect_rx_count() - taken;
+      return 0u;
+   }
+   return w;
 }
 
 static void keys_emptied(void)                   /* the Beeb's buffer emptied (ESCAPE, a reset) */
@@ -494,13 +527,15 @@ static void deliver_key(uint8_t k)
       return;
    }
    if (!logged_in()) {
-      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_REFRESH && k != TND_KEY_SHIFT)
+      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_REFRESH && k != TND_KEY_SHIFT
+          && k != TND_KEY_SHIFTBREAK && k != TND_KEY_CTRLBREAK)
          login_key(k);
-   } else if (k == TND_KEY_BREAK) {
+   } else if (k == TND_KEY_BREAK || k == TND_KEY_SHIFTBREAK || k == TND_KEY_CTRLBREAK) {
       g_khead = g_ktail;                           /* what was typed ahead goes, as at a BREAK */
       g_ckq_head = g_ckq_tail;
       g_break_asked = true;                        /* the next hook is the start of a new boot */
-      serial_redirect_break();
+      g_esc_wait = false;
+      serial_redirect_break(k == TND_KEY_SHIFTBREAK ? SER_BRK_SHIFT : k == TND_KEY_CTRLBREAK ? SER_BRK_CTRL : SER_BRK_PLAIN);
    } else if (k == TND_KEY_REFRESH) {
       if (serial_redirect_beeb->rom)
          k_push(SCAN_KEY);                            /* the ROM keeps it from the program and sends the screen */
@@ -508,15 +543,15 @@ static void deliver_key(uint8_t k)
       if (serial_redirect_beeb->rom)
          serial_redirect_shift();                     /* a trip, not a key: nothing queued can hold it up */
    } else if (k == TND_KEY_ESCAPE) {
-      g_khead = g_ktail;
-      g_ckq_head = g_ckq_tail;                      /* the escape flushes the Beeb's buffer too */
-      serial_redirect_escape();
-      keys_emptied();
-      g_silent_wait = true;                      /* and a screen the ESCAPE changed without printing is read */
-      g_silent_us = Pi1MHz_now_us;
-      g_silent_tx = g_out.drawn;
-      if (g_copy && g_ansi)
-         tnd_out_copykey(&g_out, 27u);
+      /* As the keyboard's ESCAPE key: the Beeb's settings decide (escape_settled) */
+      if (!g_esc_wait) {
+         serial_redirect_escape_key();
+         g_esc_wait = true;
+         g_esc_wait_us = Pi1MHz_now_us;
+         g_esc_pos = g_ktail;
+      } else if (g_esc_more < 255u) {
+         g_esc_more++;
+      }
    } else {
       k_push(k);
       if (g_copy && g_ansi && ((k >= 139u && k <= 143u) || k == 13u)) {
@@ -530,13 +565,48 @@ static void deliver_key(uint8_t k)
    }
 }
 
-/* A key from the client.  While a lone ESC is cut through the backlog (pend_consume) the keys
-   before it are thrown away; the ESC itself is delivered, which empties the ring and the Beeb's
-   buffer as ESCAPE does. */
+/* How the Beeb took an ESCAPE key (serial_redirect_escape_key): as ESCAPE the keys behind it go with
+   the Beeb's buffer, as at the keyboard; as a character (*FX229, or another escape character) it goes
+   into the buffer ahead of the keys typed after it; ignored (*FX200) or an escape event: nothing. */
+static void escape_settled(uint8_t r)
+{
+   g_esc_wait = false;
+   if (r == SER_ESC_RAISED) {
+      g_khead = g_ktail;
+      g_ckq_head = g_ckq_tail;                      /* the escape flushed the Beeb's buffer too */
+      keys_emptied();
+      g_silent_wait = true;                      /* and a screen the ESCAPE changed without printing is read */
+      g_silent_us = Pi1MHz_now_us;
+      g_silent_tx = g_out.drawn;
+      if (g_copy && g_ansi)
+         tnd_out_copykey(&g_out, 27u);
+      g_esc_more = 0u;
+   } else if (r == SER_ESC_CHAR && g_ktail - g_khead < KRING_SIZE) {
+      /* in order: after the keys typed before the ESC (still in the ring: they wait while it is
+         decided), before the ones typed after it */
+      if (g_esc_pos - g_khead > g_ktail - g_khead)   /* the ring emptied meanwhile */
+         g_esc_pos = g_khead;
+      for (uint32_t i = g_ktail; i != g_esc_pos; i--)
+         g_kring[i & KRING_MASK] = g_kring[(i - 1u) & KRING_MASK];
+      g_kring[g_esc_pos & KRING_MASK] = 27u;
+      g_ktail++;
+   }
+   if (r != SER_ESC_RAISED && g_esc_more != 0u) {   /* the next ESCAPE key, where it came */
+      g_esc_more--;
+      serial_redirect_escape_key();
+      g_esc_wait = true;
+      g_esc_wait_us = Pi1MHz_now_us;
+      g_esc_pos = g_ktail;
+   }
+}
+
+/* A key from the client.  While an ESCAPE or BREAK is cut through the backlog (pend_consume)
+   the keys before it are thrown away; it is delivered itself, which empties the ring and the
+   Beeb's buffer. */
 static void take_key(uint8_t k)
 {
    if (g_esc_cut) {
-      if (k != TND_KEY_ESCAPE)
+      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_SHIFTBREAK && k != TND_KEY_CTRLBREAK)
          return;
       g_esc_cut = false;
       g_lit_next = false;
@@ -561,22 +631,17 @@ static void client_byte(uint8_t c, uint32_t now_us)
    waits behind a full key ring: a client sending faster than the Beeb takes keys (a paste, a
    stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  The scan
    (tnd_in_ahead_*) skips telnet commands; an ESC that ends the data counts once nothing more has
-   come for 300 ms. */
+   come for 300 ms.  The same for BREAK (F12 and its SHIFT and CTRL forms, or IAC BRK) and IAC
+   ABORT (ESCAPE), and IAC IP, a line-mode client's ESC: a Beeb stuck in a program that reads no
+   keys has a full ring, and they are how it is got back. */
 static bool esc_ahead(uint32_t now_us)
 {
    tnd_ahead_t a;
-   const struct pbuf *q = g_pq;
-   u16_t off = g_pqoff;
 
    tnd_in_ahead_start(&g_in, &a);
-   while (q != NULL) {
-      const uint8_t *d = (const uint8_t *)q->payload;
-      for (; off < q->len; off++)
-         if (tnd_in_ahead_byte(&a, d[off]))
-            return true;
-      q = q->next;
-      off = 0u;
-   }
+   for (uint32_t i = g_in_head; i != g_in_tail; i++)
+      if (tnd_in_ahead_byte(&a, g_inbuf[i & (INBUF_SIZE - 1u)]))
+         return true;
    return tnd_in_ahead_esc_end(&a) && (now_us - g_recv_us) > 300000u;
 }
 
@@ -609,22 +674,50 @@ static void sil_note(uint8_t c)
    g_sil[i].y = g_out.cy;
 }
 
-/* What the Beeb printed since its last line end, as plain text: what a teletype joining now
-   would show of the line (a prompt such as ">"), for when the model does not know the cursor's
-   row (no CLS or MODE seen since the Pi started).  A VDU code's parameters are not text. */
-static char    g_tline[TND_COLS_MAX + 1u];
-static uint8_t g_tlen;
+/* What the Beeb printed since its last line end: its prompt and what has been typed after it, over
+   as many rows as it wraps (the Beeb wraps without a line end) - what a teletype is shown of the
+   line when it joins, or when the client changes between line and character mode.  DELETE's echo
+   takes a character off; a cursor move (copy editing) or a line longer than the buffer makes it
+   no longer the line (g_tline_ok false: the model's cursor row is used).  A VDU code's parameters
+   are not text. */
+#define TLINE_MAX 320u                          /* an input line (255) and its prompt */
+static uint8_t  g_tline[TLINE_MAX];
+static uint16_t g_tlen;
+static bool     g_tline_ok;                     /* nothing seen yet: not known */
 
 static void tline_byte(uint8_t c)
 {
    if (g_out.code != 0u)
       return;
-   if (c >= 32u && c < 127u) {
-      if (g_tlen < TND_COLS_MAX)
-         g_tline[g_tlen++] = (char)c;
-   } else if (c != 7u) {
-      g_tlen = 0u;
+   if (c >= 32u && c != 127u && c != 0xFFu) {
+      if (g_tlen < TLINE_MAX)
+         g_tline[g_tlen++] = c;
+      else
+         g_tline_ok = false;
+   } else if (c == 127u) {                      /* DELETE */
+      if (g_tlen != 0u)
+         g_tlen--;
+      else
+         g_tline_ok = false;
+   } else if (c == 10u || c == 13u || c == 12u || c == 22u) {
+      g_tlen = 0u;                              /* a line end, CLS, MODE: a new line */
+      g_tline_ok = true;
+   } else if (c == 8u || c == 9u || c == 11u || c == 30u || c == 31u) {
+      g_tline_ok = false;                       /* the cursor moved (copy editing, home, TAB(x,y) - a screen
+                                                   read is a stream of them): the model's row is the line */
    }
+}
+
+/* A teletype is shown the Beeb's line (usually its prompt, and what has been typed), so it does not
+   look dead; no key is sent to the Beeb for it. */
+static void o_beeb_line(void)
+{
+   char cl[TND_COLS_MAX + 1u];
+
+   if (g_tline_ok)
+      o_put(g_tline, g_tlen);
+   else if (tnd_out_cursor_line(&g_out, cl, sizeof cl) != 0u)
+      o_str(cl);
 }
 
 static void beeb_follow(uint8_t c)
@@ -681,20 +774,12 @@ static void pend_consume(void)
    u32_t    n = 0u;
 
 again:
-   while (g_pq != NULL && g_pcb != NULL) {
-      const uint8_t *d = (const uint8_t *)g_pq->payload;
-      while (g_pqoff < g_pq->len) {
-         if (!g_esc_cut && KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
-            goto full;                          /* a byte releases at most TND_IN_KEYS keys */
-         client_byte(d[g_pqoff++], now);
-         n++;
-      }
-      g_pq = g_pq->next;
-      g_pqoff = 0u;
-      if (g_pq != NULL)                         /* the head is read: free it now, not when the chain is */
-         g_pend = pbuf_free_header(g_pend, g_pend->len);
+   while (g_in_head != g_in_tail && g_pcb != NULL) {
+      if (!g_esc_cut && KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
+         goto full;                             /* a byte releases at most TND_IN_KEYS keys */
+      client_byte(g_inbuf[g_in_head++ & (INBUF_SIZE - 1u)], now);
+      n++;
    }
-   pend_free();                                 /* all of it read */
    g_rx_blocked = false;
    if (n != 0u && g_pcb != NULL)
       tcp_recved(g_pcb, (u16_t)(n > 0xFFFFu ? 0xFFFFu : n));
@@ -703,7 +788,7 @@ again:
    return;
 
 full:
-   if (logged_in() && esc_ahead(now)) {   /* a lone ESC behind the backlog: cut through to it */
+   if (logged_in() && esc_ahead(now)) {   /* ESCAPE or BREAK behind the backlog: cut through to it */
       g_esc_cut = true;
       goto again;
    }
@@ -737,27 +822,23 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
    }
    if (p == NULL) {                             /* the client closed its side ... */
       g_why = "client closed";
-      if (!logged_in() || (g_pend == NULL && g_khead == g_ktail))
+      if (!logged_in() || (g_in_head == g_in_tail && g_khead == g_ktail))
          return session_close(false) ? ERR_ABRT : ERR_OK;
       g_fin = true;                             /* ... after sending more than the Beeb has taken yet */
       g_fin_us = Pi1MHz_now_us;                 /* (cat prog | nc): it is typed in, then the session ends */
       return ERR_OK;
    }
 
-   /* The data is ours now.  It is read into the key ring as fast as the Beeb
-      empties it and the window stays closed (tcp_recved) for what has not been
-      read, which is what holds the client back.  (Refusing the packet with
-      ERR_MEM instead does not work: lwIP can hand over several queued segments
-      as one chain, and one longer than half the ring would never fit.) */
+   /* The data is ours now: copied out (see g_inbuf) and the pbufs given back at once.  It is read
+      into the key ring as fast as the Beeb empties it and the window stays closed (tcp_recved) for
+      what has not been read, which is what holds the client back.  (Refusing the packet with
+      ERR_MEM instead does not work: lwIP can hand over several queued segments as one chain.) */
    g_recv_us = Pi1MHz_now_us;
-   if (g_pend == NULL) {
-      g_pend = g_pq = p;
-      g_pqoff = 0u;
-   } else {
-      pbuf_cat(g_pend, p);
-      if (g_pq == NULL)
-         g_pq = p;
-   }
+   if (p->tot_len <= INBUF_SIZE - (g_in_tail - g_in_head))
+      g_in_tail = byte_ring_put_pbuf(g_inbuf, INBUF_SIZE - 1u, g_in_tail, p);
+   else
+      g_in_drops += p->tot_len;
+   pbuf_free(p);
    pend_consume();
    return ERR_OK;
 }
@@ -846,6 +927,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_ckq_head = g_ckq_tail;                     /* a new terminal: no copy keys waiting */
    g_kgen_seen = serial_redirect_beeb->key_gen;
    g_win_gen = 0u;
+   g_mode_gen = 0u;
    g_win_first = false;
    tnd_out_session(&g_out);                     /* the model has been following the Beeb all along */
    tnd_out_tek(&g_out, false);                  /* until this terminal says it is xterm */
@@ -862,7 +944,9 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
       o_str("\x1b[0m");
    if (!login_open()) {                         /* the banners come after the login */
       g_stage = S_LOGIN_USER;
-      o_str("\r\nPi1MHz telnet\r\n\r\nlogin: ");
+      o_str("\r\n");
+      o_str(td_name());
+      o_str(" telnet\r\n\r\nlogin: ");
    } else {
       send_banners();
       connect_start();
@@ -876,8 +960,17 @@ static void pump(void)
 {
    if (g_pcb == NULL)
       return;
-   if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_stage == S_CLOSING
-                           || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
+   /* While much is in flight, whole segments: lwIP queues at most TCP_SND_QUEUELEN segments
+      whatever their size, and a Beeb printing fast gave one of ~80 bytes every OUT_HOLD_US, so
+      with ACKs slow (WiFi, a busy client) the queue filled long before the send buffer, every
+      write after was ERR_MEM, and the output crawled at a few hundred bytes a second while the
+      Beeb sat in OSWRCH, deaf even to ESCAPE.  With little in flight it is as before, for echoes. */
+   size_t   have = g_olen - g_opos;
+   uint32_t held = (uint32_t)(Pi1MHz_now_us - g_obuf_us);
+   bool     busy = g_pcb->snd_queuelen >= TCP_SND_QUEUELEN / 4u;
+   bool     go = busy ? (have >= TCP_MSS || have >= OBUF_SIZE / 2u || held >= OUT_HOLD_BUSY_US)
+                      : (have >= OUT_BATCH || held >= OUT_HOLD_US);
+   if (g_opos < g_olen && (go || g_stage == S_CLOSING)) {
       bool  was_idle = g_pcb->snd_queuelen == 0u;
       u16_t sent = 0u;
       err_t e = lwip_tcp_write_some(g_pcb, g_obuf + g_opos, g_olen - g_opos, &sent);
@@ -1149,7 +1242,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       gone, or nothing has moved for FIN_STUCK_US, the session ends. */
    if (g_fin) {
       static uint32_t left;
-      uint32_t        now_left = (g_pend != NULL ? 1u : 0u) + (g_ktail - g_khead) + (uint32_t)(g_olen - g_opos);
+      uint32_t        now_left = (g_in_tail - g_in_head) + (g_ktail - g_khead) + (uint32_t)(g_olen - g_opos);
       if (now_left != left) {
          left = now_left;
          g_fin_us = now_us;
@@ -1194,7 +1287,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
          take_key(k[i]);
    }
 
-   if (g_pend != NULL)
+   if (g_in_head != g_in_tail)
       pend_consume();                           /* client data waiting for room in the ring */
 
    /* The client's window size: the first one before the screen is drawn, a change after it. */
@@ -1208,6 +1301,27 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
    bool naws_wait = !g_win_first && !g_in.naws_no && (now_us - g_start_us) < NAWS_WAIT_US;
+
+   /* The client changed between line and character mode (Linux telnet's "mode line"): its own
+      "telnet>" prompt is where the Beeb's line was, and nothing more comes until the Beeb prints.
+      Shown again: an ANSI terminal drawn again by position, a teletype the line (its prompt and
+      what was typed of it before the change). */
+   if (g_pcb != NULL && logged_in() && g_in.mode_gen != g_mode_gen && o_room() >= TND_COPY_MAX + TLINE_MAX + 16u) {
+      g_mode_gen = g_in.mode_gen;
+      if (g_stage == S_LIVE) {
+         if (g_ansi) {
+            uint8_t rb[TND_COPY_MAX];
+            size_t  rn = tnd_out_redraw(&g_out, rb);
+            if (rn != 0u) {
+               o_put(rb, rn);
+               o_put(rb, tnd_out_colours(&g_out, rb));
+            }
+         } else {
+            o_str("\r");
+            o_beeb_line();
+         }
+      }
+   }
 
    /* Connecting: a dot now and then; done once the minimum is over and the client has said its
       window size (or not, in time) - then a too-small window is told so for a while, and then
@@ -1259,16 +1373,8 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
                g_att = true;
             }
          } else {
-            /* Teletype mode: the line the Beeb is on, from the model (usually its prompt), so the
-               session does not start blank; no key is sent to the Beeb for it. */
-            char cl[TND_COLS_MAX + 1u];
-            o_str("\r\n");
-            if (tnd_out_cursor_line(&g_out, cl, sizeof cl) != 0u) {
-               o_str(cl);
-            } else if (g_tlen != 0u) {           /* the model does not know the row: the text since the line end */
-               g_tline[g_tlen] = 0;
-               o_str(g_tline);
-            }
+            o_str("\r\n");                       /* teletype mode: the line the Beeb is on */
+            o_beeb_line();
          }
       }
    }
@@ -1329,7 +1435,14 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    /* The keys, as far as the Beeb's keyboard buffer has room (the redirect's
       own FIFO, and behind it the stub's retry when the MOS buffer is full). */
-   if (beeb_attached && logged_in()) {
+   if (g_esc_wait) {
+      uint8_t r = serial_redirect_escape_result();
+      if (r != 0u)
+         escape_settled(r);
+      else if ((now_us - g_esc_wait_us) > ESC_WAIT_US)
+         escape_settled(SER_ESC_OFF);
+   }
+   if (beeb_attached && logged_in() && !g_esc_wait) {
       while (g_khead != g_ktail) {
          size_t room = serial_redirect_room();
          uint32_t idx = g_khead & KRING_MASK;
@@ -1573,9 +1686,10 @@ bool telnetd_debug(void)
    room, and the session's state when one was last dropped as stalled. */
 void telnetd_tcp_status(char *buf, size_t len)
 {
-   snprintf(buf, len, "wmem %lu, room0 %lu; last drop: sndq %u sndbuf %u wnd %u obuf %lu rxblk %d; now: obuf %lu sndq %u sndbuf %u",
+   snprintf(buf, len, "wmem %lu, room0 %lu; last drop: sndq %u sndbuf %u wnd %u obuf %lu rxblk %d; now: obuf %lu sndq %u sndbuf %u; in %lu, in drops %lu",
             (unsigned long)g_wmem, (unsigned long)g_room0, g_drop_sndq, g_drop_sndbuf, g_drop_wnd,
             g_drop_obuf, g_drop_rxblk, (unsigned long)(g_olen - g_opos),
             g_pcb != NULL ? (unsigned int)g_pcb->snd_queuelen : 0u,
-            g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u);
+            g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u, (unsigned long)(g_in_tail - g_in_head),
+            (unsigned long)g_in_drops);
 }

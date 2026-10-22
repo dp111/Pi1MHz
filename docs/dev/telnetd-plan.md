@@ -1,5 +1,14 @@
 # Telnet daemon - design record
 
+> **STATUS 2026-10-22: after PR #43 (merged 2026-10-20), on a BBC Model B (MOS 1.20, 6502
+> second processor), ROM build 18: keys and output under load (an input buffer of the
+> daemon's own, the stub's TX flag race, output in whole segments while ACKs are slow),
+> a client's line mode (LINEMODE with ESC, F12 and Page Down at once; the screen or line
+> shown again on a mode switch; IP and BRK), ESCAPE as the keyboard's (OSBYTE 153's
+> rules, read from the Beeb by read trips), BREAK resetting the second processor from the
+> moment of the BREAK, SHIFT-F12 and CTRL-F12 (section 16). Every hardware QA suite
+> passes on the release kernel.**
+>
 > **STATUS 2026-10-19: built, host-tested, and run on a BBC Model B (MOS 1.20, 6502
 > second processor) with the auto-start ROM build 14 in a flash bank; every hardware QA
 > suite passes, including WordWise-Plus. Graphics are checked in a real xterm (398). The
@@ -801,3 +810,85 @@ the same way.
   `tnd_banner_byte` in the translator, skips VDU parameters, and has host checks;
   `qa_fresh.py` reads a screen with text on row 21 and column 6 and checks the
   next greeting.
+
+## 16. Keys under load, line mode, ESCAPE as the keyboard's, BREAK variants (2026-10-21/22)
+
+All on the Model B bench (MOS 1.20, Acorn 6502 second processor), ROM build 18
+unchanged; the Pi side only.
+
+- *Keys "lost" after a heavy session.* A packet capture showed them not lost but
+  late: the answer reached the client seconds later inside a full redraw. Three
+  causes. (1) The client's unread data stayed in lwIP's pbufs while the key ring was
+  full; small segments pinned the 96-pbuf pool, and then the driver could not receive
+  even the ACKs for our output. It is now copied into a 64 KB buffer of the daemon's
+  own and the pbufs freed at once; the window still opens only as it is read. (2)
+  lwIP queues TCP_SND_QUEUELEN segments whatever their size: 80-byte writes every 8 ms
+  filled the queue long before the send buffer when ACKs were slow. While much is in
+  flight, output now goes in whole segments (an MSS, half the buffer, or 50 ms). (3)
+  The stub's TX flag went back to CLC from the poll as soon as the FIFO had room, so a
+  6502 that had read SEC had its byte taken although told no, and sent it again: a
+  byte twice in what the Pi saw, the screen model a byte out until a screen read put
+  it right. The flag now changes only in the FIQ, just after the 6502's STA. Also T-17
+  ("keys waiting" one short after an ESCAPE that had not yet emptied the buffer).
+- *Line mode.* Linux telnet's `mode line` sends DONT SGA, WILL LINEMODE, DONT ECHO and
+  then keeps every key until RETURN. The daemon answers the ECHO/SGA changes (WONT, and
+  WILL again for `mode character`), counts them (`tnd_in_t.mode_gen`) and shows the
+  screen again (ANSI: drawn by position; teletype: the Beeb's line, prompt and typed
+  text over as many rows as it wraps - `g_tline`, which takes DELETE's echo off).
+  LINEMODE is taken at "mode line" (the offer Linux telnet makes as it connects is
+  refused, as before, or every session would start in line mode - the first review
+  found that): MODE EDIT|TRAPSIG and SLC values make ESC the client's interrupt
+  (sent at once as IAC IP, read as the ESC byte, so IP [ 2 4 ~ is still F12), Ctrl-C
+  its abort (IAC ABORT, ESCAPE) and "~" its forwarding character, so F12 and Page Down
+  follow at once. Inetutils telnet 2.6 refuses FORWARDMASK and maps SLC_FORW2 onto the
+  same VEOL as FORW1, so one forwarding character is all there is. IAC BRK is BREAK;
+  DO TIMING-MARK after an IP is answered WONT every time (the client flushes its output
+  until it is). A telnet command inside an escape sequence no longer ends it.
+- *Cut-through.* F12, IAC BRK and IAC IP cut through a full key ring as a lone ESC
+  does (`esc_ahead`): a Beeb stuck in a program that reads no keys has a full ring.
+  `esc_ahead` parses the telnet and escape-sequence grammar a second time, more simply
+  than the translator (a telnet command inside a CSI ends it there); a lookahead in
+  the translator would remove the copy.
+- *BREAK and the second processor.* About one F12 in three on a running program hung
+  the Beeb after "BASIC" (upstream master too). The ROM resets the second processor at
+  service call 1 after a soft reset (&E0/&60 to &FEE0), but until then it ran on. The
+  BREAK's trip now stores &A0 (S|P: held in reset) and ends in the JMP (&FFFC); after
+  the ROM has hooked in, a trip stores &20 (with no auto-start ROM to hook in, the
+  second processor is pulsed instead, as for CTRL-F12). The BREAK's trip is armed only
+  2 ms after the gate closed: behind a backlog a key trip was usually still in the stub,
+  ran on to the new exit and reset the Beeb without the hold - an intermittent hang that
+  the first full run met twice. Holding it across a separate trip with the
+  host running, or setting T (&C0), stopped the host taking interrupts (it waits on the
+  second processor inside them), so the hold and the jump are one trip. The ULA's bits
+  are from b-em and PiTubeDirect, confirmed on the bench (30 BREAKs out of 30).
+- *ESCAPE as the keyboard's.* The keyboard's ESCAPE goes through OSBYTE 153 (&E4F3):
+  ESCAPE only if it is the escape character (*FX220) and *FX229 is 0, ignored with
+  *FX200 bit 0, escape event 6 instead of the flag when enabled. The Pi cannot read
+  the Beeb's memory, but a trip can: with the trips' routine made LDA addr, the port
+  write that ends the trip carries the byte. An ESC reads &026C, &0275, &0258 and
+  &02C5 (OSBYTE n's variable is at &0190+n on every MOS) and does what OSBYTE 153
+  would: the escape trip, 27 into the buffer in order (the daemon holds the keys behind
+  the ESC until it knows), nothing, or a trip through OSEVEN with Y=6 (the stub's LDX #
+  made LDY #6 for it). INSV stays the path for keys: it is a vector, IRQ-safe, and
+  gives the stub its full/not-full answer; calling OSBYTE from the interrupt would
+  overwrite &EF-&F1 under a foreground OSBYTE.
+- *SHIFT-F12.* The MOS's auto-boot test (OSBYTE 118 after the banner, KEYV with C and V
+  clear - the call paged mode makes) goes through the ROM's KEYV claim, so after the
+  ROM's last report the Pi sets its SHIFT byte. Something earlier in the start asks
+  too, so it is set again whenever it is taken, for a second, as a held key.
+- *CTRL-F12.* The MOS reads CTRL from the keyboard (&F02A), but takes a reset for a
+  power-on when the system VIA's interrupt enables are clear (&D9D7). The BREAK's trip
+  also stores &7F in &FE4E, through the escape routine's 11 bytes borrowed for the
+  trip (STX &FE4E / STA &FEE0 / AND #&7F / JMP to the trips' routine: STA &FEE0 / RTS),
+  so the second processor is pulsed rather than held - after a power-on reset the ROM
+  does not pulse it, and the MOS's reset runs with interrupts off, so no release trip
+  could come. A VIA trip of its own first left the host taking no more interrupts.
+  It is a power-on, not CTRL-BREAK: memory from &0400 is cleared and OSBYTE 253 says 1.
+- *What no trip can do.* The MOS's reset, boot included, runs with interrupts off, and
+  every trip is an interrupt: a boot that waits for ever (SHIFT-F12 with the DFS and no
+  drive) can be left only by the BREAK key or the power.
+- *Tests.* `qa_linemode.py` (raw protocol and Debian's own telnet in a pty, teletype
+  re-send, 6000 keys behind a stuck program; `--breaks` adds the BREAK cases),
+  `probe_esc.py` (*FX229, *FX200, *FX220, an escape event handler in host memory),
+  `probe_brkmod.py` (SHIFT-F12, CTRL-F12; it leaves the bench in the DFS's boot, so it
+  runs last and is followed by a power cycle).

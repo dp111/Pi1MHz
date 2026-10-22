@@ -8,6 +8,7 @@
 #include "lwip/pbuf.h"
 
 #define TCP_MSS              1460u
+#define TCP_SND_QUEUELEN     128u     /* lwIP's (4 * TCP_SND_BUF + TCP_MSS - 1) / TCP_MSS, TCP_SND_BUF 32 MSS */
 #define TCP_WRITE_FLAG_COPY  0x01u
 enum tcp_state { CLOSED = 0, LISTEN = 1, ESTABLISHED = 4 };
 

@@ -362,8 +362,38 @@ static void test_break_key(void)
    FEED(&s, "\x1b[24~");
    CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK, "F12 is the BREAK request");
    in_reset();
+   FEED(&s, "\x1b[24;2~\x1b[24;5~\x1b[24;6~\x1b[24;3~");
+   CHECK(nkeys == 4 && keys[0] == TND_KEY_SHIFTBREAK && keys[1] == TND_KEY_CTRLBREAK && keys[2] == TND_KEY_CTRLBREAK
+         && keys[3] == TND_KEY_BREAK, "SHIFT-F12 SHIFT-BREAK, CTRL-F12 and CTRL-SHIFT-F12 CTRL-BREAK, ALT-F12 BREAK"); if (nkeys != 4) dump();
+   in_reset();
    FEED(&s, "\x1b[21~\x1b[23~");
    CHECK(nkeys == 2 && keys[0] == 0x80 && keys[1] == TND_KEY_REFRESH, "F10 is f0 and F11 is the redraw request");
+   in_reset();
+   FEED(&s, "ab\xff\xf3" "c");
+   CHECK(nkeys == 4 && keys[2] == TND_KEY_BREAK && keys[3] == 'c', "IAC BRK is the BREAK request"); if (nkeys != 4) dump();
+   in_reset();
+   FEED(&s, "ab\xff\xf4" "c");
+   CHECK(nkeys == 4 && keys[2] == TND_KEY_ESCAPE && keys[3] == 'c', "IAC IP (Ctrl-C in line mode) is ESCAPE"); if (nkeys != 4) dump();
+   /* A line-mode client's ESC is IAC IP (its interrupt character, set by us): read as the ESC byte. */
+   in_reset();
+   FEED(&s, "\xff\xf4");
+   CHECK(nkeys == 0, "IAC IP alone: an ESC, waiting");
+   tick(&s, TND_ESC_US + 1000u);
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_ESCAPE, "IAC IP alone: ESCAPE once nothing follows");
+   in_reset();
+   FEED(&s, "\xff\xf4\xff\xfd\x06" "[24~");
+   static const uint8_t wont_tm[] = { 255, 252, 6 };
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK && nreply == 3 && memcmp(reply, wont_tm, 3) == 0,
+         "IAC IP, DO TM, [24~ (F12 from a line-mode client): BREAK, and the TM answered"); if (nkeys != 1) dump();
+   in_reset();
+   FEED(&s, "\xff\xf4" "[6~");
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_SHIFT, "IAC IP [6~ (Page Down from a line-mode client): SHIFT"); if (nkeys != 1) dump();
+   in_reset();
+   FEED(&s, "\xff\xee" "x");
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_ESCAPE && keys[1] == 'x', "IAC ABORT (Ctrl-C in line mode): ESCAPE at once");
+   in_reset();
+   FEED(&s, "\x1b[2\xff\xf1" "4~");
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK, "a NOP inside a CSI sequence: the sequence goes on"); if (nkeys != 1) dump();
    in_reset();
    FEED(&s, "\x1b[6~");
    CHECK(nkeys == 1 && keys[0] == TND_KEY_SHIFT, "Page Down is SHIFT, for paged mode");
@@ -426,8 +456,55 @@ static void test_negotiation(void)
    CHECK(strlen(s.ttype) == sizeof s.ttype - 1u && strncmp(s.ttype, "XTERM-256COLOR", 14) == 0, "a long name is cut, still ended");
 
    in_reset();
-   FEED(&s, "\xff\xfe\x01\xff\xfc\x01");
-   CHECK(nreply == 0, "DONT and WONT need no reply");
+   FEED(&s, "\xff\xfc\x01\xff\xfc\x03");
+   CHECK(nreply == 0, "WONT ECHO, WONT SGA need no reply");
+
+   /* Line mode (Linux telnet's "mode line"): DONT SGA and DONT ECHO after the client agreed to
+      both, answered WONT once each and counted; character mode again: DO, answered WILL. */
+   in_reset();
+   FEED(&s, "\xff\xfd\x03\xff\xfd\x01");
+   CHECK(nreply == 0, "DO SGA, DO ECHO as the answers to the greeting: no reply");
+   in_reset();
+   uint8_t gen0 = s.mode_gen;
+   FEED(&s, "\xff\xfe\x03\xff\xfe\x01\xff\xfe\x01");
+   static const uint8_t wonts[] = { 255, 252, 3, 255, 252, 1 };
+   CHECK(nreply == 6 && memcmp(reply, wonts, 6) == 0 && s.echo_off && s.sga_off, "DONT SGA, DONT ECHO: WONT each, once"); if (nreply != 6) dump();
+   CHECK((uint8_t)(s.mode_gen - gen0) == 2u, "line mode: counted (%u)", (unsigned)(uint8_t)(s.mode_gen - gen0));
+   in_reset();
+   FEED(&s, "\xff\xfd\x01\xff\xfd\x03\xff\xfd\x01");
+   static const uint8_t wills[] = { 255, 251, 1, 255, 251, 3 };
+   CHECK(nreply == 6 && memcmp(reply, wills, 6) == 0 && !s.echo_off && !s.sga_off, "DO ECHO, DO SGA again: WILL each, once"); if (nreply != 6) dump();
+   CHECK((uint8_t)(s.mode_gen - gen0) == 4u, "character mode: counted");
+   in_reset();
+   FEED(&s, "\xff\xfb\x01");
+   static const uint8_t dont1[] = { 255, 254, 1 };
+   CHECK(nreply == 3 && memcmp(reply, dont1, 3) == 0, "WILL ECHO from the client: refused (DONT)");
+
+   /* LINEMODE: the offer Linux telnet makes as it connects is refused, so the session starts in
+      character mode; the next ("mode line") is taken: DO, MODE EDIT|TRAPSIG, and the special
+      characters ESC, Ctrl-C and "~"; once. */
+   in_reset();
+   FEED(&s, "\xff\xfb\x22");
+   static const uint8_t dont34a[] = { 255, 254, 34 };
+   CHECK(nreply == 3 && memcmp(reply, dont34a, 3) == 0 && !s.lm, "the first WILL LINEMODE (at connect): DONT");
+   in_reset();
+   FEED(&s, "\xff\xfb\x22");
+   static const uint8_t lm[] = { 255, 253, 34, 255, 250, 34, 1, 3, 255, 240,
+                                 255, 250, 34, 3, 3, 0x42, 27, 7, 0x42, 3, 17, 2, '~', 255, 240 };
+   CHECK(nreply == sizeof lm && memcmp(reply, lm, sizeof lm) == 0 && s.lm, "WILL LINEMODE: DO, MODE, SLC (%u bytes)", (unsigned)nreply);
+   CHECK(sizeof lm <= TND_IN_REPLY, "the LINEMODE answer fits TND_IN_REPLY");
+   FEED(&s, "\xff\xfb\x22\xff\xfa\x22\x01\x07\xff\xf0\xff\xfa\x22\x03\x03\xc2\x1b\xff\xf0" "k");
+   CHECK(nreply == sizeof lm && nkeys == 1 && keys[0] == 'k', "WILL again, the client's MODE ack and SLC: no reply, nothing leaks");
+   in_reset();
+   FEED(&s, "\xff\xfc\x22");
+   static const uint8_t dont34[] = { 255, 254, 34 };
+   CHECK(nreply == 3 && memcmp(reply, dont34, 3) == 0 && !s.lm, "WONT LINEMODE (mode character): DONT");
+
+   /* After IP a client flushes its output until DO TIMING-MARK is answered: every time. */
+   in_reset();
+   FEED(&s, "\xff\xfd\x06\xff\xfd\x06");
+   static const uint8_t wont6[] = { 255, 252, 6, 255, 252, 6 };
+   CHECK(nreply == 6 && memcmp(reply, wont6, 6) == 0, "DO TM: WONT TM, every time"); if (nreply != 6) dump();
 
    /* Subnegotiation is dropped entirely, even with an escaped 0xFF inside. */
    in_reset();
@@ -1029,7 +1106,10 @@ static void test_review_fixes_2(void)
    FEED(&in, "\xff\xfe\x01");
    CHECK(nreply == 0, "DONT ECHO as the answer to WILL ECHO: no reply");
    FEED(&in, "\xff\xfd\x01");
-   CHECK(nreply == 0, "DO ECHO: agreed, no reply");
+   CHECK(nreply == 3 && memcmp(reply, "\xff\xfb\x01", 3) == 0, "DO ECHO after the refusal: a new request, WILL ECHO (RFC 1143)");
+   in_reset();
+   FEED(&in, "\xff\xfd\x01");
+   CHECK(nreply == 0, "DO ECHO again: agreed, no reply");
    FEED(&in, "\xff\xfe\x01");
    CHECK(nreply == 3 && memcmp(reply, "\xff\xfc\x01", 3) == 0, "DONT ECHO after DO ECHO: WONT ECHO");
    in_reset();
@@ -1117,6 +1197,22 @@ static void test_esc_ahead(void)
    CHECK(AHEAD(&in, "5~\x1b" "a", &e), "but a lone ESC after it is");
    tnd_in_reset(&in); in_reset(); in.raw = true; in.notelnet = true;
    CHECK(AHEAD(&in, "a\x1b[", &e), "teletype mode: any ESC is the key");
+
+   /* The other keys that cut through a backlog: BREAK (F12 in its three forms, IAC BRK), IAC ABORT,
+      and IAC IP, a line-mode client's ESC. */
+   tnd_in_reset(&in); in_reset();
+   CHECK(AHEAD(&in, "ab\x1b[24~cd", &e), "F12");
+   CHECK(AHEAD(&in, "ab\x1b[24;2~", &e), "SHIFT-F12");
+   CHECK(AHEAD(&in, "ab\x1b[24;5~", &e), "CTRL-F12");
+   CHECK(!AHEAD(&in, "ab\x1b[23~\x1b[2~\x1b[4~\x1b[24A\x1b[124~", &e) && !e, "not F11, Insert, F12's neighbours");
+   CHECK(AHEAD(&in, "ab\xff\xf3" "cd", &e), "IAC BRK");
+   CHECK(AHEAD(&in, "ab\xff\xee" "cd", &e), "IAC ABORT");
+   CHECK(AHEAD(&in, "ab\xff\xf4" "x", &e), "IAC IP then a letter: ESCAPE");
+   CHECK(!AHEAD(&in, "ab\xff\xf4\xff\xfd\x06[6~", &e) && !e, "IP, DO TIMING-MARK, [6~: Page Down, not ESCAPE");
+   CHECK(AHEAD(&in, "ab\xff\xf4\xff\xfd\x06[24~", &e), "IP, DO TIMING-MARK, [24~: F12");
+   CHECK(!AHEAD(&in, "ab\xff\xf4", &e) && e, "IP at the end: a lone ESC once nothing more comes");
+   tnd_in_reset(&in); in_reset(); in.raw = true;
+   CHECK(AHEAD(&in, "a\xff\xf4", &e), "teletype mode: IP is the key");
 }
 
 /* More addresses than the table holds cannot push a lockout out and get fresh tries. */

@@ -35,6 +35,10 @@
 /* Also a request and not a key: F12 is BREAK.  The daemon passes it to serial_redirect_break().
    254 is never a Beeb key the translator makes. */
 #define TND_KEY_BREAK  0xFEu
+/* SHIFT-F12 is SHIFT-BREAK (the boot: the auto-start ROM says SHIFT pressed to the MOS's auto-boot
+   test), CTRL-F12 (and CTRL-SHIFT-F12) CTRL-BREAK, as near as software can (see serial_redirect_break). */
+#define TND_KEY_SHIFTBREAK 0xF9u
+#define TND_KEY_CTRLBREAK  0xF8u
 
 /* F11: draw the screen again.  The daemon types *TELNETD for the Beeb, and the auto-start
    ROM answers by sending what is on the screen. */
@@ -48,8 +52,10 @@
 /* The next key is a byte for the Beeb to read as it is (a character above 127): the daemon sends it
    behind the ROM's LITKEY (ROM build 13), which reads it past the MOS's soft and cursor keys. */
 #define TND_KEY_LIT    0xFAu
-#define TND_IN_REPLY   6u      /* most negotiation bytes one input byte needs (IAC SB TTYPE SEND IAC SE) */
+#define TND_IN_REPLY   32u     /* most negotiation bytes one input byte needs (WILL LINEMODE's answer) */
 #define TND_GREETING_LEN 15u
+#define TND_OPT_LINEMODE 34u  /* telnet option 34: the client edits lines itself (RFC 1184) */
+#define TND_OPT_TM     6u      /* telnet option 6: timing mark (RFC 860), asked for after an IP to end a flush */
 #define TND_OPT_BINARY 0u      /* telnet option 0: an 8-bit path (RFC 856), how a client asks for teletype mode */
 #define TND_OPT_TTYPE  24u     /* telnet option 24: the client's terminal type (RFC 1091) */
 #define TND_OPT_NAWS   31u     /* telnet option 31: the client's window size (RFC 1073) */
@@ -93,6 +99,19 @@ typedef struct {
    bool     notelnet;           /* set by the daemon: not even IAC */
    bool     bin_in;             /* the client will send binary (it said WILL BINARY, we said DO) */
    bool     bin_out;            /* the client asked us to send binary (DO BINARY, we said WILL) */
+   /* A client's line mode (Linux telnet's "mode line") is DONT ECHO (and DONT SGA), its character
+      mode DO ECHO again: each is answered once per change, and mode_gen counts the changes, so the
+      daemon can show the Beeb's line again (the client's own "telnet>" prompt is over it). */
+   bool     echo_off;           /* the client said DONT ECHO, we said WONT */
+   bool     sga_off;            /* the client said DONT SGA, we said WONT */
+   uint8_t  mode_gen;
+   /* LINEMODE (RFC 1184), which Linux telnet offers at "mode line": taken, so the client's special
+      characters are ours to set - ESC its interrupt (sent at once as IAC IP, read as the ESC byte),
+      Ctrl-C its abort (IAC ABORT, ESCAPE) and "~" a forwarding character, so the rest of F12
+      (ESC [ 2 4 ~) or Page Down (ESC [ 6 ~) follows the IP at once instead of waiting for RETURN. */
+   bool     lm;                 /* the client said WILL LINEMODE, we said DO */
+   bool     lm_offered;         /* ... its first WILL LINEMODE, which Linux telnet sends as it connects, was
+                                   refused (DONT): only a later one, at "mode line", is taken */
 } tnd_in_t;
 
 void   tnd_in_reset(tnd_in_t *s);
@@ -119,8 +138,10 @@ size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS]);
    ring) for a lone ESC: the ESCAPE key, which is to cut through the backlog, and not the start of a
    cursor key's sequence.  It starts from where tnd_in_byte is, so the bytes of a subnegotiation (a
    window 27 rows high) or of a DCS string (its ESC \ terminator) are not taken for one; telnet
-   commands are skipped.  tnd_in_ahead_byte is true at a lone ESC; tnd_in_ahead_esc_end is true if
-   the data ended just after an ESC (a lone one once nothing more comes). */
+   commands are skipped.  tnd_in_ahead_byte is true at a lone ESC, and at the other keys that cut
+   through: F12 (ESC [ 2 4 ~, with SHIFT or CTRL ESC [ 2 4 ; m ~), IAC BRK and IAC ABORT; IAC IP is
+   read as an ESC.  tnd_in_ahead_esc_end is true if the data ended just after an ESC (a lone one
+   once nothing more comes). */
 typedef struct {
    uint8_t st;
    uint8_t ret;                 /* the state a telnet command goes back to */
@@ -134,7 +155,8 @@ bool   tnd_in_ahead_esc_end(const tnd_ahead_t *a);
    (what OSBYTE 138 / INSV into buffer 0 takes): cursor left/right/down/up are
    140/141/142/143 and COPY is 139 (GET returns 136-139 and 135 under *FX4,1:
    the MOS subtracts 4), DELETE is 127, f0-f9 are 128-137, the pound sign is 96.
-   ESC and Ctrl-C are TND_KEY_ESCAPE. */
+   ESC and Ctrl-C are TND_KEY_ESCAPE, and so is telnet's IAC IP (Ctrl-C in a client's line mode,
+   where its keys wait for RETURN); IAC BRK ("send brk") is TND_KEY_BREAK, as F12 is. */
 
 /* ---- Beeb -> terminal ---------------------------------------------------- */
 

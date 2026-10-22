@@ -2,7 +2,7 @@
 
 Pi1MHz can let you `telnet` to the Pi and sit at the Beeb's keyboard and
 screen. What you type arrives as if it had been typed on the Beeb, and what
-the Beeb prints comes back to your terminal. Anything that can run telnet -
+the Beeb prints comes back to your terminal. It can run in linemode like a teletype terminal or the default console mode which gives the full terminal screen. Anything that can run telnet -
 PuTTY, a Linux or macOS terminal, Windows' telnet client, a script - can
 drive the Beeb from another room, and a program can drive it too.
 
@@ -43,7 +43,7 @@ the auto-start ROM in a flash ROM bank); it has not been run on a B+.
    `[BBC attached - press RETURN]`. Press RETURN and the Beeb answers with its
    prompt.
 
-To hand things back without a BREAK, enter the page at its second entry:
+To hand things back without a BREAK, you can either quit your telnet client (usually CTRL with ] and quit) or enter the page at its second entry on the BBC:
 `*FX147,136,20` then `*GO FD03`. It prints ` Telnet: off` and puts `*FX3` back.
 
 **BREAK undoes it**, as with the other redirectors: run helper 20 again after
@@ -84,9 +84,7 @@ daemon in on every reset. The image is `firmware/Pi1MHz/telnetd.rom`. Burn it in
 an EPROM or a flash ROM bank, or put it on the SD card (`/Pi1MHz/telnetd.rom`) and
 load it into sideways RAM the way you load any ROM image, then press CTRL-BREAK. It
 stays there across BREAK, and from then on every BREAK prints `TelnetD` and the
-session is back. (Before build 23 a plain BREAK on a Master lost the session until
-CTRL-BREAK: the Master's MOS skips the reset call the ROM answered on a soft BREAK, so
-the ROM now also answers the one it sends on every reset.)
+session is back, on a Master too. If you use a non-battery backed sideways RAM, it will not survive a power cycle.
 
 - **It needs nothing from the SD card.** The ROM finds the Pi's serial stub at its
   usual place (`&FCCC`) and hooks the Beeb's keyboard and RS423 output into it
@@ -100,8 +98,7 @@ the ROM now also answers the one it sends on every reset.)
   request for paged mode are kept in 8 bytes the Pi provides in its own page,
   `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
   MOS's tables that belongs to anything else is used.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b21` (the build number
-  goes up with every image).
+- **`*HELP` shows that it is fitted**: it lists `TelnetD` and its version.
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
 - **It puts the hooks back if something else takes them.** If the keyboard insert
@@ -109,53 +106,48 @@ the ROM now also answers the one it sends on every reset.)
   up, a Master's MOS) while the Pi still has the session, the next time anything
   reads the keyboard the ROM hooks them in again. Unhooking on purpose (helper 20's
   second entry) is left alone.
-- **It presses SHIFT for paged mode** (build 10). A telnet client cannot send SHIFT on
+- **It presses SHIFT for paged mode** A telnet client cannot send SHIFT on
   its own. SHIFT is a key the MOS reads from the keyboard itself, not from the buffer,
-  so for Page Down the Pi sets a flag in the ROM's workspace in its own page (build 15;
-  before that, Beeb memory by an interrupt "trip"), never a byte in the keyboard buffer: nothing typed
+  so to continue when in paged mode (CTRL N) the Pi sets a flag in the ROM's workspace in its own page, never a byte in the keyboard buffer: nothing typed
   ahead, not even a COPY pressed while the page waits, can hold it up. The ROM claims
   the keyboard vector (KEYV: whatever was there, the MOS's routine or another ROM's, is
   kept and gone on to; since build 22) and, when the MOS asks
   whether SHIFT is pressed (paged mode's wait at the end of a page), answers yes once
   if the flag is set, and clears it.
-- **It tells the Pi every key a program takes** (build 13). From that the Pi knows how
+- **It tells the Pi every key a program takes** From that the Pi knows how
   many keys are waiting in the Beeb's buffer and when the Beeb last took one; the Status
   page's Telnetd line shows `keys waiting N, last taken S s ago`, and adds
   `BBC NOT TAKING KEYS` when keys have waited 5 seconds with none taken (a hung program,
   or one that does not read the keyboard). And when a program takes a key and draws no
   character, as WordWise-Plus's editor does (it writes the screen memory itself), the Pi
   reads the screen quietly and draws only what changed, so what you type shows without F11.
-- **Characters above 127 can be typed and pasted** (build 13). The MOS's own key read
+- **Characters above 127 can be typed and pasted** The MOS's own key read
   turns a byte &80-&FF in the keyboard buffer into a function key or a cursor key, so the
   Pi sends such a character behind a marker byte, and the ROM (on the read-character
   vector, RDCHV) hands the program the byte as it is. UTF-8 from the terminal is decoded
   (e-acute arrives as 233); in MODE 7 the terminal's teletext glyphs map back to their codes.
 - **MODE 7 control codes stored below 32** (WordWise-Plus writes its colours as &01-&07,
-  which the teletext chip treats as &81-&87) are sent in a screen read as &81-&87
-  (build 14), so F11 shows them in the right place.
+  which the teletext chip treats as &81-&87) are sent in a screen read as &81-&87, so F11 shows them in the right place.
 
 **The ROM does not survive switching the Beeb off.** Ordinary sideways RAM is
 cleared when the power goes, so after a power-on the ROM is simply not there, and
 the daemon is not started until something loads it again (see "Starting at
 power-on" below). What the ROM gives you is the daemon back after every BREAK and
-CTRL-BREAK for as long as the power stays on. If your sideways RAM is
+CTRL-BREAK for as long as the image stays in sideways RAM. If your sideways RAM is
 battery-backed, or the ROM is burnt into an EPROM, it is there at power-on too.
 
 **In an EPROM or flash bank it is there at power-on.** The image,
 `firmware/Pi1MHz/telnetd.rom`, is exactly 16 KiB, so a 27C128 or compatible holds it,
-and it fits a ROM socket. On the Model B bench it lives in a flash ROM bank, and three
-power cycles in a row each hooked the Pi in with nothing typed.
+and it fits a ROM socket. On the Model B tests it lived in a flash ROM bank, and three
+power cycles in a row each hooked the Pi in without anything typed.
 A ROM that is present at power-on answers the Beeb's first reset call, before the
 Beeb tries its boot disc, and because it waits for the Pi (above) it holds the
 whole boot until the Pi is up, which should also give the Pi's emulated hard disc
-time to be ready before ADFS looks for it. **That last effect is expected, not yet
-measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
-about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 18) is `105B49F888A46D49131BABE1027204FA`.
+time to be ready before ADFS looks for it. The wait can be interrupted by pressing any key.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after
-the last reset is listed as `unplugged` until it is. The mark is kept in the
+the last reset is listed as `unplugged` until a reset. The mark is kept in the
 Master's battery-backed memory. If your sideways RAM is battery-backed, the ROM
 stays in it, and then loading it once is all it takes for the telnet daemon to
 start by itself at every power-on and BREAK.
@@ -166,10 +158,8 @@ half seconds) while the Beeb checks its ROMs. After a power-on the ROM therefore
 waits, up to about 3.6 seconds, for the Pi to answer before it starts the daemon;
 after a BREAK it does not wait. If no Pi ever answers it gives up and the Beeb
 boots on; on a machine without the Pi1MHz (the screen blank, the cursor top left
-for those seconds) press any key to boot at once. The Pi counts as there only when
-its whole `STX &FC88` window reads back, so an empty bus is never taken for one. Tried on a
-Master 128 with the ROM in an EPROM and no Pi1MHz fitted (build 12): it boots on. Power-on is the one place the Beeb pauses for the Pi, so the first boot
-of the day takes a little longer. It needs sideways RAM (a Model B needs a
+for those seconds) press any key to boot immediately. The Pi counts as present only when
+its whole `STX &FC88` window reads back, so an empty bus isn't mistaken for one. Power-on is the one place the Beeb pauses for the Pi, so a cold start takes a little longer. It needs sideways RAM (a Model B needs a
 sideways RAM board; a Master 128 has it), is the same
 image on a B, B+ and Master 128, and does nothing if no Pi1MHz answers. To
 remove it, switch the machine off or `*UNPLUG` its slot. Load it only once per
@@ -186,10 +176,12 @@ power-on: a second copy in another bank answers the same reset call.
 | End | COPY (copies the character under the copy cursor) |
 | F1 to F9, F10 | f1 to f9, f0 |
 | F12 | BREAK: a soft reset, the same jump as `CALL !-4`, so it works whatever is running. The terminal is cleared and the cursor put where the Beeb reports it; the session comes back when something hooks the daemon in again (HELPERS or the auto-start ROM). Boot banners printed before the hook are not shown. |
-| Page Down | SHIFT, pressed once: in paged mode (`VDU 14`, CTRL-N) the Beeb stops at the end of each page until SHIFT is pressed, and Page Down lets it go on a page. Needs the auto-start ROM, build 10 or later. |
+| SHIFT-F12 | SHIFT-BREAK: a BREAK, and the Beeb is told SHIFT is held while it starts, so the filing system boots (`!BOOT`, as `*OPT 4` says). Needs the auto-start ROM. A boot that waits for ever (the DFS with no drive) can only be ended by the BREAK key or the power: see "Things to know". |
+| CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. |
+| Page Down | SHIFT, pressed once: in paged mode (`VDU 14`, CTRL-N) the Beeb stops at the end of each page until SHIFT is pressed, and Page Down lets it go on a page. Needs the auto-start ROM. |
 | F11 or Ctrl-L | Draw the screen again: the Pi asks the auto-start ROM for what is on the Beeb's screen (see above). Nothing shows on the Beeb. |
 | the pound sign | the Beeb's pound (character 96) |
-| ESC | the character 27 (see below) |
+| ESC | the Beeb's ESCAPE key (see below) |
 | Ctrl-letters | the control code, `Ctrl-A` = 1 and so on |
 
 A lone ESC is held for a tenth of a second to see whether it is the start of
@@ -288,7 +280,8 @@ connecting terminal is greeted with them, then a blank line and
 
     Pi1MHz telnet - connecting . . .
 
-with a dot every 0.3 seconds, for at least a second and until the client has said
+(with the Pi's network name, `wifi_hostname`, in place of Pi1MHz when one is set, as on the
+web pages; the login prompt is headed the same way) with a dot every 0.3 seconds, for at least a second and until the client has said
 its window size; the Beeb's output waits meanwhile. Then the terminal is cleared
 and the Beeb's screen drawn in place, row by row, so the terminal's rows are the
 Beeb's from the start: what the Beeb prints next lands where it should, and
@@ -311,8 +304,7 @@ terminal would show only the first. The daemon follows the arrow keys, End and
 RETURN, shows the copy cursor as a reversed character, and moves it as COPY
 takes characters, as the MOS does, wrapping as the MOS's does: inside the text
 window, off the top to the bottom row and back, off either side to the other side of
-the row above or below. It moves only when the Beeb takes the key: with ROM build 11
-the ROM tells the Pi each time a program takes a cursor key, COPY or RETURN out of
+the row above or below. It moves only when the Beeb takes the key: the ROM tells the Pi each time a program takes a cursor key, COPY or RETURN out of
 the keyboard buffer, as the MOS's line input does, so a key that only waits there - a
 listing in paged mode waiting for SHIFT - moves nothing, whatever the program's
 prompt looks like. (With an older ROM the daemon guesses from the screen instead: the
@@ -335,7 +327,7 @@ terminal. **Teletype mode** does none of that. The session is a plain serial lin
 - every byte the Beeb prints (to RS423) goes to your client exactly as it is: VDU codes, control
   characters, MODE changes, all 256 values;
 - every byte you send is typed on the Beeb as it is, including bytes above 127 (through the
-  ROM, build 13 or later). ESC is the Beeb's ESCAPE key, as on its keyboard;
+  auto-start ROM). ESC is the Beeb's ESCAPE key, as on its keyboard;
 - there is no screen model drawn, no copy cursor, no F11 redraw and no screen reads. What you
   see is what came down the line. When the session starts, the daemon shows the line the Beeb
   is on (usually its prompt, from what it has followed of the screen); no key is sent for it.
@@ -362,6 +354,31 @@ A connection to that port is teletype mode from the start, with no telnet negoti
 use PuTTY's connection type **Raw**, or `nc 192.168.1.20 2323`. The login, the lockout rules and
 the one-session rule are the same on both ports.
 
+## Line mode (Linux telnet's "mode line")
+
+Linux telnet can collect a whole line and send it when you press RETURN (`Ctrl-]`,
+then `mode line`; `mode character` goes back). The daemon takes the client's line
+mode (telnet LINEMODE) and sets its special keys, so that what must not wait for
+RETURN does not:
+
+- **ESC** is sent at once (as the client's interrupt key, telnet IP): it is the
+  Beeb's ESCAPE key as above. It also throws away the line you were typing in the
+  client, as ESCAPE does on the Beeb.
+- **F12, SHIFT-F12, CTRL-F12 and Page Down** are sent at once ("~", which ends
+  their codes, is the client's forwarding key), so paged mode works in line mode.
+- **Ctrl-C** is ESCAPE at once (the client's abort key). `send brk` at the
+  `telnet>` prompt is BREAK, and `send ip` is ESC.
+- **Switching mode shows the screen again**: the client's `telnet>` prompt was
+  over it. In teletype mode the Beeb's line is sent again instead - its prompt and
+  what you had typed, however many rows it wraps over.
+- The arrow keys start with ESC too, so in line mode they are ESCAPE; the client's
+  own line editing has no use for them. Your terminal may echo what it sent for
+  F12 or Page Down (`^[[6~`) where the cursor is.
+
+Clients without LINEMODE that collect lines themselves (Windows telnet has no line
+mode; PuTTY's "local line editing") send ESC and F12 only with the line. `send brk`
+(Windows telnet, PuTTY's "Special Command") works in any mode.
+
 ## Things to know
 
 - **Make the terminal at least as big as the Beeb's screen**: 80 columns by 32
@@ -376,16 +393,28 @@ the one-session rule are the same on both ports.
   Windows telnet reports its size only when it connects, so after resizing it press
   F11 (the message says so only to Windows telnet).
 
-- **ESC and Ctrl-C raise the Beeb's ESCAPE**, so they stop a running BASIC
-  program (error 17, "Escape") as the real key does, even when the Beeb is busy
-  and its keyboard buffer is full of type-ahead, and they discard what was typed
+- **ESC and Ctrl-C are the Beeb's ESCAPE key**, with the Beeb's own settings, as
+  the keyboard's ESCAPE goes through the MOS (OSBYTE 153): it raises ESCAPE, so it
+  stops a running BASIC program (error 17, "Escape"), unless the program has said
+  otherwise - with `*FX229,1` (a few games and editors) or another escape character
+  (`*FX220`) it is the character 27, which `GET` reads; with `*FX200,1` it is
+  ignored; with the escape event enabled (`*FX14,6`) the event is raised instead.
+  The Pi reads those settings from the Beeb's memory each time ESC is pressed,
+  which takes about a millisecond. As ESCAPE it works even when the Beeb is busy
+  and its keyboard buffer is full of type-ahead, and it discards what was typed
   ahead - also what is still on its way from your client, when you have sent
-  faster than the Beeb takes keys (a long paste): ESC cuts through it. A new
-  session never gets what the last one typed ahead. A lone ESC is told from the start of an arrow or function key by waiting
-  a tenth of a second. The catch: a program that has set `*FX229,1` so that ESC
-  is an ordinary key (a few games) never gets the character 27 from telnet, only
-  the ESCAPE condition. The daemon writes the MOS's escape flag directly (bit 7 of
-  &FF), which is safe from an interrupt, rather than calling the MOS.
+  faster than the Beeb takes keys (a long paste): ESC cuts through it, and so do
+  F12 and its SHIFT and CTRL forms. A new session never gets what the last one
+  typed ahead. A lone ESC is told from the start of an arrow or function key by
+  waiting a tenth of a second. Not followed: `*FX220` for keys other than ESC (a
+  key typed in telnet that is the escape character goes in as a character), and
+  `*FX201` (keyboard disabled).
+- **SHIFT-F12 with nothing to boot can leave the Beeb waiting for ever.** The
+  start, the boot included, runs with interrupts off, and everything the Pi does
+  goes through an interrupt, so neither ESC nor F12 reaches a filing system that
+  waits for a drive that is not there (the 1770 DFS with no drive fitted). On the
+  Beeb's own keyboard only BREAK gets out of that, as it pulls the reset line;
+  from telnet, switch the Beeb off and on.
 - **One session at a time.** A second connection is told the BBC is in use
   and closed. The exception is a session that has died: if the client's machine
   crashed or the client was killed, the old session may still be holding the
@@ -450,13 +479,14 @@ the host, so it works with a second processor on:
 - **ESC from the terminal stops a program on the second processor.** The escape
   flag lives in both machines; the Pi raises it the way the MOS does, which also
   tells the second processor.
-- **F12 (BREAK) resets the second processor too**, as the BREAK key does (ROM build
-  6 and later). Without that the second processor's start-up waited for ever.
+- **F12 (BREAK) resets the second processor too**, as the BREAK key does: the Pi
+  holds it in reset from the moment of the BREAK until the ROM's start-up lets it
+  go. CTRL-F12 pulses its reset in the same moment as the BREAK.
 - **Not covered:** a program on the second processor that draws by writing to
   the host's screen memory across the Tube, as a host program writing to the
   screen directly, is not seen.
 
-**Tested on a real BBC Model B with a 6502 second processor** (ROM build 7): the
+**Tested on a real BBC Model B with a 6502 second processor**: the
 screen, boot, editing and demo test suites (see the developer notes), F12 twice,
 ESC stopping a running program, and flashing the ROM itself. One fault is still
 open: earlier on the day of the test, with BASIC on the second processor in MODE
