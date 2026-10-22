@@ -713,11 +713,12 @@ static void tline_byte(uint8_t c)
          g_tlen--;
       else
          g_tline_ok = false;
-   } else if (c == 10u || c == 13u || c == 12u || c == 22u || c == 30u || c == 31u) {
-      g_tlen = 0u;                              /* a line end, CLS, MODE, home, TAB(x,y): a new line */
+   } else if (c == 10u || c == 13u || c == 12u || c == 22u) {
+      g_tlen = 0u;                              /* a line end, CLS, MODE: a new line */
       g_tline_ok = true;
-   } else if (c == 8u || c == 9u || c == 11u) {
-      g_tline_ok = false;                       /* the cursor moved along it */
+   } else if (c == 8u || c == 9u || c == 11u || c == 30u || c == 31u) {
+      g_tline_ok = false;                       /* the cursor moved (copy editing, home, TAB(x,y) - a screen
+                                                   read is a stream of them): the model's row is the line */
    }
 }
 
