@@ -58,6 +58,7 @@
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
+#include "wifi/wifi.h"
 
 #define KRING_SIZE   4096u               /* power of two */
 #define KRING_MASK   (KRING_SIZE - 1u)
@@ -254,6 +255,14 @@ static bool o_str(const char *s)
    return o_put(s, strlen(s));
 }
 
+/* The Pi's name in the greeting: its network hostname (wifi_hostname), as the web pages show it, so
+   several Pi1MHz on one network can be told apart; "Pi1MHz" when none is set. */
+static const char *td_name(void)
+{
+   const wifi_config_t *c = wifi_get_config();
+   return (c != NULL && c->hostname[0] != '\0') ? c->hostname : "Pi1MHz";
+}
+
 /* The byte the Pi puts in the Beeb's keyboard buffer to ask for the screen: the auto-start
    ROM takes it out of REMV before any program sees it. */
 #define SCAN_KEY 0xFFu
@@ -395,7 +404,9 @@ static void connect_start(void)
    g_conn_us = g_dot_us = Pi1MHz_now_us;
    g_warn_until = 0u;
    g_warned = false;
-   o_str("\r\nPi1MHz telnet - connecting");
+   o_str("\r\n");
+   o_str(td_name());
+   o_str(" telnet - connecting");
 }
 
 static void send_banners(void)                   /* what came up when the Beeb started */
@@ -963,7 +974,9 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
       o_str("\x1b[0m");
    if (!login_open()) {                         /* the banners come after the login */
       g_stage = S_LOGIN_USER;
-      o_str("\r\nPi1MHz telnet\r\n\r\nlogin: ");
+      o_str("\r\n");
+      o_str(td_name());
+      o_str(" telnet\r\n\r\nlogin: ");
    } else {
       send_banners();
       connect_start();

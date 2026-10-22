@@ -287,7 +287,8 @@ connecting terminal is greeted with them, then a blank line and
 
     Pi1MHz telnet - connecting . . .
 
-with a dot every 0.3 seconds, for at least a second and until the client has said
+(with the Pi's network name, `wifi_hostname`, in place of Pi1MHz when one is set, as on the
+web pages; the login prompt is headed the same way) with a dot every 0.3 seconds, for at least a second and until the client has said
 its window size; the Beeb's output waits meanwhile. Then the terminal is cleared
 and the Beeb's screen drawn in place, row by row, so the terminal's rows are the
 Beeb's from the start: what the Beeb prints next lands where it should, and
