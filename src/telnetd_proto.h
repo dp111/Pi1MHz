@@ -106,6 +106,8 @@ typedef struct {
       Ctrl-C its abort (IAC ABORT, ESCAPE) and "~" a forwarding character, so the rest of F12
       (ESC [ 2 4 ~) or Page Down (ESC [ 6 ~) follows the IP at once instead of waiting for RETURN. */
    bool     lm;                 /* the client said WILL LINEMODE, we said DO */
+   bool     lm_offered;         /* ... its first WILL LINEMODE, which Linux telnet sends as it connects, was
+                                   refused (DONT): only a later one, at "mode line", is taken */
    uint8_t  resume;             /* the state a telnet command inside an escape sequence goes back to */
 } tnd_in_t;
 

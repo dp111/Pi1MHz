@@ -296,6 +296,7 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
       case TN_IP: {                             /* Interrupt Process: a line-mode client's ESC (or Ctrl-C) */
          uint8_t r[TND_IN_REPLY];               /* read as the ESC byte: alone it is ESCAPE, IP [ 2 4 ~ is F12 */
          size_t  rl;
+         s->resume = I_NORMAL;                  /* (one inside an escape sequence starts afresh) */
          IAC_DONE(s);
          return tnd_in_byte(s, 27u, now_us, keys, r, &rl);
       }
@@ -315,6 +316,12 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 
    case I_OPT:
       IAC_DONE(s);
+      if (c == TND_OPT_LINEMODE && s->cmd == TN_WILL && !s->lm_offered) {
+         s->lm_offered = true;                 /* offered as the client connects: character mode, as before */
+         rep[0] = TN_IAC; rep[1] = TN_DONT; rep[2] = c;
+         *replen = 3u;
+         return 0u;
+      }
       if (c == TND_OPT_LINEMODE && (s->cmd == TN_WILL || s->cmd == TN_WONT)) {
          bool on = (s->cmd == TN_WILL);
          if (on != s->lm) {

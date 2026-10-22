@@ -477,7 +477,13 @@ static void test_negotiation(void)
    static const uint8_t dont1[] = { 255, 254, 1 };
    CHECK(nreply == 3 && memcmp(reply, dont1, 3) == 0, "WILL ECHO from the client: refused (DONT)");
 
-   /* LINEMODE taken: DO, MODE EDIT|TRAPSIG, and the special characters ESC, Ctrl-C and "~"; once. */
+   /* LINEMODE: the offer Linux telnet makes as it connects is refused, so the session starts in
+      character mode; the next ("mode line") is taken: DO, MODE EDIT|TRAPSIG, and the special
+      characters ESC, Ctrl-C and "~"; once. */
+   in_reset();
+   FEED(&s, "\xff\xfb\x22");
+   static const uint8_t dont34a[] = { 255, 254, 34 };
+   CHECK(nreply == 3 && memcmp(reply, dont34a, 3) == 0 && !s.lm, "the first WILL LINEMODE (at connect): DONT");
    in_reset();
    FEED(&s, "\xff\xfb\x22");
    static const uint8_t lm[] = { 255, 253, 34, 255, 250, 34, 1, 3, 255, 240,

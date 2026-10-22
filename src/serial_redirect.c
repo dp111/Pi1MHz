@@ -223,6 +223,10 @@ static volatile bool     ser_idle_active; /* the trip in progress is the idle on
 #define SER_TUBE_HOLD  0xA0u
 #define SER_TUBE_GO    0x20u
 static volatile bool     ser_tube_brk;    /* a BREAK's trip (hold, then the reset) is to come */
+static volatile uint32_t ser_brk_asked_us;   /* ... asked at this time, the gate closed then: a trip already in the
+                                                stub runs on to its exit for ~100 us, and armed in that time the
+                                                exit sent it through the reset vector without the hold */
+#define SER_BRK_SETTLE_US 2000u
 static volatile bool     ser_tube_held;   /* ... it was taken: the release is due once the ROM hooks in again */
 static volatile bool     ser_tube_rel;    /* ... and its trip is to come */
 static volatile bool     ser_tube_active; /* the trip in progress is one of them */
@@ -248,6 +252,8 @@ static volatile bool     ser_brk_shift;   /* SHIFT for the boot after this BREAK
 static volatile uint32_t ser_shift_us;    /* ... set at this time, not yet taken */
 static volatile bool     ser_shift_wait;
 static volatile bool     ser_brk_ctrl;    /* this BREAK is CTRL-BREAK */
+static volatile bool     ser_brk_pulse;   /* ... or the second processor is pulsed, not held: CTRL-BREAK, or no
+                                             auto-start ROM to let it go after the reset (helper 20 by hand) */
 static volatile bool     ser_ctrl_trip;   /* ... and its trip is armed: the escape routine is borrowed */
 static const uint8_t     ser_ctrlr[9] = { 0x8E, 0x4E, 0xFE, 0x8D, 0xE0, 0xFE, 0x29, 0x7F, 0x4C };   /* ... JMP b+&2D */
 /* The ESCAPE key as the keyboard's (OS 1.20 OSBYTE 153, &E4F3): the character becomes ESCAPE only
@@ -352,7 +358,7 @@ static void ser_gate_close(void)
       ser_event_active = false;
       ser_event_req = true;
       ser_write(SER_INBUF - 1u, OP_LDX);
-      ser_write(SER_INBUF, 0u);
+      ser_write(SER_INBUF, (uint8_t)(ser_telnet ? 0u : 1u));
       ser_write(SER_ESC_ROUTINE, OP_STA);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    }
@@ -425,7 +431,7 @@ static void ser_ctrl_restore(void)
    ser_ctrl_trip = false;
    for (unsigned int i = 0u; i < sizeof ser_escr; i++)
       Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + i, ser_escr[i]);
-   ser_write(SER_INBUF, 0u);
+   ser_write(SER_INBUF, (uint8_t)(ser_telnet ? 0u : 1u));
 }
 
 /* A Tube trip (see SER_TUBE_CTL): the release after a BREAK, or the BREAK's own, which ends in it. */
@@ -439,13 +445,13 @@ static void ser_tube_arm(void)
       ser_tube_brk = false;
       ser_brk_exit_arm();
       ser_trip_arm(SER_TUBE_CTL, SER_TUBE_HOLD);
-      if (ser_brk_ctrl) {                    /* CTRL-BREAK: the VIA's interrupt enables off as well */
+      if (ser_brk_pulse) {                   /* the second processor pulsed; CTRL-BREAK: the VIA's interrupt enables off too */
          ser_ctrl_trip = true;
          for (unsigned int i = 0u; i < sizeof ser_ctrlr; i++)
             Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + i, ser_ctrlr[i]);
          Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + sizeof ser_ctrlr, (uint8_t)(ser_base + SER_ESC_ROUTINE));
          Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + sizeof ser_ctrlr + 1u, 0xFCu);
-         ser_write(SER_INBUF, 0x7Fu);
+         ser_write(SER_INBUF, ser_brk_ctrl ? 0x7Fu : 0u);      /* &00 to the IER clears nothing */
          ser_write(SER_JSR, (uint8_t)(ser_base - SER_ESCR_OFF));
       }
    }
@@ -471,8 +477,9 @@ static void ser_esc_arm(void)
 static bool ser_arm_next(void)
 {
    if (ser_tube_rel || ser_tube_brk) {
-      if (!ser_tube_rel && ser_gate_open)
-         return false;                       /* the BREAK's, with its exit: armed by the poll, gate shut */
+      if (!ser_tube_rel && (ser_gate_open || (Pi1MHz_now_us - ser_brk_asked_us) < SER_BRK_SETTLE_US))
+         return false;                       /* the BREAK's, with its exit: armed by the poll, gate shut and
+                                                no trip still in the stub */
       SER_LOG('T', ser_tube_rel);
       ser_tube_arm();
    } else if (ser_probe_step >= 1u && ser_probe_step <= 4u) {
@@ -562,7 +569,7 @@ static void ser_rx_consume(unsigned int gpio)
    } else if (ser_event_active) {            /* ... the escape event's (C clear: taken) */
       ser_event_active = false;
       ser_write(SER_INBUF - 1u, OP_LDX);
-      ser_write(SER_INBUF, 0u);
+      ser_write(SER_INBUF, (uint8_t)(ser_telnet ? 0u : 1u));
       ser_write(SER_ESC_ROUTINE, OP_STA);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
       if (ser_event_full) {                  /* C set: no handler took it after all - the flag */
@@ -730,6 +737,10 @@ static void ser_control(unsigned int gpio)
       ser_write(SER_INBUF, (uint8_t)(telnet ? 0u : 1u));
       rx.head = rx.tail;
       ser_esc_req = false;
+      if (ser_probe_step != 0u || ser_event_req)
+         ser_esc_result = SER_ESC_OFF;          /* an ESCAPE key's reads and event: telnet mode's only */
+      ser_probe_step = 0u;
+      ser_event_req = false;
    }
    if (!ser_hooked) {
       ser_gate_close();
@@ -739,8 +750,6 @@ static void ser_control(unsigned int gpio)
 }
 
 /* ---- the byte API, main loop only ------------------------------------ */
-
-static bool ser_tx_drained;       /* the TX flag may need to go back to CLC */
 
 bool serial_redirect_pending(void)
 {
@@ -754,8 +763,6 @@ size_t serial_redirect_read(uint8_t *dst, size_t max)
       dst[n++] = tx.buf[tx.head & SER_FIFO_MASK];
       tx.head++;
    }
-   if (n != 0u)
-      ser_tx_drained = true;
    return n;
 }
 
@@ -922,7 +929,9 @@ void serial_redirect_break(uint8_t how)
    ser_brk_req = true;
    ser_esc_req = false;                       /* no ESCAPE first: the Tube host code would tell it across */
    ser_tube_brk = true;
+   ser_brk_asked_us = Pi1MHz_now_us;
    ser_brk_ctrl = (how == SER_BRK_CTRL) && ser_base >= SER_ESCR_OFF;
+   ser_brk_pulse = (ser_brk_ctrl || !ser_scan_ok) && ser_base >= SER_ESCR_OFF;
    ser_brk_shift = (how == SER_BRK_SHIFT);
    ser_backoff = false;
    _restore_cpsr(cpsr);
@@ -950,11 +959,13 @@ static void serial_redirect_poll(void)
          ser_write(SER_EXIT_OLD, ser_chain_lo);
          ser_write(SER_EXIT_OLD + 1u, ser_chain_hi);
          ser_brk_lost++;
+         ser_brk_shift = false;
+         ser_brk_ctrl = false;
+         ser_brk_pulse = false;
       }
       _restore_cpsr(cpsr);
    }
 
-   ser_tx_drained = false;            /* the TX flag goes back to CLC in the FIQ (ser_tx_byte), not here */
 
    /* Output has stopped: give the Beeb its RS423 idle flag back (see the top; telnet mode only). */
    if (telnet && !ser_idle_req && !ser_idle_active && ser_tx_count != ser_idle_tx
@@ -962,6 +973,7 @@ static void serial_redirect_poll(void)
       ser_idle_req = true;
 
    if (ser_shift_wait && ser_base >= SER_WS_OFF) {   /* SHIFT-BREAK: SHIFT held down through the start */
+      unsigned int cpsr = _disable_interrupts_cspr();
       uint32_t ws = (uint32_t)ser_base - SER_WS_OFF + SER_WS_SHIFT;
       if ((Pi1MHz_now_us - ser_shift_us) > SER_SHIFT_HOLD_US) {
          ser_shift_wait = false;
@@ -971,6 +983,7 @@ static void serial_redirect_poll(void)
          Pi1MHz_MemoryWrite(ws, 1u);          /* taken: pressed still */
          SER_LOG('H', 0);
       }
+      _restore_cpsr(cpsr);
    }
    if (ser_probe_step != 0u) {                 /* an ESCAPE key: read, decide (see ser_probe_addr) */
       unsigned int cpsr = _disable_interrupts_cspr();
@@ -1049,6 +1062,10 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_keys_told = false;
    ser_lit_ok = false;
    ser_brk_req = false;
+   ser_brk_shift = false;          /* a real reset (the BREAK key): whatever F12 asked for is over */
+   ser_brk_ctrl = false;
+   ser_brk_pulse = false;
+   ser_ctrl_trip = false;          /* (the stub below is written afresh, the escape routine with it) */
    static const uint8_t stub[SER_STUB_LEN] = {
       0xE0, 0x02,             /* +00 CPX #2      */
       0xD0, 0x05,             /* +02 BNE +09     */
@@ -1101,7 +1118,6 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);
    tx.head = tx.tail = 0u;
    rx.head = rx.tail = 0u;
-   ser_tx_drained = false;
    ser_tx_full = false;            /* the stub below starts with CLC at +04 */
    modem_reset();                  /* a BBC reset hangs up, as a DTR drop would */
 

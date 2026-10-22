@@ -176,7 +176,9 @@ static bool      g_esc_cut;              /* an ESCAPE or BREAK is waiting behind
 static bool      g_esc_wait;             /* an ESCAPE key is being decided on the Beeb (serial_redirect_escape_key):
                                             the keys behind it wait in the ring */
 static uint32_t  g_esc_wait_us;
-#define ESC_WAIT_US  600000u             /* no answer in this long: carry on */
+static uint32_t  g_esc_pos;              /* ... where in the ring it came (g_ktail then): a character goes there */
+static uint8_t   g_esc_more;             /* ESCAPE keys that came while one was being decided */
+#define ESC_WAIT_US  1500000u            /* no answer in this long: carry on (the Pi gives up at 0.4 s) */
 static uint32_t  g_recv_us;              /* when client data last came */
 /* Client data taken from lwIP but not yet turned into keys, copied out of its pbufs as it comes.
    Holding the pbufs themselves held lwIP's receive pool: the window is 64 KB, but a client sending
@@ -346,6 +348,7 @@ static void session_reset(void)
    g_lit_next = false;
    g_esc_cut = false;
    g_esc_wait = false;
+   g_esc_more = 0u;
    g_silent_wait = false;
    g_scan_keys = 0u;
    g_scan_pending = false;
@@ -516,6 +519,9 @@ static void deliver_key(uint8_t k)
          serial_redirect_escape_key();
          g_esc_wait = true;
          g_esc_wait_us = Pi1MHz_now_us;
+         g_esc_pos = g_ktail;
+      } else if (g_esc_more < 255u) {
+         g_esc_more++;
       }
    } else {
       k_push(k);
@@ -545,9 +551,23 @@ static void escape_settled(uint8_t r)
       g_silent_tx = g_out.drawn;
       if (g_copy && g_ansi)
          tnd_out_copykey(&g_out, 27u);
+      g_esc_more = 0u;
    } else if (r == SER_ESC_CHAR && g_ktail - g_khead < KRING_SIZE) {
-      g_khead--;
-      g_kring[g_khead & KRING_MASK] = 27u;
+      /* in order: after the keys typed before the ESC (still in the ring: they wait while it is
+         decided), before the ones typed after it */
+      if (g_esc_pos - g_khead > g_ktail - g_khead)   /* the ring emptied meanwhile */
+         g_esc_pos = g_khead;
+      for (uint32_t i = g_ktail; i != g_esc_pos; i--)
+         g_kring[i & KRING_MASK] = g_kring[(i - 1u) & KRING_MASK];
+      g_kring[g_esc_pos & KRING_MASK] = 27u;
+      g_ktail++;
+   }
+   if (r != SER_ESC_RAISED && g_esc_more != 0u) {   /* the next ESCAPE key, where it came */
+      g_esc_more--;
+      serial_redirect_escape_key();
+      g_esc_wait = true;
+      g_esc_wait_us = Pi1MHz_now_us;
+      g_esc_pos = g_ktail;
    }
 }
 
