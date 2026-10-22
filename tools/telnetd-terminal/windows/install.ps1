@@ -23,6 +23,15 @@ New-Item -ItemType Directory -Force $fontDir | Out-Null
 $dst = Join-Path $fontDir 'BBCMicroMOS.ttf'
 Copy-Item $font $dst -Force
 New-ItemProperty -Path $fontKey -Name $fontName -Value $dst -PropertyType String -Force | Out-Null
+# The registry entry only takes effect at the next sign-in: load the font into this session now and tell running
+# programs (WM_FONTCHANGE to all windows)
+Add-Type -Namespace TelnetD -Name Font -MemberDefinition @'
+[DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern int AddFontResourceW(string file);
+[DllImport("user32.dll")] public static extern IntPtr SendMessageTimeoutW(IntPtr hWnd, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+'@
+[void][TelnetD.Font]::AddFontResourceW($dst)
+$r = [IntPtr]::Zero
+[void][TelnetD.Font]::SendMessageTimeoutW([IntPtr]0xffff, 0x001D, [IntPtr]::Zero, [IntPtr]::Zero, 2, 1000, [ref]$r)
 Write-Host "Font installed: BBC Micro MOS"
 
 # Windows Terminal picks up profile "fragments" from this folder by itself
