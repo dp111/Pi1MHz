@@ -1,0 +1,32 @@
+#!/bin/sh
+# beeb-telnet [host] - telnet to the Pi1MHz's TelnetD (host defaults to Pi1MHz) looking like a BBC Micro.
+# On the Linux console (TERM=linux) it loads the BBC Micro console font and the BBC's eight colours for the session
+# and puts the previous font and colours back afterwards.  In a desktop terminal it runs telnet as it is: choose the
+# "BBC Micro MOS" font and an 80 x 32 window in the terminal's own settings.
+HOST=${1:-Pi1MHz}
+FONT=/usr/share/consolefonts/BBCMicroMOS.psf
+
+if [ "$TERM" = "linux" ] && [ -r "$FONT" ] && command -v setfont >/dev/null; then
+    SAVED=$(mktemp)
+    setfont -O "$SAVED" 2>/dev/null || true     # the current font, to put back
+    setfont "$FONT"
+    # the BBC's colours: black red green yellow blue magenta cyan white, normal and bright alike
+    for i in 0 1 2 3 4 5 6 7; do
+        case $i in
+            0) c=000000;; 1) c=FF0000;; 2) c=00FF00;; 3) c=FFFF00;;
+            4) c=0000FF;; 5) c=FF00FF;; 6) c=00FFFF;; 7) c=FFFFFF;;
+        esac
+        printf '\033]P%X%s\033]P%X%s' "$i" "$c" "$((i + 8))" "$c"
+    done
+    printf '\033[37;40m\033[2J\033[H'
+    cols=$(tput cols); rows=$(tput lines)
+    if [ "$cols" -lt 80 ] || [ "$rows" -lt 32 ]; then
+        echo "This console is $cols x $rows; MODE 0, 1, 2, 4 and 5 need 80 x 32."
+    fi
+    telnet "$HOST"
+    printf '\033]R\033[0m\033[2J\033[H'          # the console's own colours back
+    if [ -s "$SAVED" ]; then setfont "$SAVED"; else setfont; fi
+    rm -f "$SAVED"
+else
+    telnet "$HOST"
+fi

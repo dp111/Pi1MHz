@@ -249,6 +249,30 @@ its picture behind it (place the two side by side with
 `xterm -xrm 'XTerm*tekGeometry: +620+0'`). Tested in a real xterm (2026-10-18).
 Nothing changes for any other terminal, and `telnetd_tek=0` turns it off.
 
+### Making it look like a BBC Micro
+
+Any terminal works, but you can make your terminal look like the Beeb itself.
+`tools/telnetd-terminal` has the BBC Micro's own character set as a font
+("BBC Micro MOS", with the teletext characters and mosaics), the BBC's eight
+colours, and settings that are ready to install:
+
+- **Windows Terminal**: run `windows\install.cmd` to install the font and the
+  "BBC Micro" profiles. `windows\BBC-Micro-telnet.cmd [host]` then opens an
+  80 x 32 window. Windows' own telnet client cannot show UTF-8, which the pound
+  sign and the teletext graphics need. The launcher therefore uses WSL's telnet
+  when you have one (`sudo apt install telnet` in Debian).
+- **PuTTY**: double-click `putty\BBC-Micro-telnet.reg` to add a saved session
+  called "BBC Micro telnet". `windows\BBC-Micro-putty.cmd [host]` opens it.
+- **Debian (bookworm, trixie)**: run `sh linux/install.sh`, then `beeb-telnet [host]`.
+  On the Linux console it loads a matching console font and the BBC's colours for
+  the session.
+
+The host is `Pi1MHz` in all of them; use your Pi's hostname or IP address if it is
+different. A terminal 80 x 32 characters in size fits every mode. The
+[README](../../tools/telnetd-terminal/README.md) explains each one. The Linux
+console can only show 512 characters, so on the console the teletext mosaics come
+out as the nearest block instead of the six-cell sextants.
+
 ### The daemon keeps a picture of the Beeb's text screen
 
 The Beeb's screen is not the terminal's. Its size depends on the mode (40, 80 or

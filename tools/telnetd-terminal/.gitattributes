@@ -1,0 +1,8 @@
+*.cmd        text eol=crlf
+*.reg        text eol=crlf
+*.ps1        text eol=crlf
+*.json       text eol=crlf
+*.sh         text eol=lf
+beeb-telnet  text eol=lf
+*.ttf        binary
+*.psf        binary
