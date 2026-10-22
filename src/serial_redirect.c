@@ -173,6 +173,7 @@ static const uint8_t ser_escr[11] = { 0x85, 0xFF, 0x2C, 0x7A, 0x02, 0x10, 0x03, 
    stub is not being run (interrupts off, or the vectors reset behind our
    back without a BREAK): close it rather than hold nIRQ indefinitely. */
 #define SER_STALL_US    100000u
+#define SER_SHIFT_HOLD_US 1000000u /* SHIFT-BREAK's SHIFT held down this long after the ROM hooks in */
 #define SER_PROBE_US    400000u   /* an ESCAPE key's reads not back in this long: ESCAPE anyway */
 #define SER_BACKOFF_US    2000u       /* telnet: 20 ms, with the keyboard buffer holding 32 bytes, capped a paste at ~1.3 kB/s */
 #define SER_BACKOFF_MODEM_US 20000u   /* the modem (helper 19): as it always was */
@@ -206,9 +207,10 @@ static volatile bool     ser_esc_active;  /* the trip in progress is the escape 
 static volatile bool     ser_idle_req;    /* the Beeb's RS423 busy flag wants setting: an idle trip is waiting */
 static volatile bool     ser_idle_active; /* the trip in progress is the idle one */
 /* A BREAK resets a second processor too, as the BREAK key does through the Tube's reset line,
-   which a jump through the reset vector never touches: left running (a program, or in the middle
-   of reporting an Escape), it did not answer the host's start-up and the Beeb hung after "BASIC",
-   about one BREAK in three on a 6502 second processor.  The BREAK's trip stores &A0 in the Tube
+   which a jump through the reset vector never touches.  The auto-start ROM pulses the Tube's reset
+   at service call 1 after a soft reset, but until then the second processor ran on (a program, or
+   in the middle of reporting an Escape), and the Beeb hung after "BASIC" about one BREAK in three
+   on a 6502 second processor.  The BREAK's trip stores &A0 in the Tube
    ULA's control register (&FEE0: bit 7 set or clear the flags in bits 0-5; bit 5 P holds the second
    processor in reset; b-em and PiTubeDirect implement it so), and its exit is the JMP (&FFFC); once
    the Beeb has been reset and the ROM has hooked it in again - before the second processor's
@@ -224,6 +226,30 @@ static volatile bool     ser_tube_brk;    /* a BREAK's trip (hold, then the rese
 static volatile bool     ser_tube_held;   /* ... it was taken: the release is due once the ROM hooks in again */
 static volatile bool     ser_tube_rel;    /* ... and its trip is to come */
 static volatile bool     ser_tube_active; /* the trip in progress is one of them */
+/* SHIFT-BREAK: once the ROM has hooked the Beeb in again after the reset (its last report, after it
+   has claimed KEYV and cleared its SHIFT byte), the SHIFT byte is set, and the ROM's KEYV answers the
+   MOS's auto-boot test (OS 1.20: OSBYTE 118 after the banner, KEYV with C and V clear, the call
+   paged mode makes) SHIFT pressed.  Something earlier in the start asks too (before the second
+   processor's banner), so, as with the key held down, it is set again each time it is taken, for
+   SER_SHIFT_HOLD_US.  The start runs with interrupts off, boot included, so no trip (ESCAPE, BREAK)
+   can reach a boot that waits for ever (a filing system with no drive): only the BREAK key or the
+   power gets the Beeb out of that.
+   CTRL-BREAK: the MOS reads CTRL from the keyboard itself (&F02A), which nothing but the key can
+   change, but it takes a reset for a power-on when the system VIA's interrupt enables are all
+   clear (OS 1.20 &D9D7, IER at &FE4E).  The BREAK's trip stores &7F there too, and pulses the
+   second processor's reset instead of holding it (after a power-on reset the ROM does not pulse
+   it, and a release trip cannot come: the MOS's reset runs with interrupts off and waits on the
+   Tube).  For that one trip the escape routine's bytes are STX &FE4E / STA &FEE0 (&A0, held) /
+   AND #&7F / JMP to the trips' routine, STA &FEE0 (&20, let go) / RTS, and the stub's LDX # is
+   &7F (a trip of its own before the BREAK's left the host taking no more interrupts).  So it is a power-on:
+   the language and the BREAK intercept go back to their defaults as at CTRL-BREAK, but memory from
+   &0400 is cleared too and OSBYTE 253 says 1, not 2. */
+static volatile bool     ser_brk_shift;   /* SHIFT for the boot after this BREAK */
+static volatile uint32_t ser_shift_us;    /* ... set at this time, not yet taken */
+static volatile bool     ser_shift_wait;
+static volatile bool     ser_brk_ctrl;    /* this BREAK is CTRL-BREAK */
+static volatile bool     ser_ctrl_trip;   /* ... and its trip is armed: the escape routine is borrowed */
+static const uint8_t     ser_ctrlr[9] = { 0x8E, 0x4E, 0xFE, 0x8D, 0xE0, 0xFE, 0x29, 0x7F, 0x4C };   /* ... JMP b+&2D */
 /* The ESCAPE key as the keyboard's (OS 1.20 OSBYTE 153, &E4F3): the character becomes ESCAPE only
    if it is the escape character (*FX220, &026C) and *FX229 (&0275) is 0, else it goes into the
    buffer as it is; *FX200 bit 0 (&0258) ignores it; with escape event 6 enabled (&02BF+6) the
@@ -298,6 +324,8 @@ static void ser_write(uint8_t off, uint8_t data)
    Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base + off, data);
 }
 
+static void ser_ctrl_restore(void);
+
 /* Close the RX gate and drop our nIRQ.  FIQ context, or FIQ masked. */
 static void ser_gate_close(void)
 {
@@ -330,6 +358,7 @@ static void ser_gate_close(void)
    }
    if (ser_tube_active) {                    /* ... and a Tube trip: that store again */
       ser_tube_active = false;
+      ser_ctrl_restore();
       if (ser_brk_trip) {                    /* the BREAK's, with its exit: asked again */
          ser_brk_trip = false;
          ser_brk_req = true;
@@ -388,6 +417,17 @@ static void ser_brk_exit_arm(void)
    }
 }
 
+/* CTRL-BREAK's trip over (or cut short): the escape routine and LDX #0 back. */
+static void ser_ctrl_restore(void)
+{
+   if (!ser_ctrl_trip)
+      return;
+   ser_ctrl_trip = false;
+   for (unsigned int i = 0u; i < sizeof ser_escr; i++)
+      Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + i, ser_escr[i]);
+   ser_write(SER_INBUF, 0u);
+}
+
 /* A Tube trip (see SER_TUBE_CTL): the release after a BREAK, or the BREAK's own, which ends in it. */
 static void ser_tube_arm(void)
 {
@@ -399,6 +439,15 @@ static void ser_tube_arm(void)
       ser_tube_brk = false;
       ser_brk_exit_arm();
       ser_trip_arm(SER_TUBE_CTL, SER_TUBE_HOLD);
+      if (ser_brk_ctrl) {                    /* CTRL-BREAK: the VIA's interrupt enables off as well */
+         ser_ctrl_trip = true;
+         for (unsigned int i = 0u; i < sizeof ser_ctrlr; i++)
+            Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + i, ser_ctrlr[i]);
+         Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + sizeof ser_ctrlr, (uint8_t)(ser_base + SER_ESC_ROUTINE));
+         Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_ESCR_OFF + sizeof ser_ctrlr + 1u, 0xFCu);
+         ser_write(SER_INBUF, 0x7Fu);
+         ser_write(SER_JSR, (uint8_t)(ser_base - SER_ESCR_OFF));
+      }
    }
 }
 
@@ -526,8 +575,9 @@ static void ser_rx_consume(unsigned int gpio)
       }
    } else if (ser_tube_active) {             /* ... a Tube one: nor here */
       ser_tube_active = false;
-      if (ser_brk_trip)
-         ser_tube_held = true;               /* the BREAK's: the release follows the reset */
+      if (ser_brk_trip && !ser_ctrl_trip)
+         ser_tube_held = true;               /* the BREAK's: the release follows the reset (CTRL-BREAK's pulsed it) */
+      ser_ctrl_restore();
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    } else {
       if (fifo_used(&rx) == 0u)
@@ -597,9 +647,8 @@ static void ser_after_break(void)
    ser_esc_req = false;
    ser_idle_active = false;
    ser_idle_req = true;                         /* whatever was sent before, the busy flag starts right */
-   ser_tube_brk = false;                        /* (ser_tube_held stays: the release is still due) */
-   ser_tube_rel = false;
-   ser_tube_active = false;
+   ser_tube_brk = false;                        /* (a release due stays: ser_tube_held, ser_tube_rel - the */
+   ser_tube_active = false;                     /* ROM's report after it has hooked in comes here too) */
    if (ser_probe_step != 0u || ser_event_req || ser_event_active || ser_read_active)
       ser_esc_result = SER_ESC_OFF;             /* an ESCAPE key in flight: the reset took it */
    ser_probe_step = 0u;
@@ -607,6 +656,7 @@ static void ser_after_break(void)
    ser_event_req = false;
    ser_event_active = false;
    ser_event_full = false;
+
    ser_brk_req = false;
    ser_backoff = false;
    ser_brk_trip = false;
@@ -643,6 +693,13 @@ static void ser_control(unsigned int gpio)
       ser_scan_ok = (v != SER_CTL_RESET);        /* and it can be asked for the screen */
       ser_keys_told = (v == SER_CTL_RESET_TELL || v == SER_CTL_RESET_LIT);   /* build 11: it tells the keys taken */
       ser_lit_ok = (v == SER_CTL_RESET_LIT);     /* build 13: every key taken, and LITKEY bytes as they are */
+      if (ser_brk_shift && ser_base >= SER_WS_OFF) {   /* SHIFT-BREAK: SHIFT for the auto-boot test to come */
+         ser_brk_shift = false;
+         Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_WS_OFF + SER_WS_SHIFT, 1u);
+         ser_shift_us = Pi1MHz_now_us;
+         ser_shift_wait = true;
+         SER_LOG('H', 1);
+      }
       return;
    }
    if (v >= SER_CTL_COLUMN) {
@@ -855,7 +912,7 @@ void serial_redirect_shift(void)
    ESCAPE, that jumps through the reset vector; the reset is seen by serial_redirect_init
    and whatever hooks the daemon in on a reset (the auto-start ROM) puts the session
    back.  Telnet mode only. */
-void serial_redirect_break(void)
+void serial_redirect_break(uint8_t how)
 {
    if (!ser_hooked || !ser_telnet)
       return;
@@ -865,6 +922,8 @@ void serial_redirect_break(void)
    ser_brk_req = true;
    ser_esc_req = false;                       /* no ESCAPE first: the Tube host code would tell it across */
    ser_tube_brk = true;
+   ser_brk_ctrl = (how == SER_BRK_CTRL) && ser_base >= SER_ESCR_OFF;
+   ser_brk_shift = (how == SER_BRK_SHIFT);
    ser_backoff = false;
    _restore_cpsr(cpsr);
 }
@@ -902,6 +961,17 @@ static void serial_redirect_poll(void)
        && (Pi1MHz_now_us - ser_tx_us) > SER_IDLE_US)
       ser_idle_req = true;
 
+   if (ser_shift_wait && ser_base >= SER_WS_OFF) {   /* SHIFT-BREAK: SHIFT held down through the start */
+      uint32_t ws = (uint32_t)ser_base - SER_WS_OFF + SER_WS_SHIFT;
+      if ((Pi1MHz_now_us - ser_shift_us) > SER_SHIFT_HOLD_US) {
+         ser_shift_wait = false;
+         Pi1MHz_MemoryWrite(ws, 0u);
+         SER_LOG('H', 2);
+      } else if (Pi1MHz_MemoryRead(ws) == 0u) {
+         Pi1MHz_MemoryWrite(ws, 1u);          /* taken: pressed still */
+         SER_LOG('H', 0);
+      }
+   }
    if (ser_probe_step != 0u) {                 /* an ESCAPE key: read, decide (see ser_probe_addr) */
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_probe_step == 5u) {
@@ -1025,6 +1095,7 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_event_req = false;
    ser_event_active = false;
    ser_event_full = false;
+
    ser_backoff = false;
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);

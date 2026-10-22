@@ -362,6 +362,10 @@ static void test_break_key(void)
    FEED(&s, "\x1b[24~");
    CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK, "F12 is the BREAK request");
    in_reset();
+   FEED(&s, "\x1b[24;2~\x1b[24;5~\x1b[24;6~\x1b[24;3~");
+   CHECK(nkeys == 4 && keys[0] == TND_KEY_SHIFTBREAK && keys[1] == TND_KEY_CTRLBREAK && keys[2] == TND_KEY_CTRLBREAK
+         && keys[3] == TND_KEY_BREAK, "SHIFT-F12 SHIFT-BREAK, CTRL-F12 and CTRL-SHIFT-F12 CTRL-BREAK, ALT-F12 BREAK"); if (nkeys != 4) dump();
+   in_reset();
    FEED(&s, "\x1b[21~\x1b[23~");
    CHECK(nkeys == 2 && keys[0] == 0x80 && keys[1] == TND_KEY_REFRESH, "F10 is f0 and F11 is the redraw request");
    in_reset();

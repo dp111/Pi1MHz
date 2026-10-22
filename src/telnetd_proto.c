@@ -212,6 +212,12 @@ static uint8_t arrow(uint8_t f)
 /* The final byte of ESC [ params f. */
 static uint8_t csi_key(const tnd_in_t *s, uint8_t f)
 {
+   if (f == '~' && s->param[0] == 24u && s->nparam >= 1u) {   /* F12 with SHIFT (2), CTRL (5) or both (6) */
+      if (s->param[1] == 2u)
+         return TND_KEY_SHIFTBREAK;
+      if (s->param[1] == 5u || s->param[1] == 6u)
+         return TND_KEY_CTRLBREAK;
+   }
    if (f == '~') {
       switch (s->param[0]) {
       case 3: return 127u;

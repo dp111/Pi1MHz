@@ -63,6 +63,9 @@ void serial_redirect_escape_key(void);
 uint8_t serial_redirect_escape_result(void);
 void serial_redirect_drop_keys(void);      /* the keys not yet given to the Beeb go (a new session) */
 void serial_redirect_shift(void);           /* SHIFT pressed once (paged mode), read by the auto-start ROM's KEYV */
-void serial_redirect_break(void);       /* a BREAK, as the BREAK key: see the .c */
+void serial_redirect_break(uint8_t how);  /* a BREAK, as the BREAK key (SER_BRK_*): see the .c */
+#define SER_BRK_PLAIN  0u
+#define SER_BRK_SHIFT  1u          /* SHIFT-BREAK: the boot */
+#define SER_BRK_CTRL   2u          /* CTRL-BREAK, as a power-on reset (see the .c) */
 
 #endif

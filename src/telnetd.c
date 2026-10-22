@@ -495,13 +495,15 @@ static void deliver_key(uint8_t k)
       return;
    }
    if (g_stage != S_LIVE) {
-      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_REFRESH && k != TND_KEY_SHIFT)
+      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_REFRESH && k != TND_KEY_SHIFT
+          && k != TND_KEY_SHIFTBREAK && k != TND_KEY_CTRLBREAK)
          login_key(k);
-   } else if (k == TND_KEY_BREAK) {
+   } else if (k == TND_KEY_BREAK || k == TND_KEY_SHIFTBREAK || k == TND_KEY_CTRLBREAK) {
       g_khead = g_ktail;                           /* what was typed ahead goes, as at a BREAK */
       g_ckq_head = g_ckq_tail;
       g_break_asked = true;                        /* the next hook is the start of a new boot */
-      serial_redirect_break();
+      g_esc_wait = false;
+      serial_redirect_break(k == TND_KEY_SHIFTBREAK ? SER_BRK_SHIFT : k == TND_KEY_CTRLBREAK ? SER_BRK_CTRL : SER_BRK_PLAIN);
    } else if (k == TND_KEY_REFRESH) {
       if (serial_redirect_scan_ok())
          k_push(SCAN_KEY);                            /* the ROM keeps it from the program and sends the screen */
@@ -555,7 +557,7 @@ static void escape_settled(uint8_t r)
 static void take_key(uint8_t k)
 {
    if (g_esc_cut) {
-      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK)
+      if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_SHIFTBREAK && k != TND_KEY_CTRLBREAK)
          return;
       g_esc_cut = false;
       g_lit_next = false;
@@ -612,7 +614,13 @@ static bool esc_ahead(uint32_t now_us)
          case 8:
             if (c == '~')
                return true;
-            st = 0u;
+            st = (c == ';') ? 11u : 0u;           /* F12 with SHIFT or CTRL: ESC [ 2 4 ; m ~ */
+            break;
+         case 11:
+            if (c == '~')
+               return true;
+            if (c < '0' || c > '9')
+               st = 0u;
             break;
          case 9: st = (c >= 251u && c <= 254u) ? 10u : 4u; break;   /* a telnet command inside the ESC ... */
          case 10: st = 4u; break;                 /* ... and its option */

@@ -35,6 +35,10 @@
 /* Also a request and not a key: F12 is BREAK.  The daemon passes it to serial_redirect_break().
    254 is never a Beeb key the translator makes. */
 #define TND_KEY_BREAK  0xFEu
+/* SHIFT-F12 is SHIFT-BREAK (the boot: the auto-start ROM says SHIFT pressed to the MOS's auto-boot
+   test), CTRL-F12 (and CTRL-SHIFT-F12) CTRL-BREAK, as near as software can (see serial_redirect_break). */
+#define TND_KEY_SHIFTBREAK 0xF9u
+#define TND_KEY_CTRLBREAK  0xF8u
 
 /* F11: draw the screen again.  The daemon types *TELNETD for the Beeb, and the auto-start
    ROM answers by sending what is on the screen. */
