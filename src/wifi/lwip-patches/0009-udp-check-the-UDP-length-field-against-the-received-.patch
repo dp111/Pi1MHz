@@ -1,0 +1,183 @@
+From f70d58f75188240730f820aa66e2733f2c272a1e Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:23:49 +0100
+Subject: [PATCH 9/9] udp: check the UDP length field against the received data
+
+A UDP datagram whose length field claims more data than was received
+(or less than the UDP header) is delivered as if it were complete, and
+data beyond the length field is delivered as payload and included in
+the checksum.
+
+udp_input() only checks that the first pbuf holds the UDP header; it
+never looks at udphdr->len (except as UDP-Lite checksum coverage).
+
+RFC 768: the length field covers header and data. Drop the datagram if
+it is shorter than the header or longer than the data received,
+counted like the existing short-packet drop (lenerr, drop,
+udpInErrors). Trim data beyond it with pbuf_realloc() before the
+checksum and delivery, as ip4_input() does for the IP length. For
+UDP-Lite the field is the checksum coverage: only the "longer than the
+datagram" check applies, which RFC 3828 chap. 3.1 also requires. Unit
+tests cover both drops and the trim.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/udp.c           | 33 +++++++++++++++++-
+ test/unit/udp/test_udp.c | 75 +++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 106 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/udp.c b/src/core/udp.c
+index c787ae0a..63def94f 100644
+--- a/src/core/udp.c
++++ b/src/core/udp.c
+@@ -196,7 +196,7 @@ udp_input(struct pbuf *p, struct netif *inp)
+   struct udp_hdr *udphdr;
+   struct udp_pcb *pcb, *prev;
+   struct udp_pcb *uncon_pcb;
+-  u16_t src, dest;
++  u16_t src, dest, udplen;
+   u8_t broadcast;
+   u8_t for_us = 0;
+ 
+@@ -225,6 +225,27 @@ udp_input(struct pbuf *p, struct netif *inp)
+ 
+   udphdr = (struct udp_hdr *)p->payload;
+ 
++  /* Check the length field against the received data (RFC 768). For
++     UDP-Lite, it is the checksum coverage (checked with the checksum),
++     which must not exceed the datagram either (RFC 3828 chap. 3.1). */
++  udplen = lwip_ntohs(udphdr->len);
++  if (udplen > p->tot_len) {
++    goto lenerr;
++  }
++#if LWIP_UDPLITE
++  if (ip_current_header_proto() != IP_PROTO_UDPLITE)
++#endif /* LWIP_UDPLITE */
++  {
++    if (udplen < UDP_HLEN) {
++      goto lenerr;
++    }
++    if (udplen < p->tot_len) {
++      /* ignore data beyond the UDP length (as ip4_input does for the
++         IP length): it is neither checksummed nor delivered */
++      pbuf_realloc(p, udplen);
++    }
++  }
++
+   /* is broadcast packet ? */
+   broadcast = ip_addr_isbroadcast(ip_current_dest_addr(), ip_current_netif());
+ 
+@@ -430,6 +451,16 @@ udp_input(struct pbuf *p, struct netif *inp)
+ end:
+   PERF_STOP("udp_input");
+   return;
++lenerr:
++  LWIP_DEBUGF(UDP_DEBUG,
++              ("udp_input: UDP length %"U16_F" invalid for %"U16_F" bytes, datagram discarded\n",
++               udplen, p->tot_len));
++  UDP_STATS_INC(udp.lenerr);
++  UDP_STATS_INC(udp.drop);
++  MIB2_STATS_INC(mib2.udpinerrors);
++  pbuf_free(p);
++  PERF_STOP("udp_input");
++  return;
+ #if CHECKSUM_CHECK_UDP
+ chkerr:
+   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_LEVEL_SERIOUS,
+diff --git a/test/unit/udp/test_udp.c b/test/unit/udp/test_udp.c
+index a9a6b25b..53196df7 100644
+--- a/test/unit/udp/test_udp.c
++++ b/test/unit/udp/test_udp.c
+@@ -335,6 +335,77 @@ START_TEST(test_udp_broadcast_rx_with_2_netifs)
+ }
+ END_TEST
+ 
++/* Receive a 16 byte UDP datagram with the UDP length field set to 'udplen' */
++static void
++test_udp_rx_with_len_field(struct test_udp_rxdata *ctr, u16_t port, u16_t udplen)
++{
++  struct pbuf *p;
++  struct udp_hdr *uh;
++  err_t err;
++
++  memset(ctr, 0, sizeof(*ctr));
++  ctr->pcb = udp_new();
++  fail_unless(ctr->pcb != NULL);
++  err = udp_bind(ctr->pcb, &test_netif1.ip_addr, port);
++  fail_unless(err == ERR_OK);
++  udp_recv(ctr->pcb, test_recv, ctr);
++
++  p = test_udp_create_test_packet(16, port, test_ipaddr1.addr);
++  fail_unless(p != NULL);
++  if (p != NULL) {
++    uh = (struct udp_hdr *)((u8_t *)p->payload + sizeof(struct ip_hdr));
++    uh->len = lwip_htons(udplen);
++    err = ip4_input(p, &test_netif1);
++    fail_unless(err == ERR_OK);
++  }
++  udp_remove(ctr->pcb);
++}
++
++/* RFC 768: a UDP length field claiming more data than received, or less
++ * than the UDP header, is invalid: the datagram must be dropped */
++START_TEST(test_udp_rx_len_field_too_long)
++{
++  struct test_udp_rxdata ctr;
++  LWIP_UNUSED_ARG(_i);
++
++  memset(&lwip_stats.udp, 0, sizeof(lwip_stats.udp));
++
++  /* only 16 of 40 data bytes present */
++  test_udp_rx_with_len_field(&ctr, 12346, UDP_HLEN + 40);
++  fail_unless(ctr.rx_cnt == 0);
++  fail_unless(lwip_stats.udp.lenerr == 1);
++  fail_unless(lwip_stats.udp.drop == 1);
++
++  /* shorter than the UDP header */
++  test_udp_rx_with_len_field(&ctr, 12346, UDP_HLEN - 1);
++  fail_unless(ctr.rx_cnt == 0);
++  fail_unless(lwip_stats.udp.lenerr == 2);
++  fail_unless(lwip_stats.udp.drop == 2);
++}
++END_TEST
++
++/* RFC 768: data beyond the UDP length field is not part of the datagram:
++ * it must not be delivered */
++START_TEST(test_udp_rx_len_field_trim)
++{
++  struct test_udp_rxdata ctr;
++  LWIP_UNUSED_ARG(_i);
++
++  memset(&lwip_stats.udp, 0, sizeof(lwip_stats.udp));
++
++  test_udp_rx_with_len_field(&ctr, 12346, UDP_HLEN + 10);
++  fail_unless(ctr.rx_cnt == 1);
++  fail_unless(ctr.rx_bytes == 10);
++  fail_unless(lwip_stats.udp.drop == 0);
++
++  /* an empty datagram */
++  test_udp_rx_with_len_field(&ctr, 12346, UDP_HLEN);
++  fail_unless(ctr.rx_cnt == 1);
++  fail_unless(ctr.rx_bytes == 0);
++  fail_unless(lwip_stats.udp.drop == 0);
++}
++END_TEST
++
+ START_TEST(test_udp_bind)
+ {
+   struct udp_pcb* pcb1;
+@@ -466,7 +537,9 @@ udp_suite(void)
+   testfunc tests[] = {
+     TESTFUNC(test_udp_new_remove),
+     TESTFUNC(test_udp_broadcast_rx_with_2_netifs),
+-    TESTFUNC(test_udp_bind)
++    TESTFUNC(test_udp_bind),
++    TESTFUNC(test_udp_rx_len_field_too_long),
++    TESTFUNC(test_udp_rx_len_field_trim)
+   };
+   return create_suite("UDP", tests, sizeof(tests)/sizeof(testfunc), udp_setup, udp_teardown);
+ }
+-- 
+2.56.0
+

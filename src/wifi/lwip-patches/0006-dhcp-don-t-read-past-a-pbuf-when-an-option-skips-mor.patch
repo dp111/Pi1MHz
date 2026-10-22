@@ -1,0 +1,169 @@
+From 1e6619ebd1573c08171712ca9e70e5cfc88c141c Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:23:03 +0100
+Subject: [PATCH 6/9] dhcp: don't read past a pbuf when an option skips more
+ than one pbuf
+
+When a received DHCP message is a pbuf chain and an option's length
+carries the parse offset past the end of the following pbuf too (for
+example a short pbuf in the middle of the chain), dhcp_parse_reply()
+reads the next option code and length from beyond that pbuf's payload
+and may decode bytes that are not part of the message.
+
+After each option it advances q by at most one pbuf, so the offset can
+still be beyond q->len.
+
+Advance in a loop until the offset lies within q, stopping with ERR_BUF
+when the offset reaches the end of the area being parsed, as before.
+Checking the end before subtracting q->len also keeps offset_max from
+wrapping when an option in an overloaded file/sname field runs past its
+end into the next pbuf.  A unit test splits an ACK into 299/4/39 byte
+pbufs with an option skipping the 4 byte one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/ipv4/dhcp.c       | 16 +++----
+ test/unit/dhcp/test_dhcp.c | 89 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 96 insertions(+), 9 deletions(-)
+
+diff --git a/src/core/ipv4/dhcp.c b/src/core/ipv4/dhcp.c
+index 79b360fc..4191d4bf 100644
+--- a/src/core/ipv4/dhcp.c
++++ b/src/core/ipv4/dhcp.c
+@@ -1701,17 +1701,17 @@ decode_next:
+         }
+       }
+     }
+-    if (offset >= q->len) {
+-      offset = (u16_t)(offset - q->len);
+-      offset_max = (u16_t)(offset_max - q->len);
+-      if (offset < offset_max) {
+-        q = q->next;
+-        LWIP_DHCP_INPUT_ERROR("next pbuf was null", q != NULL, return ERR_VAL;);
+-        options = (u8_t *)q->payload;
+-      } else {
++    /* the option may have skipped over more than one pbuf */
++    while (offset >= q->len) {
++      if (offset >= offset_max) {
+         /* We've run out of bytes, probably no end marker. Don't proceed. */
+         return ERR_BUF;
+       }
++      offset = (u16_t)(offset - q->len);
++      offset_max = (u16_t)(offset_max - q->len);
++      q = q->next;
++      LWIP_DHCP_INPUT_ERROR("next pbuf was null", q != NULL, return ERR_VAL;);
++      options = (u8_t *)q->payload;
+     }
+   }
+   /* is this an overloaded message? */
+diff --git a/test/unit/dhcp/test_dhcp.c b/test/unit/dhcp/test_dhcp.c
+index 4745d2b3..e937e57b 100644
+--- a/test/unit/dhcp/test_dhcp.c
++++ b/test/unit/dhcp/test_dhcp.c
+@@ -1093,6 +1093,92 @@ START_TEST(test_dhcp_invalid_overload)
+ }
+ END_TEST
+ 
++/*
++ * Check that an option whose length skips over a whole pbuf of a chain
++ * continues parsing in the right pbuf. The ACK is split into
++ * A (299 bytes: headers and the first 17 option bytes), B (4 bytes) and
++ * C (39 bytes); the last option in A is 13 bytes long and ends in C.
++ * buf_b holds bytes beyond B's payload that are not part of the packet:
++ * they must not be parsed (they look like a subnet mask option).
++ */
++START_TEST(test_dhcp_option_skips_short_pbuf)
++{
++  ip4_addr_t addr;
++  ip4_addr_t netmask;
++  ip4_addr_t gw;
++  u32_t xid;
++  static u8_t frame_a[299];
++  static u8_t buf_b[64];
++  static u8_t frame_c[39];
++  static const u8_t opts[17] = {
++    0x35, 0x01, 0x05,                   /* Message type: ACK */
++    0x36, 0x04, 0xc3, 0xaa, 0xbd, 0xab, /* Server identifier */
++    0x33, 0x04, 0x00, 0x00, 0x00, 0x78, /* Lease time 2 minutes */
++    0xfa, 0x0d                          /* unknown option, 13 bytes: 4 in B, 9 in C */
++  };
++  struct pbuf *a, *b, *c;
++  LWIP_UNUSED_ARG(_i);
++
++  tcase = TEST_LWIP_DHCP;
++  setdebug(0);
++
++  IP4_ADDR(&addr, 0, 0, 0, 0);
++  IP4_ADDR(&netmask, 0, 0, 0, 0);
++  IP4_ADDR(&gw, 0, 0, 0, 0);
++
++  netif_add(&net_test, &addr, &netmask, &gw, &net_test, testif_init, ethernet_input);
++  netif_set_link_up(&net_test);
++  netif_set_up(&net_test);
++
++  dhcp_start(&net_test);
++  fail_unless(txpacket == 1); /* DHCP discover sent */
++  xid = htonl(netif_dhcp_data(&net_test)->xid);
++  memcpy(&dhcp_offer[46], &xid, 4);
++  send_pkt(&net_test, dhcp_offer, sizeof(dhcp_offer));
++  fail_unless(txpacket == 2, "TX %d packets, expected 2", txpacket); /* DHCP request sent */
++  fail_unless(netif_dhcp_data(&net_test)->state == DHCP_STATE_REQUESTING);
++
++  xid = htonl(netif_dhcp_data(&net_test)->xid);
++  memcpy(frame_a, dhcp_ack, 282);
++  memcpy(&frame_a[46], &xid, 4);
++  memcpy(&frame_a[282], opts, sizeof(opts));
++  /* not part of the packet: a subnet mask option code where parsing
++     would resume if it stayed in B */
++  memset(buf_b, 0, sizeof(buf_b));
++  buf_b[13] = 0x01;
++  memset(&buf_b[14], 0xee, sizeof(buf_b) - 14);
++  /* the rest of the unknown option, then END at C[9] */
++  memset(frame_c, 0xff, sizeof(frame_c));
++  memset(frame_c, 0x00, 9);
++  frame_c[0] = 0x04; /* would be read as the subnet mask length */
++  /* would be read as the subnet mask */
++  frame_c[11] = 10; frame_c[12] = 11; frame_c[13] = 12; frame_c[14] = 13;
++
++  a = pbuf_alloc(PBUF_RAW, sizeof(frame_a), PBUF_REF);
++  b = pbuf_alloc(PBUF_RAW, 4, PBUF_REF);
++  c = pbuf_alloc(PBUF_RAW, sizeof(frame_c), PBUF_REF);
++  fail_unless(a != NULL && b != NULL && c != NULL);
++  a->payload = frame_a;
++  b->payload = buf_b;
++  c->payload = frame_c;
++  pbuf_cat(a, b);
++  pbuf_cat(a, c);
++  fail_unless(a->tot_len == 342);
++  net_test.input(a, &net_test);
++
++  /* the ACK was accepted */
++  fail_unless(netif_dhcp_data(&net_test)->offered_t0_lease == 0x78);
++  /* it has no subnet mask option */
++  fail_if(ip4_addr_get_u32(&netif_dhcp_data(&net_test)->offered_sn_mask) == PP_HTONL(LWIP_MAKEU32(10, 11, 12, 13)),
++          "subnet mask decoded from bytes beyond the pbuf");
++
++  tcase = TEST_NONE;
++  dhcp_stop(&net_test);
++  dhcp_cleanup(&net_test);
++  netif_remove(&net_test);
++}
++END_TEST
++
+ /*
+  * Check that a renewal ACK with an infinite lease (0xffffffff) does not
+  * keep the previous finite lease time: the lease must not expire.
+@@ -1176,7 +1262,8 @@ dhcp_suite(void)
+     TESTFUNC(test_dhcp_relayed),
+     TESTFUNC(test_dhcp_nak_no_endmarker),
+     TESTFUNC(test_dhcp_invalid_overload),
+-    TESTFUNC(test_dhcp_renew_infinite_lease)
++    TESTFUNC(test_dhcp_renew_infinite_lease),
++    TESTFUNC(test_dhcp_option_skips_short_pbuf)
+   };
+   return create_suite("DHCP", tests, sizeof(tests)/sizeof(testfunc), dhcp_setup, dhcp_teardown);
+ }
+-- 
+2.56.0
+

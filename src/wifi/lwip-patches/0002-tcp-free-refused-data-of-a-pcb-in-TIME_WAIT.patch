@@ -1,0 +1,233 @@
+From f4037b21f62af54ae932790964bee2bb3ae59f95 Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:26:08 +0100
+Subject: [PATCH 2/9] tcp: free refused data of a pcb in TIME_WAIT
+
+When a segment carrying data and FIN arrives in FIN_WAIT_2 (we have
+called tcp_shutdown() for the tx side and the peer has ACKed our FIN),
+tcp_process() purges the pcb and moves it to TIME_WAIT before
+tcp_input() passes the data to the recv callback.  If the application
+refuses it (recv returns ERR_MEM), the pbuf is stored in
+pcb->refused_data of the TIME_WAIT pcb.  The same happens in FIN_WAIT_1
+when the FIN and the ACK of our FIN arrive together.
+
+That data is never delivered again (tcp_fasttmr() only walks
+tcp_active_pcbs), and tcp_pcb_purge() skips TIME_WAIT pcbs, so when
+tcp_slowtmr() expires the pcb, or tcp_abandon() removes it (tcp_abort(),
+tcp_kill_timewait()), the pbuf leaks.
+
+Free refused_data in tcp_pcb_purge() for every state but LISTEN (a
+struct tcp_pcb_listen has no refused_data).  This is safe for all
+callers: each of them drops the pcb or its receive state right after
+purging it; tcp_process() purges before it changes the state to
+TIME_WAIT, so nothing changes there; refused_data is NULL on a CLOSED
+pcb unless it was leaked the same way.
+
+Tests: refused data is freed when the TIME_WAIT pcb expires, and (as
+before) when a pcb holding refused data is aborted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/tcp.c           |  15 ++--
+ test/unit/tcp/test_tcp.c | 144 ++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 153 insertions(+), 6 deletions(-)
+
+diff --git a/src/core/tcp.c b/src/core/tcp.c
+index ea95ffee..d3b9efec 100644
+--- a/src/core/tcp.c
++++ b/src/core/tcp.c
+@@ -2138,6 +2138,16 @@ tcp_pcb_purge(struct tcp_pcb *pcb)
+ {
+   LWIP_ERROR("tcp_pcb_purge: invalid pcb", pcb != NULL, return);
+ 
++  /* Refused data is freed in TIME_WAIT, too: data (and FIN) refused by the
++     application while tcp_process() moved the pcb to TIME_WAIT is stored
++     after that state change and is never delivered again. Listen pcbs
++     (struct tcp_pcb_listen) have no refused_data. */
++  if ((pcb->state != LISTEN) && (pcb->refused_data != NULL)) {
++    LWIP_DEBUGF(TCP_DEBUG, ("tcp_pcb_purge: data left on ->refused_data\n"));
++    pbuf_free(pcb->refused_data);
++    pcb->refused_data = NULL;
++  }
++
+   if (pcb->state != CLOSED &&
+       pcb->state != TIME_WAIT &&
+       pcb->state != LISTEN) {
+@@ -2146,11 +2156,6 @@ tcp_pcb_purge(struct tcp_pcb *pcb)
+ 
+     tcp_backlog_accepted(pcb);
+ 
+-    if (pcb->refused_data != NULL) {
+-      LWIP_DEBUGF(TCP_DEBUG, ("tcp_pcb_purge: data left on ->refused_data\n"));
+-      pbuf_free(pcb->refused_data);
+-      pcb->refused_data = NULL;
+-    }
+     if (pcb->unsent != NULL) {
+       LWIP_DEBUGF(TCP_DEBUG, ("tcp_pcb_purge: not all data sent\n"));
+     }
+diff --git a/test/unit/tcp/test_tcp.c b/test/unit/tcp/test_tcp.c
+index 90b23d3c..ccd65c35 100644
+--- a/test/unit/tcp/test_tcp.c
++++ b/test/unit/tcp/test_tcp.c
+@@ -1740,6 +1740,146 @@ START_TEST(test_tcp_persist_split)
+ }
+ END_TEST
+ 
++/* recv/err callbacks for the refused-data tests: the recv callback refuses
++ * data test_tcp_refuse_count times; after that it takes the data and, if
++ * test_tcp_refused_close is set, closes the pcb without calling tcp_recved()
++ * (so tcp_close() takes the RST path and frees the pcb) */
++static int test_tcp_refuse_count;
++static int test_tcp_refused_close;
++static struct tcp_pcb *test_tcp_refused_closed_pcb;
++static int test_tcp_refused_recv_after_close;
++static int test_tcp_refused_err_calls;
++
++static void
++test_tcp_refused_err(void *arg, err_t err)
++{
++  LWIP_UNUSED_ARG(arg);
++  LWIP_UNUSED_ARG(err);
++  test_tcp_refused_err_calls++;
++}
++
++static err_t
++test_tcp_refused_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
++{
++  LWIP_UNUSED_ARG(arg);
++  LWIP_UNUSED_ARG(err);
++  if (pcb == test_tcp_refused_closed_pcb) {
++    /* the application has closed this pcb: no callback may follow */
++    test_tcp_refused_recv_after_close++;
++    if (p != NULL) {
++      pbuf_free(p);
++    }
++    return ERR_OK;
++  }
++  if (test_tcp_refuse_count > 0) {
++    test_tcp_refuse_count--;
++    return ERR_MEM;
++  }
++  if (p != NULL) {
++    if (!test_tcp_refused_close) {
++      tcp_recved(pcb, p->tot_len);
++    }
++    pbuf_free(p);
++  }
++  if (test_tcp_refused_close) {
++    test_tcp_refused_closed_pcb = pcb;
++    EXPECT(tcp_close(pcb) == ERR_OK);
++  }
++  return ERR_OK;
++}
++
++static struct tcp_pcb *
++test_tcp_new_refusing_pcb(void)
++{
++  struct tcp_pcb *pcb;
++
++  test_tcp_refuse_count = 0;
++  test_tcp_refused_close = 0;
++  test_tcp_refused_closed_pcb = NULL;
++  test_tcp_refused_recv_after_close = 0;
++  test_tcp_refused_err_calls = 0;
++
++  pcb = tcp_new();
++  if (pcb != NULL) {
++    tcp_recv(pcb, test_tcp_refused_recv);
++    tcp_err(pcb, test_tcp_refused_err);
++    tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
++  }
++  return pcb;
++}
++
++/** tcp_abort() on a pcb holding refused data frees that data */
++START_TEST(test_tcp_refused_data_freed_on_abort)
++{
++  struct tcp_pcb *pcb;
++  struct pbuf *p;
++  char data[] = {1, 2, 3, 4};
++  struct netif netif;
++  struct test_tcp_txcounters txcounters;
++  LWIP_UNUSED_ARG(_i);
++
++  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
++  pcb = test_tcp_new_refusing_pcb();
++  EXPECT_RET(pcb != NULL);
++
++  test_tcp_refuse_count = 1;
++  p = tcp_create_rx_segment(pcb, data, sizeof(data), 0, 0, TCP_ACK);
++  EXPECT_RET(p != NULL);
++  test_tcp_input(p, &netif);
++  EXPECT_RET(pcb->refused_data != NULL);
++  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 1);
++
++  tcp_abort(pcb);
++  EXPECT(test_tcp_refused_err_calls == 1);
++  EXPECT(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);
++  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 0);
++}
++END_TEST
++
++/** Data and FIN refused in FIN_WAIT_2 are stored on a pcb that has just
++ * entered TIME_WAIT; they must be freed with that pcb */
++START_TEST(test_tcp_refused_data_freed_in_time_wait)
++{
++  struct tcp_pcb *pcb;
++  struct pbuf *p;
++  char data[] = {1, 2, 3, 4};
++  struct netif netif;
++  struct test_tcp_txcounters txcounters;
++  err_t err;
++  int i;
++  LWIP_UNUSED_ARG(_i);
++
++  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
++  pcb = test_tcp_new_refusing_pcb();
++  EXPECT_RET(pcb != NULL);
++
++  /* half-close: send our FIN and let the peer ACK it */
++  err = tcp_shutdown(pcb, 0, 1);
++  EXPECT_RET(err == ERR_OK);
++  EXPECT_RET(pcb->state == FIN_WAIT_1);
++  p = tcp_create_rx_segment(pcb, NULL, 0, 0, pcb->snd_nxt - pcb->lastack, TCP_ACK);
++  EXPECT_RET(p != NULL);
++  test_tcp_input(p, &netif);
++  EXPECT_RET(pcb->state == FIN_WAIT_2);
++
++  /* the peer sends data and FIN, the application refuses the data */
++  test_tcp_refuse_count = 1000;
++  p = tcp_create_rx_segment(pcb, data, sizeof(data), 0, 0, TCP_ACK | TCP_FIN);
++  EXPECT_RET(p != NULL);
++  test_tcp_input(p, &netif);
++  EXPECT_RET(pcb->state == TIME_WAIT);
++  EXPECT(pcb->refused_data != NULL);
++  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 1);
++
++  /* let 2*MSL expire: tcp_slowtmr frees the TIME_WAIT pcb */
++  for (i = 0; i < (int)(2 * (2 * TCP_MSL / TCP_SLOW_INTERVAL) + 10); i++) {
++    test_tcp_tmr();
++  }
++  EXPECT(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);
++  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 0);
++}
++END_TEST
++
+ /** Create the suite including all tests for this module */
+ Suite *
+ tcp_suite(void)
+@@ -1767,7 +1907,9 @@ tcp_suite(void)
+     TESTFUNC(test_tcp_rto_timeout_syn_sent_link_down),
+     TESTFUNC(test_tcp_zwp_timeout),
+     TESTFUNC(test_tcp_zwp_timeout_link_down),
+-    TESTFUNC(test_tcp_persist_split)
++    TESTFUNC(test_tcp_persist_split),
++    TESTFUNC(test_tcp_refused_data_freed_on_abort),
++    TESTFUNC(test_tcp_refused_data_freed_in_time_wait)
+   };
+   return create_suite("TCP", tests, sizeof(tests)/sizeof(testfunc), tcp_setup, tcp_teardown);
+ }
+-- 
+2.56.0
+

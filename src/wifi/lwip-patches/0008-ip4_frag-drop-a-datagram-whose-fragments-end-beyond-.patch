@@ -1,0 +1,221 @@
+From a08e1d6878618cc175134860cd7349fe5ef43c1d Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:21:59 +0100
+Subject: [PATCH 8/9] ip4_frag: drop a datagram whose fragments end beyond the
+ last fragment
+
+Fragments [0,8) MF, [16,24) MF and then [8,16) with MF==0 are
+reassembled into a datagram carrying 24 bytes of payload behind an IP
+header claiming 16; likewise for a fragment that extends beyond the
+end set by an already received last fragment.
+
+ip_reass_chain_frag_into_datagram_and_validate() only checks the chain
+for holes. It never checks that the last chained fragment ends where
+the fragment with MF==0 says the datagram ends, so data beyond
+datagram_len is chained and passed up.
+
+The fragment with MF==0 defines the datagram length (RFC 791): a
+fragment extending beyond it, or a last fragment ending before data
+already received, makes the datagram inconsistent. Detect both before
+chaining the new fragment and drop the whole datagram (counted in
+ipReasmFails, without the ICMP time exceeded that a timeout sends).
+ip_reass_free_complete_datagram() gets a send_icmp argument for that.
+A unit test covers both arrival orders.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/ipv4/ip4_frag.c | 52 ++++++++++++++++++++++++++++++++++------
+ test/unit/ip4/test_ip4.c | 37 ++++++++++++++++++++++++++++
+ 2 files changed, 82 insertions(+), 7 deletions(-)
+
+diff --git a/src/core/ipv4/ip4_frag.c b/src/core/ipv4/ip4_frag.c
+index 2652487b..fe25b7c7 100644
+--- a/src/core/ipv4/ip4_frag.c
++++ b/src/core/ipv4/ip4_frag.c
+@@ -82,6 +82,7 @@
+ #define IP_REASS_VALIDATE_TELEGRAM_FINISHED  1
+ #define IP_REASS_VALIDATE_PBUF_QUEUED        0
+ #define IP_REASS_VALIDATE_PBUF_DROPPED       -1
++#define IP_REASS_VALIDATE_DATAGRAM_INVALID   -2
+ 
+ /** This is a helper struct which holds the starting
+  * offset and the ending offset of this fragment to
+@@ -116,7 +117,7 @@ static u16_t ip_reass_pbufcount;
+ 
+ /* function prototypes */
+ static void ip_reass_dequeue_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev);
+-static int ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev);
++static int ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev, int send_icmp);
+ 
+ /**
+  * Reassembly timer base function
+@@ -146,7 +147,7 @@ ip_reass_tmr(void)
+       /* get the next pointer before freeing */
+       r = r->next;
+       /* free the helper struct and all enqueued pbufs */
+-      ip_reass_free_complete_datagram(tmp, prev);
++      ip_reass_free_complete_datagram(tmp, prev, 1);
+     }
+   }
+ }
+@@ -154,14 +155,15 @@ ip_reass_tmr(void)
+ /**
+  * Free a datagram (struct ip_reassdata) and all its pbufs.
+  * Updates the total count of enqueued pbufs (ip_reass_pbufcount),
+- * SNMP counters and sends an ICMP time exceeded packet.
++ * SNMP counters and sends an ICMP time exceeded packet (if send_icmp != 0).
+  *
+  * @param ipr datagram to free
+  * @param prev the previous datagram in the linked list
++ * @param send_icmp send ICMP time exceeded if the first fragment was received
+  * @return the number of pbufs freed
+  */
+ static int
+-ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev)
++ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev, int send_icmp)
+ {
+   u16_t pbufs_freed = 0;
+   u16_t clen;
+@@ -175,7 +177,7 @@ ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *p
+ 
+   MIB2_STATS_INC(mib2.ipreasmfails);
+ #if LWIP_ICMP
+-  if (ipr->p != NULL) {
++  if (send_icmp && (ipr->p != NULL)) {
+     iprh = (struct ip_reass_helper *)ipr->p->payload;
+     if (iprh->start == 0) {
+       /* The first fragment was received, send ICMP time exceeded. */
+@@ -191,6 +193,8 @@ ip_reass_free_complete_datagram(struct ip_reassdata *ipr, struct ip_reassdata *p
+       pbuf_free(p);
+     }
+   }
++#else /* LWIP_ICMP */
++  LWIP_UNUSED_ARG(send_icmp);
+ #endif /* LWIP_ICMP */
+ 
+   /* First, free all received pbufs.  The individual pbufs need to be released
+@@ -262,7 +266,7 @@ ip_reass_remove_oldest_datagram(struct ip_hdr *fraghdr, int pbufs_needed)
+       r = r->next;
+     }
+     if (oldest != NULL) {
+-      pbufs_freed_current = ip_reass_free_complete_datagram(oldest, oldest_prev);
++      pbufs_freed_current = ip_reass_free_complete_datagram(oldest, oldest_prev, 1);
+       pbufs_freed += pbufs_freed_current;
+     }
+   } while ((pbufs_freed < pbufs_needed) && (other_datagrams > 1));
+@@ -340,7 +344,8 @@ ip_reass_dequeue_datagram(struct ip_reassdata *ipr, struct ip_reassdata *prev)
+  * @param ipr points to the reassembly state
+  * @param new_p points to the pbuf for the current fragment
+  * @param is_last is 1 if this pbuf has MF==0 (ipr->flags not updated yet)
+- * @return see IP_REASS_VALIDATE_* defines
++ * @return see IP_REASS_VALIDATE_* defines; IP_REASS_VALIDATE_DATAGRAM_INVALID
++ *         means new_p was not chained and the whole datagram must be dropped
+  */
+ static int
+ ip_reass_chain_frag_into_datagram_and_validate(struct ip_reassdata *ipr, struct pbuf *new_p, int is_last)
+@@ -377,6 +382,24 @@ ip_reass_chain_frag_into_datagram_and_validate(struct ip_reassdata *ipr, struct
+     return IP_REASS_VALIDATE_PBUF_DROPPED;
+   }
+ 
++  /* The fragment with MF==0 defines the datagram length: a fragment
++   * extending beyond it, or a last fragment ending before data already
++   * received, makes the datagram inconsistent (fragments received so far
++   * all end within datagram_len once the last fragment has been seen) */
++  if ((ipr->flags & IP_REASS_FLAG_LASTFRAG) != 0) {
++    if ((iprh->end > ipr->datagram_len) ||
++        (is_last && (iprh->end != ipr->datagram_len))) {
++      return IP_REASS_VALIDATE_DATAGRAM_INVALID;
++    }
++  } else if (is_last) {
++    for (q = ipr->p; q != NULL; q = iprh_tmp->next_pbuf) {
++      iprh_tmp = (struct ip_reass_helper *)q->payload;
++      if (iprh_tmp->end > iprh->end) {
++        return IP_REASS_VALIDATE_DATAGRAM_INVALID;
++      }
++    }
++  }
++
+   /* Iterate through until we either get to the end of the list (append),
+    * or we find one with a larger offset (insert). */
+   for (q = ipr->p; q != NULL;) {
+@@ -601,6 +624,21 @@ ip4_reass(struct pbuf *p)
+   if (valid == IP_REASS_VALIDATE_PBUF_DROPPED) {
+     goto nullreturn_ipr;
+   }
++  if (valid == IP_REASS_VALIDATE_DATAGRAM_INVALID) {
++    struct ip_reassdata *ipr_prev = NULL;
++    LWIP_DEBUGF(IP_REASS_DEBUG, ("ip4_reass: inconsistent fragment lengths, dropping datagram\n"));
++    /* find the previous entry in the linked list */
++    if (ipr != reassdatagrams) {
++      for (ipr_prev = reassdatagrams; ipr_prev != NULL; ipr_prev = ipr_prev->next) {
++        if (ipr_prev->next == ipr) {
++          break;
++        }
++      }
++    }
++    /* free all fragments received so far (not timed out: no ICMP) */
++    ip_reass_free_complete_datagram(ipr, ipr_prev, 0);
++    goto nullreturn;
++  }
+   /* if we come here, the pbuf has been enqueued */
+ 
+   /* Track the current number of pbufs current 'in-flight', in order to limit
+diff --git a/test/unit/ip4/test_ip4.c b/test/unit/ip4/test_ip4.c
+index 64ec1c4f..613c5bdf 100644
+--- a/test/unit/ip4/test_ip4.c
++++ b/test/unit/ip4/test_ip4.c
+@@ -235,6 +235,42 @@ START_TEST(test_ip4_reass)
+ }
+ END_TEST
+ 
++/* The fragment with MF==0 defines the datagram length: a fragment that
++ * extends beyond it (whichever arrives first) makes the datagram
++ * inconsistent, it must be dropped instead of being reassembled with
++ * data behind the length given in the IP header. */
++START_TEST(test_ip4_reass_frag_beyond_last)
++{
++  const u16_t ip_id = 129;
++  LWIP_UNUSED_ARG(_i);
++
++  memset(&lwip_stats.mib2, 0, sizeof(lwip_stats.mib2));
++  memset(&lwip_stats.ip_frag, 0, sizeof(lwip_stats.ip_frag));
++
++  /* last fragment ends before data already received */
++  create_ip4_input_fragment(ip_id, 0, 8, 0);
++  create_ip4_input_fragment(ip_id, 16, 8, 0);
++  create_ip4_input_fragment(ip_id, 8, 8, 1);
++  fail_unless(lwip_stats.ip_frag.recv == 3);
++  fail_unless(lwip_stats.ip_frag.drop == 1);
++  fail_unless(lwip_stats.mib2.ipreasmoks == 0);
++  fail_unless(lwip_stats.mib2.ipreasmfails == 1);
++  /* the whole datagram is gone, no ICMP time exceeded sent */
++  fail_unless(MEMP_STATS_GET(used, MEMP_REASSDATA) == 0);
++  fail_unless(netif_list->loop_first == NULL);
++
++  /* fragment received after the last one extends beyond it */
++  create_ip4_input_fragment(ip_id, 8, 8, 1);
++  create_ip4_input_fragment(ip_id, 16, 8, 0);
++  fail_unless(lwip_stats.ip_frag.recv == 5);
++  fail_unless(lwip_stats.ip_frag.drop == 2);
++  fail_unless(lwip_stats.mib2.ipreasmoks == 0);
++  fail_unless(lwip_stats.mib2.ipreasmfails == 2);
++  fail_unless(MEMP_STATS_GET(used, MEMP_REASSDATA) == 0);
++  fail_unless(netif_list->loop_first == NULL);
++}
++END_TEST
++
+ /* packets to 127.0.0.1 shall not be sent out to netif_default */
+ START_TEST(test_127_0_0_1)
+ {
+@@ -334,6 +370,7 @@ ip4_suite(void)
+   testfunc tests[] = {
+     TESTFUNC(test_ip4_frag),
+     TESTFUNC(test_ip4_reass),
++    TESTFUNC(test_ip4_reass_frag_beyond_last),
+     TESTFUNC(test_127_0_0_1),
+     TESTFUNC(test_ip4addr_aton),
+     TESTFUNC(test_ip4_icmp_replylen_short),
+-- 
+2.56.0
+

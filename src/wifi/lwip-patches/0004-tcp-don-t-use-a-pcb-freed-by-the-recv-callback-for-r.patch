@@ -1,0 +1,166 @@
+From 1c519e3e68cb2a0b49a510af08a6c13a6d8f2ccf Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:28:26 +0100
+Subject: [PATCH 4/9] tcp: don't use a pcb freed by the recv callback for
+ refused data
+
+tcp_fasttmr() re-delivers refused data through
+tcp_process_refused_data().  If the recv callback closes the pcb with
+tcp_close() while data is unacknowledged by the application,
+tcp_close_shutdown() sends a RST and frees the pcb at once (it is not
+tcp_input_pcb), and the callback returns ERR_OK as documented.
+tcp_process_refused_data() then goes on using the freed pcb: if the
+refused data carried a FIN it adjusts rcv_wnd and calls the recv
+callback with p == NULL (TCP_EVENT_CLOSED) on it, and with
+TCP_QUEUE_OOSEQ && LWIP_WND_SCALE it reads pcb->refused_data again.
+
+tcp_fasttmr() itself copes with this through tcp_active_pcbs_changed;
+only tcp_process_refused_data() lacked a way to know.  Let tcp_free(),
+the single place where a non-listen pcb is deallocated, clear a marker
+that tcp_process_refused_data() sets around the callback, and return
+ERR_ABRT (already its "pcb deallocated" result) when the marker is gone.
+If the callback freed the pcb but still refused the data, that data is
+freed too.
+
+Callers: tcp_fasttmr() ignores the result and restarts its loop as
+before (the close changed tcp_active_pcbs); tcp_input() already treats
+ERR_ABRT as "pcb deallocated" and, since it sets tcp_input_pcb first,
+only gets there via tcp_abort().  A callback that aborts and returns
+ERR_ABRT behaves as before.  The previous marker is saved and restored,
+so a nested call is harmless.
+
+Test: the recv callback closes the pcb while tcp_fasttmr() re-delivers
+refused data carrying a FIN.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/tcp.c           | 26 +++++++++++++++++++++++++-
+ test/unit/tcp/test_tcp.c | 38 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 62 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/tcp.c b/src/core/tcp.c
+index d3b9efec..97bda30a 100644
+--- a/src/core/tcp.c
++++ b/src/core/tcp.c
+@@ -184,6 +184,10 @@ struct tcp_pcb **const tcp_pcb_lists[] = {&tcp_listen_pcbs.pcbs, &tcp_bound_pcbs
+ 
+ u8_t tcp_active_pcbs_changed;
+ 
++/** The pcb tcp_process_refused_data() is passing data to; tcp_free() resets
++ * it to NULL, telling it that the recv callback has deallocated the pcb */
++static struct tcp_pcb *tcp_refused_data_pcb;
++
+ /** Timer counter to handle calling slow-timer from tcp_tmr() */
+ static u8_t tcp_timer;
+ static u8_t tcp_timer_ctr;
+@@ -210,6 +214,9 @@ void
+ tcp_free(struct tcp_pcb *pcb)
+ {
+   LWIP_ASSERT("tcp_free: LISTEN", pcb->state != LISTEN);
++  if (pcb == tcp_refused_data_pcb) {
++    tcp_refused_data_pcb = NULL;
++  }
+ #if LWIP_TCP_PCB_NUM_EXT_ARGS
+   tcp_ext_arg_invoke_callbacks_destroyed(pcb->ext_args);
+ #endif
+@@ -1538,7 +1545,8 @@ tcp_txnow(void)
+   }
+ }
+ 
+-/** Pass pcb->refused_data to the recv callback */
++/** Pass pcb->refused_data to the recv callback
++ * @return ERR_ABRT if the pcb has been deallocated */
+ err_t
+ tcp_process_refused_data(struct tcp_pcb *pcb)
+ {
+@@ -1557,6 +1565,7 @@ tcp_process_refused_data(struct tcp_pcb *pcb)
+     /* set pcb->refused_data to NULL in case the callback frees it and then
+        closes the pcb */
+     struct pbuf *refused_data = pcb->refused_data;
++    struct tcp_pcb *prev_refused_data_pcb = tcp_refused_data_pcb;
+ #if TCP_QUEUE_OOSEQ && LWIP_WND_SCALE
+     pbuf_split_64k(refused_data, &rest);
+     pcb->refused_data = rest;
+@@ -1565,7 +1574,22 @@ tcp_process_refused_data(struct tcp_pcb *pcb)
+ #endif /* TCP_QUEUE_OOSEQ && LWIP_WND_SCALE */
+     /* Notify again application with data previously received. */
+     LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: notify kept packet\n"));
++    tcp_refused_data_pcb = pcb;
+     TCP_EVENT_RECV(pcb, refused_data, ERR_OK, err);
++    if (tcp_refused_data_pcb != pcb) {
++      /* The callback has deallocated the pcb: tcp_abort(), or tcp_close()
++         sending a RST, which frees the pcb at once (and lets the callback
++         return ERR_OK) when not called from tcp_input(), e.g. from
++         tcp_fasttmr(). Don't touch the pcb any more. */
++      tcp_refused_data_pcb = prev_refused_data_pcb;
++      if ((err != ERR_OK) && (err != ERR_ABRT)) {
++        /* data refused after all: it is still ours */
++        pbuf_free(refused_data);
++      }
++      LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: pcb freed in recv callback\n"));
++      return ERR_ABRT;
++    }
++    tcp_refused_data_pcb = prev_refused_data_pcb;
+     if (err == ERR_OK) {
+       /* did refused_data include a FIN? */
+       if ((refused_flags & PBUF_FLAG_TCP_FIN)
+diff --git a/test/unit/tcp/test_tcp.c b/test/unit/tcp/test_tcp.c
+index 8f03e3f2..1115c9d0 100644
+--- a/test/unit/tcp/test_tcp.c
++++ b/test/unit/tcp/test_tcp.c
+@@ -1919,6 +1919,41 @@ START_TEST(test_tcp_close_in_refused_data_recv)
+ }
+ END_TEST
+ 
++/** The recv callback closes the pcb while tcp_fasttmr() re-delivers refused
++ * data that carries a FIN: the FIN (recv with p == NULL) must not be
++ * delivered on the freed pcb */
++START_TEST(test_tcp_close_in_refused_fin_recv_fasttmr)
++{
++  struct tcp_pcb *pcb;
++  struct pbuf *p;
++  char data[] = {1, 2, 3, 4};
++  struct netif netif;
++  struct test_tcp_txcounters txcounters;
++  LWIP_UNUSED_ARG(_i);
++
++  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
++  pcb = test_tcp_new_refusing_pcb();
++  EXPECT_RET(pcb != NULL);
++
++  test_tcp_refuse_count = 1;
++  p = tcp_create_rx_segment(pcb, data, sizeof(data), 0, 0, TCP_ACK | TCP_FIN);
++  EXPECT_RET(p != NULL);
++  test_tcp_input(p, &netif);
++  EXPECT_RET(pcb->refused_data != NULL);
++  EXPECT_RET(pcb->refused_data->flags & PBUF_FLAG_TCP_FIN);
++
++  /* tcp_fasttmr re-delivers the data; the application takes it and closes
++     (RST, as it has not called tcp_recved()) */
++  test_tcp_refused_close = 1;
++  test_tcp_tmr();
++  EXPECT(test_tcp_refused_closed_pcb == pcb);
++  EXPECT(test_tcp_refused_recv_after_close == 0);
++  EXPECT(test_tcp_refused_err_calls == 0);
++  EXPECT(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);
++  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 0);
++}
++END_TEST
++
+ /** Create the suite including all tests for this module */
+ Suite *
+ tcp_suite(void)
+@@ -1949,7 +1984,8 @@ tcp_suite(void)
+     TESTFUNC(test_tcp_persist_split),
+     TESTFUNC(test_tcp_refused_data_freed_on_abort),
+     TESTFUNC(test_tcp_refused_data_freed_in_time_wait),
+-    TESTFUNC(test_tcp_close_in_refused_data_recv)
++    TESTFUNC(test_tcp_close_in_refused_data_recv),
++    TESTFUNC(test_tcp_close_in_refused_fin_recv_fasttmr)
+   };
+   return create_suite("TCP", tests, sizeof(tests)/sizeof(testfunc), tcp_setup, tcp_teardown);
+ }
+-- 
+2.56.0
+

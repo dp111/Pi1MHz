@@ -1,7 +1,7 @@
-From 624af9f12095af60eec1877c18f4c5fdc10045cc Mon Sep 17 00:00:00 2001
+From db4d91dfe585841a93fa88bc5228c8af4e8300fa Mon Sep 17 00:00:00 2001
 From: dp111 <dp111@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 11:48:44 +0100
-Subject: [PATCH] tcp_in: free undelivered recv_data when the sent callback
+Subject: [PATCH 1/9] tcp_in: free undelivered recv_data when the sent callback
  closes the pcb
 
 When a segment both ACKs our data and carries new in-order data,
@@ -24,9 +24,9 @@ callback.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
 ---
- src/core/tcp_in.c        | 13 ++++++++
- test/unit/tcp/test_tcp.c | 72 ++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 85 insertions(+)
+ src/core/tcp_in.c        | 13 +++++++
+ test/unit/tcp/test_tcp.c | 75 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+)
 
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 index 7c8b71cd..f23fc94c 100644
@@ -59,10 +59,10 @@ index 7c8b71cd..f23fc94c 100644
          }
  #if TCP_QUEUE_OOSEQ && LWIP_WND_SCALE
 diff --git a/test/unit/tcp/test_tcp.c b/test/unit/tcp/test_tcp.c
-index 690ee408..889d6526 100644
+index 690ee408..90b23d3c 100644
 --- a/test/unit/tcp/test_tcp.c
 +++ b/test/unit/tcp/test_tcp.c
-@@ -201,6 +201,76 @@ START_TEST(test_tcp_recv_inseq)
+@@ -201,6 +201,79 @@ START_TEST(test_tcp_recv_inseq)
  }
  END_TEST
  
@@ -94,6 +94,7 @@ index 690ee408..889d6526 100644
 +  char rx_data[] = {1, 2, 3, 4};
 +  struct netif netif;
 +  struct test_tcp_txcounters txcounters;
++  err_t err;
 +
 +  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
 +  memset(&counters, 0, sizeof(counters));
@@ -107,8 +108,10 @@ index 690ee408..889d6526 100644
 +  tcp_sent(pcb, test_tcp_sent_close);
 +
 +  /* our response, for the peer to ACK */
-+  EXPECT_RET(tcp_write(pcb, tx_data, sizeof(tx_data), TCP_WRITE_FLAG_COPY) == ERR_OK);
-+  EXPECT_RET(tcp_output(pcb) == ERR_OK);
++  err = tcp_write(pcb, tx_data, sizeof(tx_data), TCP_WRITE_FLAG_COPY);
++  EXPECT_RET(err == ERR_OK);
++  err = tcp_output(pcb);
++  EXPECT_RET(err == ERR_OK);
 +  EXPECT(MEMP_STATS_GET(used, MEMP_PBUF_POOL) == 0);
 +
 +  /* the peer ACKs it in the same segment as more of its own data */
@@ -139,7 +142,7 @@ index 690ee408..889d6526 100644
  /** Create an ESTABLISHED pcb and check if receive callback is called if a segment
   * overlapping rcv_nxt is received */
  START_TEST(test_tcp_recv_inseq_trim)
-@@ -1676,6 +1746,8 @@ tcp_suite(void)
+@@ -1676,6 +1749,8 @@ tcp_suite(void)
      TESTFUNC(test_tcp_listen_passive_open),
      TESTFUNC(test_tcp_recv_inseq),
      TESTFUNC(test_tcp_recv_inseq_trim),

@@ -1,0 +1,155 @@
+From e98bf1d96ac079c7d529498fd2508b7fbaafef46 Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:22:11 +0100
+Subject: [PATCH 5/9] dhcp: don't let an infinite lease keep the old lease's
+ timers
+
+When a renewal (or rebind) ACK changes a finite lease into an infinite
+one (lease time 0xffffffff), the address still expires at the time of
+the previous lease: dhcp_coarse_tmr() releases it and restarts DHCP.
+
+dhcp_bind() sets t0_timeout only for a finite lease and otherwise
+leaves it unchanged, so the previous lease's value stays in effect.  The
+same applies to t1 and t2 when the server gives them as infinite.
+
+Clear t0_timeout, and t1/t2 with their renew/rebind timers, when the
+offered time is infinite; dhcp_coarse_tmr() treats 0 as "not running",
+as for the first bind with an infinite lease.  A unit test renews a
+2 minute lease into an infinite one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/ipv4/dhcp.c       |  7 ++++
+ test/unit/dhcp/test_dhcp.c | 76 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 82 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/ipv4/dhcp.c b/src/core/ipv4/dhcp.c
+index 5c401368..79b360fc 100644
+--- a/src/core/ipv4/dhcp.c
++++ b/src/core/ipv4/dhcp.c
+@@ -1098,6 +1098,9 @@ dhcp_bind(struct netif *netif)
+     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_bind(): t0 renewal timer %"U32_F" secs\n", dhcp->offered_t0_lease));
+     DHCP_SET_TIMEOUT_FROM_OFFERED_T0_LEASE(dhcp->t0_timeout, dhcp);
+     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_bind(): set request timeout %"U32_F" msecs\n", dhcp->offered_t0_lease * 1000));
++  } else {
++    /* infinite lease: clear a timer left from a previous finite lease */
++    dhcp->t0_timeout = 0;
+   }
+ 
+   /* temporary DHCP lease? */
+@@ -1107,6 +1110,8 @@ dhcp_bind(struct netif *netif)
+     DHCP_SET_TIMEOUT_FROM_OFFERED_T1_RENEW(dhcp->t1_timeout, dhcp);
+     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_bind(): set request timeout %"U32_F" msecs\n", dhcp->offered_t1_renew * 1000));
+     dhcp->t1_renew_time = dhcp->t1_timeout;
++  } else {
++    dhcp->t1_timeout = dhcp->t1_renew_time = 0;
+   }
+   /* set renewal period timer */
+   if (dhcp->offered_t2_rebind != 0xffffffffUL) {
+@@ -1114,6 +1119,8 @@ dhcp_bind(struct netif *netif)
+     DHCP_SET_TIMEOUT_FROM_OFFERED_T2_REBIND(dhcp->t2_timeout, dhcp);
+     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_bind(): set request timeout %"U32_F" msecs\n", dhcp->offered_t2_rebind * 1000));
+     dhcp->t2_rebind_time = dhcp->t2_timeout;
++  } else {
++    dhcp->t2_timeout = dhcp->t2_rebind_time = 0;
+   }
+ 
+   /* If we have sub 1 minute lease, t2 and t1 will kick in at the same time. */
+diff --git a/test/unit/dhcp/test_dhcp.c b/test/unit/dhcp/test_dhcp.c
+index 0a75e549..4745d2b3 100644
+--- a/test/unit/dhcp/test_dhcp.c
++++ b/test/unit/dhcp/test_dhcp.c
+@@ -1093,6 +1093,79 @@ START_TEST(test_dhcp_invalid_overload)
+ }
+ END_TEST
+ 
++/*
++ * Check that a renewal ACK with an infinite lease (0xffffffff) does not
++ * keep the previous finite lease time: the lease must not expire.
++ */
++START_TEST(test_dhcp_renew_infinite_lease)
++{
++  ip4_addr_t addr;
++  ip4_addr_t netmask;
++  ip4_addr_t gw;
++  int i;
++  u32_t xid;
++  int tx_before;
++  u8_t ack_inf[sizeof(dhcp_ack)];
++  LWIP_UNUSED_ARG(_i);
++
++  tcase = TEST_LWIP_DHCP;
++  setdebug(0);
++
++  IP4_ADDR(&addr, 0, 0, 0, 0);
++  IP4_ADDR(&netmask, 0, 0, 0, 0);
++  IP4_ADDR(&gw, 0, 0, 0, 0);
++
++  netif_add(&net_test, &addr, &netmask, &gw, &net_test, testif_init, ethernet_input);
++  netif_set_link_up(&net_test);
++  netif_set_up(&net_test);
++
++  dhcp_start(&net_test);
++  fail_unless(txpacket == 1); /* DHCP discover sent */
++  xid = htonl(netif_dhcp_data(&net_test)->xid);
++  memcpy(&dhcp_offer[46], &xid, 4);
++  send_pkt(&net_test, dhcp_offer, sizeof(dhcp_offer));
++  fail_unless(txpacket == 2); /* DHCP request sent */
++  xid = htonl(netif_dhcp_data(&net_test)->xid);
++  memcpy(&dhcp_ack[46], &xid, 4);
++  send_pkt(&net_test, dhcp_ack, sizeof(dhcp_ack)); /* 2 minute lease */
++
++  /* let ACD finish, without running the coarse timer */
++  tick = 0;
++  for (i = 0; i < 200; i++) {
++    tick_lwip();
++  }
++  fail_unless(netif_dhcp_data(&net_test)->state == DHCP_STATE_BOUND);
++
++  /* T1 (60 seconds) expires: renew */
++  tcase = TEST_NONE; /* no per-packet checks from here on */
++  tx_before = txpacket;
++  dhcp_coarse_tmr();
++  fail_unless(netif_dhcp_data(&net_test)->state == DHCP_STATE_RENEWING);
++  fail_unless(txpacket == tx_before + 1); /* DHCP request sent */
++
++  /* the server renews with an infinite lease */
++  memcpy(ack_inf, dhcp_ack, sizeof(dhcp_ack));
++  xid = htonl(netif_dhcp_data(&net_test)->xid);
++  memcpy(&ack_inf[46], &xid, 4);
++  fail_unless(ack_inf[282 + 9] == 0x33 && ack_inf[282 + 10] == 0x04); /* lease time option */
++  memset(&ack_inf[282 + 11], 0xff, 4);
++  send_pkt(&net_test, ack_inf, sizeof(ack_inf));
++  fail_unless(netif_dhcp_data(&net_test)->state == DHCP_STATE_BOUND);
++  fail_unless(netif_dhcp_data(&net_test)->offered_t0_lease == 0xffffffffUL);
++
++  /* well past the old 2 minute lease, the address must still be bound */
++  for (i = 0; i < 5; i++) {
++    dhcp_coarse_tmr();
++  }
++  fail_unless(netif_dhcp_data(&net_test)->state == DHCP_STATE_BOUND,
++              "infinite lease expired (state %d)", netif_dhcp_data(&net_test)->state);
++
++  dhcp_stop(&net_test);
++  dhcp_cleanup(&net_test);
++  netif_remove(&net_test);
++}
++END_TEST
++
+ /** Create the suite including all tests for this module */
+ Suite *
+ dhcp_suite(void)
+@@ -1102,7 +1175,8 @@ dhcp_suite(void)
+     TESTFUNC(test_dhcp_nak),
+     TESTFUNC(test_dhcp_relayed),
+     TESTFUNC(test_dhcp_nak_no_endmarker),
+-    TESTFUNC(test_dhcp_invalid_overload)
++    TESTFUNC(test_dhcp_invalid_overload),
++    TESTFUNC(test_dhcp_renew_infinite_lease)
+   };
+   return create_suite("DHCP", tests, sizeof(tests)/sizeof(testfunc), dhcp_setup, dhcp_teardown);
+ }
+-- 
+2.56.0
+

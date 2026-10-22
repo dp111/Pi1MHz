@@ -1,0 +1,258 @@
+From 0706c0484425d657423da44f63e1f7dff92d6ca0 Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 12:24:07 +0100
+Subject: [PATCH 7/9] dns: require the response's question name to match the
+ query exactly
+
+dns_recv() accepts a response whose question name is only a prefix of
+the name looked up: a response for "a" is taken as the answer to a
+query for "ab" or for "a.b".
+
+dns_compare_name() compares each label of the response with the query
+string, then skips one query character as if it were the '.' without
+checking it, and returns a match when the response name ends without
+checking that the whole query was consumed.  A NUL byte in a response
+label could also match the query's terminator and move the comparison
+past the end of the string.
+
+Fail the comparison when the query ends or has a '.' inside a response
+label, when a label is not followed by '.' or the end of the query, and
+when the query has labels left after the response name.  The comparison
+stays case-insensitive.  Unit tests send responses with a prefix of the
+query as question, and a matching one (in different case) as control.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/dns.c            |  15 +++-
+ test/unit/core/test_dns.c | 162 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 175 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/dns.c b/src/core/dns.c
+index 6540f143..62175c52 100644
+--- a/src/core/dns.c
++++ b/src/core/dns.c
+@@ -690,6 +690,10 @@ dns_compare_name(const char *query, struct pbuf *p, u16_t start_offset)
+         if (c < 0) {
+           return 0xFFFF;
+         }
++        if ((*query == 0) || (*query == '.')) {
++          /* label in the response is longer */
++          return 0xFFFF;
++        }
+         if (lwip_tolower((*query)) != lwip_tolower((u8_t)c)) {
+           return 0xFFFF;
+         }
+@@ -701,7 +705,12 @@ dns_compare_name(const char *query, struct pbuf *p, u16_t start_offset)
+         ++query;
+         --n;
+       }
+-      ++query;
++      /* the label must end here in the query, too */
++      if (*query == '.') {
++        ++query;
++      } else if (*query != 0) {
++        return 0xFFFF;
++      }
+     }
+     n = pbuf_try_get_at(p, response_offset);
+     if (n < 0) {
+@@ -709,6 +718,10 @@ dns_compare_name(const char *query, struct pbuf *p, u16_t start_offset)
+     }
+   } while (n != 0);
+ 
++  if (*query != 0) {
++    /* the query has more labels */
++    return 0xFFFF;
++  }
+   if (response_offset == 0xFFFF) {
+     /* would overflow */
+     return 0xFFFF;
+diff --git a/test/unit/core/test_dns.c b/test/unit/core/test_dns.c
+index 6789d244..4a8b057c 100644
+--- a/test/unit/core/test_dns.c
++++ b/test/unit/core/test_dns.c
+@@ -1,6 +1,11 @@
+ #include "test_dns.h"
+ 
+ #include "lwip/dns.h"
++#include "lwip/netif.h"
++#include "lwip/ip4.h"
++#include "lwip/inet_chksum.h"
++#include "lwip/prot/ip4.h"
++#include <string.h>
+ 
+ /* Setups/teardown functions */
+ 
+@@ -41,12 +46,167 @@ START_TEST(test_dns_set_get_server)
+ }
+ END_TEST
+ 
++static u8_t dns_tx_buf[512];
++static u16_t dns_tx_len;
++static int dns_found_called;
++static ip_addr_t dns_found_addr;
++
++static err_t
++dns_test_output(struct netif *netif, struct pbuf *p, const ip4_addr_t *ipaddr)
++{
++  LWIP_UNUSED_ARG(netif);
++  LWIP_UNUSED_ARG(ipaddr);
++  dns_tx_len = pbuf_copy_partial(p, dns_tx_buf, sizeof(dns_tx_buf), 0);
++  return ERR_OK;
++}
++
++static err_t
++dns_test_netif_init(struct netif *netif)
++{
++  netif->name[0] = 'd';
++  netif->name[1] = 'n';
++  netif->output = dns_test_output;
++  netif->mtu = 1500;
++  netif->flags = NETIF_FLAG_UP | NETIF_FLAG_LINK_UP;
++  return ERR_OK;
++}
++
++static void
++dns_test_found(const char *name, const ip_addr_t *ipaddr, void *arg)
++{
++  LWIP_UNUSED_ARG(name);
++  LWIP_UNUSED_ARG(arg);
++  dns_found_called++;
++  if (ipaddr != NULL) {
++    ip_addr_copy(dns_found_addr, *ipaddr);
++  } else {
++    ip_addr_set_zero(&dns_found_addr);
++  }
++}
++
++/* Look up 'query' and answer with a response whose question name is the
++ * encoded name 'qname' (qname_len bytes, including the terminating 0).
++ * Returns 1 if the response was accepted as the answer. */
++static int
++dns_test_answer(const char *query, const u8_t *qname, u16_t qname_len)
++{
++  static const u8_t hdr[] = {
++    0x00, 0x00,             /* id, filled in */
++    0x81, 0x80,             /* response, RD, RA, no error */
++    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00
++  };
++  static const u8_t tail[] = {
++    0x00, 0x01, 0x00, 0x01, /* question: A, IN */
++    0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04,
++    1, 2, 3, 4              /* answer: 1.2.3.4 */
++  };
++  struct netif nif;
++  ip4_addr_t addr, netmask, gw;
++  ip_addr_t server, result, expected;
++  struct pbuf *p;
++  struct ip_hdr *iph;
++  u8_t pkt[512];
++  u16_t len, udp_len;
++  int i, accepted;
++  err_t err;
++
++  fail_unless(IP_HLEN + 8 + sizeof(hdr) + qname_len + sizeof(tail) <= sizeof(pkt));
++
++  IP4_ADDR(&addr, 192, 168, 0, 2);
++  IP4_ADDR(&netmask, 255, 255, 255, 0);
++  IP4_ADDR(&gw, 192, 168, 0, 1);
++  fail_unless(netif_add(&nif, &addr, &netmask, &gw, NULL, dns_test_netif_init, ip4_input) == &nif);
++  netif_set_up(&nif);
++  netif_set_link_up(&nif);
++
++  IP_ADDR4(&server, 192, 168, 0, 1);
++  dns_setserver(0, &server);
++  dns_found_called = 0;
++  dns_tx_len = 0;
++  err = dns_gethostbyname(query, &result, dns_test_found, NULL);
++  fail_unless(err == ERR_INPROGRESS);
++  fail_unless(dns_tx_len >= IP_HLEN + 8 + sizeof(hdr));
++
++  /* build the response: swap the addresses and ports of the query */
++  udp_len = (u16_t)(8 + sizeof(hdr) + qname_len + sizeof(tail));
++  len = (u16_t)(IP_HLEN + udp_len);
++  memset(pkt, 0, sizeof(pkt));
++  memcpy(pkt, dns_tx_buf, IP_HLEN);
++  iph = (struct ip_hdr *)pkt;
++  IPH_LEN_SET(iph, lwip_htons(len));
++  ip4_addr_copy(iph->src, *ip_2_ip4(&server));
++  ip4_addr_copy(iph->dest, addr);
++  IPH_CHKSUM_SET(iph, 0);
++  IPH_CHKSUM_SET(iph, inet_chksum(iph, IP_HLEN));
++  pkt[IP_HLEN + 0] = dns_tx_buf[IP_HLEN + 2];
++  pkt[IP_HLEN + 1] = dns_tx_buf[IP_HLEN + 3];
++  pkt[IP_HLEN + 2] = dns_tx_buf[IP_HLEN + 0];
++  pkt[IP_HLEN + 3] = dns_tx_buf[IP_HLEN + 1];
++  pkt[IP_HLEN + 4] = (u8_t)(udp_len >> 8);
++  pkt[IP_HLEN + 5] = (u8_t)udp_len;
++  /* UDP checksum 0: not computed */
++  memcpy(&pkt[IP_HLEN + 8], hdr, sizeof(hdr));
++  pkt[IP_HLEN + 8] = dns_tx_buf[IP_HLEN + 8]; /* id */
++  pkt[IP_HLEN + 9] = dns_tx_buf[IP_HLEN + 9];
++  memcpy(&pkt[IP_HLEN + 8 + sizeof(hdr)], qname, qname_len);
++  memcpy(&pkt[IP_HLEN + 8 + sizeof(hdr) + qname_len], tail, sizeof(tail));
++
++  p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
++  fail_unless(p != NULL);
++  pbuf_take(p, pkt, len);
++  nif.input(p, &nif);
++
++  IP_ADDR4(&expected, 1, 2, 3, 4);
++  accepted = (dns_found_called == 1) && ip_addr_eq(&dns_found_addr, &expected);
++
++  /* if ignored, let the request time out to free its resources */
++  for (i = 0; i < 100 && dns_found_called == 0; i++) {
++    dns_tmr();
++  }
++  fail_unless(dns_found_called == 1);
++  netif_remove(&nif);
++  ip_addr_set_zero(&server);
++  dns_setserver(0, &server);
++  return accepted;
++}
++
++/* The question name in a response must equal the name asked for, not
++ * just begin like it or match it as a prefix */
++START_TEST(test_dns_response_question_prefix)
++{
++  static const u8_t name_a[] = { 1, 'a', 0 };
++  LWIP_UNUSED_ARG(_i);
++
++  /* the question's label "a" only starts our label "ab" */
++  fail_if(dns_test_answer("ab", name_a, sizeof(name_a)),
++          "response to question \"a\" accepted for query \"ab\"");
++  /* the question "a" is only the first label of "a.b" */
++  fail_if(dns_test_answer("a.b", name_a, sizeof(name_a)),
++          "response to question \"a\" accepted for query \"a.b\"");
++}
++END_TEST
++
++/* Control for test_dns_response_question_prefix: a response whose
++ * question name matches (case-insensitively) is accepted */
++START_TEST(test_dns_response_question_match)
++{
++  static const u8_t name_ab[] = { 2, 'A', 'b', 0 };
++  static const u8_t name_c_d[] = { 1, 'c', 1, 'D', 0 };
++  LWIP_UNUSED_ARG(_i);
++
++  fail_unless(dns_test_answer("aB", name_ab, sizeof(name_ab)));
++  fail_unless(dns_test_answer("C.d", name_c_d, sizeof(name_c_d)));
++}
++END_TEST
++
+ /** Create the suite including all tests for this module */
+ Suite *
+ dns_suite(void)
+ {
+   testfunc tests[] = {
+-    TESTFUNC(test_dns_set_get_server)
++    TESTFUNC(test_dns_set_get_server),
++    TESTFUNC(test_dns_response_question_prefix),
++    TESTFUNC(test_dns_response_question_match)
+   };
+   return create_suite("DNS", tests, sizeof(tests)/sizeof(testfunc), dns_setup, dns_teardown);
+ }
+-- 
+2.56.0
+
