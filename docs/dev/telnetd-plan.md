@@ -833,7 +833,9 @@ unchanged; the Pi side only.
   WILL again for `mode character`), counts them (`tnd_in_t.mode_gen`) and shows the
   screen again (ANSI: drawn by position; teletype: the Beeb's line, prompt and typed
   text over as many rows as it wraps - `g_tline`, which takes DELETE's echo off).
-  LINEMODE is taken: MODE EDIT|TRAPSIG and SLC values make ESC the client's interrupt
+  LINEMODE is taken at "mode line" (the offer Linux telnet makes as it connects is
+  refused, as before, or every session would start in line mode - the first review
+  found that): MODE EDIT|TRAPSIG and SLC values make ESC the client's interrupt
   (sent at once as IAC IP, read as the ESC byte, so IP [ 2 4 ~ is still F12), Ctrl-C
   its abort (IAC ABORT, ESCAPE) and "~" its forwarding character, so F12 and Page Down
   follow at once. Inetutils telnet 2.6 refuses FORWARDMASK and maps SLC_FORW2 onto the
@@ -842,11 +844,18 @@ unchanged; the Pi side only.
   until it is). A telnet command inside an escape sequence no longer ends it.
 - *Cut-through.* F12, IAC BRK and IAC IP cut through a full key ring as a lone ESC
   does (`esc_ahead`): a Beeb stuck in a program that reads no keys has a full ring.
+  `esc_ahead` parses the telnet and escape-sequence grammar a second time, more simply
+  than the translator (a telnet command inside a CSI ends it there); a lookahead in
+  the translator would remove the copy.
 - *BREAK and the second processor.* About one F12 in three on a running program hung
   the Beeb after "BASIC" (upstream master too). The ROM resets the second processor at
   service call 1 after a soft reset (&E0/&60 to &FEE0), but until then it ran on. The
   BREAK's trip now stores &A0 (S|P: held in reset) and ends in the JMP (&FFFC); after
-  the ROM has hooked in, a trip stores &20. Holding it across a separate trip with the
+  the ROM has hooked in, a trip stores &20 (with no auto-start ROM to hook in, the
+  second processor is pulsed instead, as for CTRL-F12). The BREAK's trip is armed only
+  2 ms after the gate closed: behind a backlog a key trip was usually still in the stub,
+  ran on to the new exit and reset the Beeb without the hold - an intermittent hang that
+  the first full run met twice. Holding it across a separate trip with the
   host running, or setting T (&C0), stopped the host taking interrupts (it waits on the
   second processor inside them), so the hold and the jump are one trip. The ULA's bits
   are from b-em and PiTubeDirect, confirmed on the bench (30 BREAKs out of 30).
@@ -880,6 +889,4 @@ unchanged; the Pi side only.
   re-send, 6000 keys behind a stuck program; `--breaks` adds the BREAK cases),
   `probe_esc.py` (*FX229, *FX200, *FX220, an escape event handler in host memory),
   `probe_brkmod.py` (SHIFT-F12, CTRL-F12; it leaves the bench in the DFS's boot, so it
-  runs last and is followed by a power cycle). One unexplained failure: once, F12 behind
-  6000 queued keys did not BREAK a busy Beeb and left it wedged; it has not happened
-  again in five runs of the same checks since.
+  runs last and is followed by a power cycle).
