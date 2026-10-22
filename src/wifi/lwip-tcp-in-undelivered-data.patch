@@ -1,0 +1,28 @@
+--- a/src/core/tcp_in.c
++++ b/src/core/tcp_in.c
+@@ -467,12 +467,25 @@
+ #endif
+             TCP_EVENT_SENT(pcb, (u16_t)acked16, err);
+             if (err == ERR_ABRT) {
++              /* recv_data has not reached the application: "aborted"
++                 would only forget it and leak the pbuf */
++              if (recv_data != NULL) {
++                pbuf_free(recv_data);
++                recv_data = NULL;
++              }
+               goto aborted;
+             }
+           }
+           recv_acked = 0;
+         }
+         if (tcp_input_delayed_close(pcb)) {
++          /* closed in the sent callback (tcp_close with unread data sends
++             RST and defers the free to here): recv_data has not reached
++             the application, so free it rather than leak the pbuf */
++          if (recv_data != NULL) {
++            pbuf_free(recv_data);
++            recv_data = NULL;
++          }
+           goto aborted;
+         }
+ #if TCP_QUEUE_OOSEQ && LWIP_WND_SCALE

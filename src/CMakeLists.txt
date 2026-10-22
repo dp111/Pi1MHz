@@ -202,6 +202,24 @@ add_custom_command(
 set_source_files_properties(${ALTCP_TLS_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/apps/altcp_tls)
 
+# lwIP's tcp_input forgets a segment's in-order data, without freeing it, when
+# the sent callback closes or aborts the pcb: the ACK of our response and the
+# next bytes of a request body arrive in one segment, and the pbuf is lost.
+# A PUT refused before its body is read (409, 413) leaks one each, until the
+# pool is empty and the network stops.  wifi/lwip-tcp-in-undelivered-data.patch
+# frees it; applied to a build-tree copy like the patches above.
+set(LWIP_TCP_IN_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/core/tcp_in.c)
+set(LWIP_TCP_IN_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-tcp-in-undelivered-data.patch)
+set(LWIP_TCP_IN_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched/tcp_in.c)
+add_custom_command(
+   OUTPUT  ${LWIP_TCP_IN_PATCHED}
+   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched
+   COMMAND patch --forward --fuzz=0 -o ${LWIP_TCP_IN_PATCHED} ${LWIP_TCP_IN_UPSTREAM} ${LWIP_TCP_IN_PATCH}
+   DEPENDS ${LWIP_TCP_IN_UPSTREAM} ${LWIP_TCP_IN_PATCH}
+   COMMENT "Applying the Pi1MHz recv_data leak patch to lwIP tcp_in.c"
+   VERBATIM
+)
+
 # mbedTLS itself (every library file, most of which the config compiles to
 # nothing) and lwIP's TLS adapter: a library of their own, built without LTO
 # as wolfSSL is below - vendored code is not ours to warn about, and LTO
@@ -518,7 +536,7 @@ set(lwip_files
    ${LWIP_ROOT}/src/core/sys.c
    ${LWIP_ROOT}/src/core/raw.c
    ${LWIP_ROOT}/src/core/tcp.c
-   ${LWIP_ROOT}/src/core/tcp_in.c
+   ${LWIP_TCP_IN_PATCHED}         # wifi/lwip/src/core/tcp_in.c + our patch
    ${LWIP_ROOT}/src/core/tcp_out.c
    ${LWIP_ROOT}/src/core/timeouts.c
    ${LWIP_ROOT}/src/core/udp.c
@@ -573,7 +591,7 @@ set_source_files_properties(
    ${LWIP_ROOT}/src/core/sys.c
    ${LWIP_ROOT}/src/core/raw.c
    ${LWIP_ROOT}/src/core/tcp.c
-   ${LWIP_ROOT}/src/core/tcp_in.c
+   ${LWIP_TCP_IN_PATCHED}         # wifi/lwip/src/core/tcp_in.c + our patch
    ${LWIP_ROOT}/src/core/tcp_out.c
    ${LWIP_ROOT}/src/core/timeouts.c
    ${LWIP_ROOT}/src/core/udp.c
