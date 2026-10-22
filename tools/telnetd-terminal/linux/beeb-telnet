@@ -1,15 +1,26 @@
 #!/bin/sh
-# beeb-telnet [host] - telnet to the Pi1MHz's TelnetD (host defaults to Pi1MHz) looking like a BBC Micro.
-# On the Linux console (TERM=linux) it loads the BBC Micro console font and the BBC's eight colours for the session
-# and puts the previous font and colours back afterwards.  In a desktop terminal it runs telnet as it is: choose the
-# "BBC Micro MOS" font and an 80 x 32 window in the terminal's own settings.
+# beeb-telnet [-m MODE] [host] - telnet to the Pi1MHz's TelnetD (host defaults to Pi1MHz) looking like a BBC Micro.
+# MODE is the Beeb's screen MODE the session is for: 7 (the default: the Beeb starts in MODE 7), 0 or 3, 1, 4 or 6,
+# 2 or 5.  Each width has its own font, so the characters have the Beeb's shape for that MODE.
+# On the Linux console (TERM=linux) it loads that MODE's console font and the BBC's eight colours for the session
+# and puts the previous font and colours back afterwards.  In a desktop terminal it runs telnet as it is and says
+# which font and window size to choose in the terminal's own settings.
+MODE=7
+if [ "$1" = "-m" ]; then MODE=$2; shift 2; fi
 HOST=${1:-Pi1MHz}
-FONT=/usr/share/consolefonts/BBCMicroMOS.psf
+case $MODE in
+    0|3) FONT=BBCMicroMOS;      NAME="BBC Micro MOS";      COLS=80; ROWS=32 ;;
+    1|4|6) FONT=BBCMicroMOS40;  NAME="BBC Micro MOS 40";   COLS=40; ROWS=32 ;;
+    2|5) FONT=BBCMicroMOS20;    NAME="BBC Micro MOS 20";   COLS=20; ROWS=32 ;;
+    7) FONT=BBCMicroTeletext;   NAME="BBC Micro Teletext"; COLS=40; ROWS=25 ;;
+    *) echo "beeb-telnet: MODE is 0 to 7" >&2; exit 1 ;;
+esac
+PSF=/usr/share/consolefonts/$FONT.psf
 
-if [ "$TERM" = "linux" ] && [ -r "$FONT" ] && command -v setfont >/dev/null; then
+if [ "$TERM" = "linux" ] && [ -r "$PSF" ] && command -v setfont >/dev/null; then
     SAVED=$(mktemp)
     setfont -O "$SAVED" 2>/dev/null || true     # the current font, to put back
-    setfont "$FONT"
+    setfont "$PSF"
     # the BBC's colours: black red green yellow blue magenta cyan white, normal and bright alike
     for i in 0 1 2 3 4 5 6 7; do
         case $i in
@@ -20,13 +31,16 @@ if [ "$TERM" = "linux" ] && [ -r "$FONT" ] && command -v setfont >/dev/null; the
     done
     printf '\033[37;40m\033[2J\033[H'
     cols=$(tput cols); rows=$(tput lines)
-    if [ "$cols" -lt 80 ] || [ "$rows" -lt 32 ]; then
-        echo "This console is $cols x $rows; MODE 0, 1, 2, 4 and 5 need 80 x 32."
+    if [ "$cols" -lt "$COLS" ] || [ "$rows" -lt "$ROWS" ]; then
+        echo "This console is $cols x $rows in this font; MODE $MODE needs $COLS x $ROWS."
     fi
     telnet "$HOST"
     printf '\033]R\033[0m\033[2J\033[H'          # the console's own colours back
     if [ -s "$SAVED" ]; then setfont "$SAVED"; else setfont; fi
     rm -f "$SAVED"
 else
+    if [ -t 1 ]; then
+        echo "For MODE $MODE choose the font \"$NAME\" and a $COLS x $ROWS window in this terminal's settings."
+    fi
     telnet "$HOST"
 fi
