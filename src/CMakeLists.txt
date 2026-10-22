@@ -202,23 +202,50 @@ add_custom_command(
 set_source_files_properties(${ALTCP_TLS_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/apps/altcp_tls)
 
-# lwIP's tcp_input forgets a segment's in-order data, without freeing it, when
-# the sent callback closes or aborts the pcb: the ACK of our response and the
-# next bytes of a request body arrive in one segment, and the pbuf is lost.
-# A PUT refused before its body is read (409, 413) leaks one each, until the
-# pool is empty and the network stops.  wifi/lwip-tcp-in-undelivered-data.patch
-# frees it; applied to a build-tree copy like the patches above.
-set(LWIP_TCP_IN_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/core/tcp_in.c)
-set(LWIP_TCP_IN_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-tcp-in-undelivered-data.patch)
-set(LWIP_TCP_IN_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched/tcp_in.c)
-add_custom_command(
-   OUTPUT  ${LWIP_TCP_IN_PATCHED}
-   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched
-   COMMAND patch --forward --fuzz=0 -o ${LWIP_TCP_IN_PATCHED} ${LWIP_TCP_IN_UPSTREAM} ${LWIP_TCP_IN_PATCH}
-   DEPENDS ${LWIP_TCP_IN_UPSTREAM} ${LWIP_TCP_IN_PATCH}
-   COMMENT "Applying the Pi1MHz recv_data leak patch to lwIP tcp_in.c"
-   VERBATIM
-)
+# Our fixes to lwIP, kept as the upstream git format-patch series submitted to
+# lwIP (wifi/lwip-patches/NNNN-*.patch, applied in order) until a submodule
+# bump brings them in: then delete that patch file - one that no longer applies
+# stops the build.  The files the series changes are copied to the build tree,
+# patched there (src/ hunks only; the series also carries lwIP's unit tests)
+# and compiled in place of the upstream ones, so the lwIP submodule stays a
+# plain upstream pin.  See wifi/lwip-patches/README.md.
+file(GLOB LWIP_PATCHES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-patches/*.patch)
+list(SORT LWIP_PATCHES)
+set(LWIP_PATCHED_DIR ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched-tree)
+set(LWIP_PATCHED_RELS "")
+foreach(p IN LISTS LWIP_PATCHES)
+   file(STRINGS ${p} plus REGEX "^\\+\\+\\+ b/src/")
+   foreach(l IN LISTS plus)
+      string(REGEX REPLACE "^\\+\\+\\+ b/" "" rel "${l}")
+      list(APPEND LWIP_PATCHED_RELS ${rel})
+   endforeach()
+endforeach()
+list(REMOVE_DUPLICATES LWIP_PATCHED_RELS)
+set(LWIP_PATCHED_OUT "")
+set(LWIP_PATCHED_IN "")
+foreach(rel IN LISTS LWIP_PATCHED_RELS)
+   list(APPEND LWIP_PATCHED_OUT ${LWIP_PATCHED_DIR}/${rel})
+   list(APPEND LWIP_PATCHED_IN ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/${rel})
+endforeach()
+if(LWIP_PATCHES)
+   add_custom_command(
+      OUTPUT  ${LWIP_PATCHED_OUT}
+      COMMAND ${CMAKE_COMMAND} -DLWIP_DIR=${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip
+              -DOUT_DIR=${LWIP_PATCHED_DIR} "-DFILES=${LWIP_PATCHED_RELS}"
+              "-DPATCHES=${LWIP_PATCHES}"
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-patches/apply.cmake
+      DEPENDS ${LWIP_PATCHES} ${LWIP_PATCHED_IN}
+              ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-patches/apply.cmake
+      COMMENT "Applying the Pi1MHz lwIP patch series"
+      VERBATIM
+   )
+   # Headers are not compiled, so make the series apply before anything is
+   # built, and let a patched header shadow the upstream one.
+   add_custom_target(lwip_patched DEPENDS ${LWIP_PATCHED_OUT})
+   if(LWIP_PATCHED_RELS MATCHES "src/include/")
+      include_directories(BEFORE SYSTEM ${LWIP_PATCHED_DIR}/src/include)
+   endif()
+endif()
 
 # mbedTLS itself (every library file, most of which the config compiles to
 # nothing) and lwIP's TLS adapter: a library of their own, built without LTO
@@ -536,7 +563,7 @@ set(lwip_files
    ${LWIP_ROOT}/src/core/sys.c
    ${LWIP_ROOT}/src/core/raw.c
    ${LWIP_ROOT}/src/core/tcp.c
-   ${LWIP_TCP_IN_PATCHED}         # wifi/lwip/src/core/tcp_in.c + our patch
+   ${LWIP_ROOT}/src/core/tcp_in.c
    ${LWIP_ROOT}/src/core/tcp_out.c
    ${LWIP_ROOT}/src/core/timeouts.c
    ${LWIP_ROOT}/src/core/udp.c
@@ -550,6 +577,10 @@ set(lwip_files
    ${LWIP_ROOT}/src/core/ipv4/ip4_frag.c
    ${LWIP_ROOT}/src/netif/ethernet.c
 )
+# Compile the patched copies of the files the lwIP patch series changes.
+foreach(rel IN LISTS LWIP_PATCHED_RELS)
+   list(TRANSFORM lwip_files REPLACE "^${LWIP_ROOT}/${rel}$" "${LWIP_PATCHED_DIR}/${rel}")
+endforeach()
 
 set_source_files_properties(
    usb/tinyusb/src/tusb.c
@@ -575,35 +606,7 @@ set_source_files_properties(${HCD_DWC2_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/portable/synopsys/dwc2)
 
 set_source_files_properties(
-   ${LWIP_ROOT}/src/core/altcp.c
-   ${LWIP_ROOT}/src/core/altcp_alloc.c
-   ${LWIP_ROOT}/src/core/altcp_tcp.c
-   ${LWIP_ROOT}/src/core/def.c
-   ${LWIP_ROOT}/src/core/dns.c
-   ${LWIP_ROOT}/src/core/inet_chksum.c
-   ${LWIP_ROOT}/src/core/init.c
-   ${LWIP_ROOT}/src/core/ip.c
-   ${LWIP_ROOT}/src/core/mem.c
-   ${LWIP_ROOT}/src/core/memp.c
-   ${LWIP_ROOT}/src/core/netif.c
-   ${LWIP_ROOT}/src/core/pbuf.c
-   ${LWIP_ROOT}/src/core/stats.c
-   ${LWIP_ROOT}/src/core/sys.c
-   ${LWIP_ROOT}/src/core/raw.c
-   ${LWIP_ROOT}/src/core/tcp.c
-   ${LWIP_TCP_IN_PATCHED}         # wifi/lwip/src/core/tcp_in.c + our patch
-   ${LWIP_ROOT}/src/core/tcp_out.c
-   ${LWIP_ROOT}/src/core/timeouts.c
-   ${LWIP_ROOT}/src/core/udp.c
-   ${LWIP_ROOT}/src/core/ipv4/acd.c
-   ${LWIP_ROOT}/src/core/ipv4/autoip.c
-   ${LWIP_ROOT}/src/core/ipv4/dhcp.c
-   ${LWIP_ROOT}/src/core/ipv4/etharp.c
-   ${LWIP_ROOT}/src/core/ipv4/icmp.c
-   ${LWIP_ROOT}/src/core/ipv4/ip4.c
-   ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
-   ${LWIP_ROOT}/src/core/ipv4/ip4_frag.c
-   ${LWIP_ROOT}/src/netif/ethernet.c
+   ${lwip_files}
    PROPERTIES
    COMPILE_OPTIONS "-Wno-duplicated-branches;-Wno-arith-conversion;-Wno-sign-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion"
 )
@@ -752,3 +755,6 @@ add_custom_target( gitversion ALL
    VERBATIM
 )
 add_dependencies( Pi1MHz gitversion )
+if(TARGET lwip_patched)
+   add_dependencies( Pi1MHz lwip_patched )
+endif()
