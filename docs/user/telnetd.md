@@ -183,10 +183,12 @@ power-on: a second copy in another bank answers the same reset call.
 | End | COPY (copies the character under the copy cursor) |
 | F1 to F9, F10 | f1 to f9, f0 |
 | F12 | BREAK: a soft reset, the same jump as `CALL !-4`, so it works whatever is running. The terminal is cleared and the cursor put where the Beeb reports it; the session comes back when something hooks the daemon in again (HELPERS or the auto-start ROM). Boot banners printed before the hook are not shown. |
+| SHIFT-F12 | SHIFT-BREAK: a BREAK, and the Beeb is told SHIFT is held while it starts, so the filing system boots (`!BOOT`, as `*OPT 4` says). Needs the auto-start ROM. A boot that waits for ever (the DFS with no drive) can only be ended by the BREAK key or the power: see "Things to know". |
+| CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. |
 | Page Down | SHIFT, pressed once: in paged mode (`VDU 14`, CTRL-N) the Beeb stops at the end of each page until SHIFT is pressed, and Page Down lets it go on a page. Needs the auto-start ROM, build 10 or later. |
 | F11 or Ctrl-L | Draw the screen again: the Pi asks the auto-start ROM for what is on the Beeb's screen (see above). Nothing shows on the Beeb. |
 | the pound sign | the Beeb's pound (character 96) |
-| ESC | the character 27 (see below) |
+| ESC | the Beeb's ESCAPE key (see below) |
 | Ctrl-letters | the control code, `Ctrl-A` = 1 and so on |
 
 A lone ESC is held for a tenth of a second to see whether it is the start of
@@ -359,6 +361,31 @@ A connection to that port is teletype mode from the start, with no telnet negoti
 use PuTTY's connection type **Raw**, or `nc 192.168.1.20 2323`. The login, the lockout rules and
 the one-session rule are the same on both ports.
 
+## Line mode (Linux telnet's "mode line")
+
+Linux telnet can collect a whole line and send it when you press RETURN (`Ctrl-]`,
+then `mode line`; `mode character` goes back). The daemon takes the client's line
+mode (telnet LINEMODE) and sets its special keys, so that what must not wait for
+RETURN does not:
+
+- **ESC** is sent at once (as the client's interrupt key, telnet IP): it is the
+  Beeb's ESCAPE key as above. It also throws away the line you were typing in the
+  client, as ESCAPE does on the Beeb.
+- **F12, SHIFT-F12, CTRL-F12 and Page Down** are sent at once ("~", which ends
+  their codes, is the client's forwarding key), so paged mode works in line mode.
+- **Ctrl-C** is ESCAPE at once (the client's abort key). `send brk` at the
+  `telnet>` prompt is BREAK, and `send ip` is ESC.
+- **Switching mode shows the screen again**: the client's `telnet>` prompt was
+  over it. In teletype mode the Beeb's line is sent again instead - its prompt and
+  what you had typed, however many rows it wraps over.
+- The arrow keys start with ESC too, so in line mode they are ESCAPE; the client's
+  own line editing has no use for them. Your terminal may echo what it sent for
+  F12 or Page Down (`^[[6~`) where the cursor is.
+
+Clients without LINEMODE that collect lines themselves (Windows telnet has no line
+mode; PuTTY's "local line editing") send ESC and F12 only with the line. `send brk`
+(Windows telnet, PuTTY's "Special Command") works in any mode.
+
 ## Things to know
 
 - **Make the terminal at least as big as the Beeb's screen**: 80 columns by 32
@@ -373,16 +400,28 @@ the one-session rule are the same on both ports.
   Windows telnet reports its size only when it connects, so after resizing it press
   F11 (the message says so only to Windows telnet).
 
-- **ESC and Ctrl-C raise the Beeb's ESCAPE**, so they stop a running BASIC
-  program (error 17, "Escape") as the real key does, even when the Beeb is busy
-  and its keyboard buffer is full of type-ahead, and they discard what was typed
+- **ESC and Ctrl-C are the Beeb's ESCAPE key**, with the Beeb's own settings, as
+  the keyboard's ESCAPE goes through the MOS (OSBYTE 153): it raises ESCAPE, so it
+  stops a running BASIC program (error 17, "Escape"), unless the program has said
+  otherwise - with `*FX229,1` (a few games and editors) or another escape character
+  (`*FX220`) it is the character 27, which `GET` reads; with `*FX200,1` it is
+  ignored; with the escape event enabled (`*FX14,6`) the event is raised instead.
+  The Pi reads those settings from the Beeb's memory each time ESC is pressed,
+  which takes about a millisecond. As ESCAPE it works even when the Beeb is busy
+  and its keyboard buffer is full of type-ahead, and it discards what was typed
   ahead - also what is still on its way from your client, when you have sent
-  faster than the Beeb takes keys (a long paste): ESC cuts through it. A new
-  session never gets what the last one typed ahead. A lone ESC is told from the start of an arrow or function key by waiting
-  a tenth of a second. The catch: a program that has set `*FX229,1` so that ESC
-  is an ordinary key (a few games) never gets the character 27 from telnet, only
-  the ESCAPE condition. The daemon writes the MOS's escape flag directly (bit 7 of
-  &FF), which is safe from an interrupt, rather than calling the MOS.
+  faster than the Beeb takes keys (a long paste): ESC cuts through it, and so do
+  F12 and its SHIFT and CTRL forms. A new session never gets what the last one
+  typed ahead. A lone ESC is told from the start of an arrow or function key by
+  waiting a tenth of a second. Not followed: `*FX220` for keys other than ESC (a
+  key typed in telnet that is the escape character goes in as a character), and
+  `*FX201` (keyboard disabled).
+- **SHIFT-F12 with nothing to boot can leave the Beeb waiting for ever.** The
+  start, the boot included, runs with interrupts off, and everything the Pi does
+  goes through an interrupt, so neither ESC nor F12 reaches a filing system that
+  waits for a drive that is not there (the 1770 DFS with no drive fitted). On the
+  Beeb's own keyboard only BREAK gets out of that, as it pulls the reset line;
+  from telnet, switch the Beeb off and on.
 - **One session at a time.** A second connection is told the BBC is in use
   and closed. The exception is a session that has died: if the client's machine
   crashed or the client was killed, the old session may still be holding the
@@ -447,8 +486,11 @@ the host, so it works with a second processor on:
 - **ESC from the terminal stops a program on the second processor.** The escape
   flag lives in both machines; the Pi raises it the way the MOS does, which also
   tells the second processor.
-- **F12 (BREAK) resets the second processor too**, as the BREAK key does (ROM build
-  6 and later). Without that the second processor's start-up waited for ever.
+- **F12 (BREAK) resets the second processor too**, as the BREAK key does: the Pi
+  holds it in reset from the moment of the BREAK until the ROM's start-up lets it
+  go (before, the ROM reset it at its start-up, build 6 and later, but it ran on
+  until then, and about one BREAK in three hung the Beeb after "BASIC"). CTRL-F12
+  pulses its reset in the same moment as the BREAK.
 - **Not covered:** a program on the second processor that draws by writing to
   the host's screen memory across the Tube, as a host program writing to the
   screen directly, is not seen.
