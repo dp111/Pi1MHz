@@ -6,6 +6,7 @@ src/scripts/CMakeFiles/*
 
 *.internal
 *.cmake
+!src/wifi/lwip-patches/apply.cmake
 
 src/scripts/Pi1MHz.cbp
 
