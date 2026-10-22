@@ -191,9 +191,11 @@ To release a LUN so its image can be replaced:
   nothing to "re-enable" afterwards - but do get the upload finished
   before poking the drive on the Beeb, or the re-check above will
   refuse the swap.
-- Switching disc sets (`*FX147,65,n`) is refused while any LUN is
-  started, for the same reason - `*BYE` first, then jukebox; the old
-  set's images are then free to manage.
+- Switching disc sets with `*FX147,65,n` always switches: it stops the
+  old set's LUNs first, so their images are then free to manage.  Do
+  `*MOUNT 0` (or `*BYE` beforehand) so ADFS reads the new disc rather
+  than keeping the old one's map.  `*SCSIJUKE` is the one that is
+  refused while a LUN of the set is started.
 
 Images in disc sets the Beeb is *not* currently using, and brand-new
 files, can be managed freely at any time.

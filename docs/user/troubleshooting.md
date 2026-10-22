@@ -39,9 +39,15 @@
   `*ADFS`.
 - If you changed `SCSIJUKE`, the drive images are being looked for in
   `/BeebSCSI<that number>` instead of `/BeebSCSI0`.
-- `*FX147,65,0` switches back to disc set 0 if something has jukeboxed
-  away from it - but jukeboxing only works while every drive is
-  stopped, so `*BYE` first if a disc is in use.
+- `*FX147,65,0` then `*MOUNT 0` switches back to disc set 0 if
+  something has jukeboxed away from it.  It switches the set of
+  whichever filing system used the drive last, so after a BREAK into
+  VFS run `*ADFS` first.
+- "Bad FS map" on every command, even `*FX`: the mounted image's free
+  space map is damaged, and the Beeb runs no command until ADFS stops
+  using it.  CTRL-BREAK, then (before `*ADFS`) move to other storage
+  with `*FX147,202,2` and `*FX147,203,5` (USB) or `6` (share), and
+  replace or repair the image.
 
 ## Discs behave strangely / errors after heavy use
 
