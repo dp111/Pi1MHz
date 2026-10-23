@@ -25,7 +25,7 @@ FRED/JIM hooks drive the REAL AUN/aun_emulator.c / AUN/aun.c /
 AUN/aun_config.c, compiled on the host against the stub headers here.
 A scripted AUN peer validates the wire format independently.
 
-95 checks across 19 scenarios: init + cmdline config; IP-derived station
+164 checks (on the 4.26 ROM): init + cmdline config; IP-derived station
 (aun_station=ip / ip.ip -> station and net from our own IPv4); tx/ACK with
 header+payload validation; NAK -> &41; rx-pump delivery with the RXCB
 completion bytes checked individually; rx-queue ordering (two frames
@@ -36,17 +36,22 @@ mirror); svc5 pass-on for non-econet interrupts; the Econet receive
 event (&FE via EVNTV, *FX52 gating and Y=slot exactly as the NMI path
 passed them); the service gate never declining (the *HELP/*Net bug); and
 service 15 not clearing this ROM's cached type-table entry (the P12 fix
-that stopped the Master de-servicing AUNFS after boot).
+that stopped the Master de-servicing AUNFS after boot); and Tube transfers
+to and from a second processor, against a stub of the OS Tube code that
+moves R3 data only for a started transfer of the right direction.
 
-To run (needs `anfs-4.18-pi1mhz.rom` and `syms.txt` in lockstep/ —
-both checked in; regenerate after ROM changes with
-`pi1mhz-patch/basm.py <patched.asm> /dev/null symbols` filtered to
-eco_ensure_init / eco_rx_pump / eco_tx_begin / tx_begin /
-svc5_irq_check):
+By default it runs the shipped Master ROM, `firmware/Pi1MHz/AUNFSM128.rom`
+(AUNFS 4.26), as a 65C02, with its symbols in `lockstep/syms-4.26.txt`.
+When the ROM changes, copy in the matching symbols: the Pi1MHzANFS repo's
+`ANFS426/pi1mhz-patch/lockstep/syms.txt`, which its own lockstep run
+regenerates from the patched source. That repo's 3.65 runner uses this
+same harness for the model-B ROM. To run:
 
     ./lockstep/run.sh
 
-Paths can be overridden with ECO_SRC / ECO_ROM / ECO_SYMS / ECO_HARNESS.
+Paths can be overridden with ECO_SRC / ECO_ROM / ECO_SYMS / ECO_HARNESS, and
+the CPU with ECO_CPU (nmos for a model-B ROM; it is the default once ECO_ROM
+is set).
 
 ## 4. Interop with a real PiEconetBridge (`interop/`) — optional
 Layers 1–3 all judge the engine against a peer we wrote, so they can only

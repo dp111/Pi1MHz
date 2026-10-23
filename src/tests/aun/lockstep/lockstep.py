@@ -5,15 +5,18 @@ code (harness subprocess). A scripted AUN peer validates the wire
 format and plays fileserver."""
 import os, subprocess, sys
 
-# Paths default to files alongside this script; override with env vars.
-#   ECO_ROM     - the patched ANFS ROM image (anfs-4.18-pi1mhz-fixed.rom)
+# By default the suite runs the shipped Master ROM, AUNFS 4.26
+# (firmware/Pi1MHz/AUNFSM128.rom), with its symbols in syms-4.26.txt.
+# Override with env vars:
+#   ECO_ROM     - the patched ANFS ROM image
 #   ECO_SYMS    - "name hexaddr" lines for the engine entry points the
 #                 tests call (svc5_irq_check, eco_rx_pump, tx_begin, the
 #                 eih_*/erp_* labels, ...); see README
 #   ECO_HARNESS - the compiled harness binary
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROM_PATH = os.environ.get('ECO_ROM', os.path.join(HERE, 'anfs-4.18-pi1mhz.rom'))
-SYM_PATH = os.environ.get('ECO_SYMS', os.path.join(HERE, 'syms.txt'))
+ROM_PATH = os.environ.get('ECO_ROM', os.path.join(HERE, '..', '..', '..', '..',
+                                                 'firmware', 'Pi1MHz', 'AUNFSM128.rom'))
+SYM_PATH = os.environ.get('ECO_SYMS', os.path.join(HERE, 'syms-4.26.txt'))
 HARNESS  = os.environ.get('ECO_HARNESS', os.path.join(HERE, 'harness'))
 
 ROM = open(ROM_PATH,'rb').read()
@@ -38,12 +41,15 @@ def hx(cmd):
             raise RuntimeError(f'harness said {line!r}')
 
 # ---------------- 6502 emulator ----------------
-# CPU selection. Default 'nmos' = stock BBC B / B+ 6502, used by the 4.18 and
-# 3.65 builds, where the model-B guard below must trip on any 65C02 opcode.
-# ECO_CPU=65c02 enables the extra opcodes and the Master-128 Sheila scratch,
-# for the 4.21 build (Master-only). This replaces the old hard fork of this
-# file that used to live under ANFS421/pi1mhz-patch/lockstep/.
-CPU_65C02 = os.environ.get('ECO_CPU', 'nmos').lower() in ('65c02', 'c02', 'master')
+# CPU selection. 'nmos' = stock BBC B / B+ 6502, for the 4.18 and 3.65
+# builds, where the model-B guard below must trip on any 65C02 opcode.
+# '65c02' enables the extra opcodes and the Master-128 Sheila scratch, for
+# the Master-only 4.21 and 4.26 builds. The default follows the default ROM
+# (4.26, so 65c02); a caller naming its own ROM gets nmos unless it says.
+# This replaces the old hard fork of this file that used to live under
+# ANFS421/pi1mhz-patch/lockstep/.
+CPU_65C02 = os.environ.get('ECO_CPU', 'nmos' if 'ECO_ROM' in os.environ else '65c02'
+                           ).lower() in ('65c02', 'c02', 'master')
 
 # 65C02-only opcodes (undefined on the NMOS 6502 in a stock BBC B). The 4.18
 # AUNFS path must never execute one; the model-B guard in CPU.step() trips on
@@ -1263,6 +1269,8 @@ print('== 17: service gate (check_adlc_flag) never declines (the *HELP/*Net bug)
 # confirm it falls through to handle_vectors_claimed (&8a62) instead
 # of doing the decline RTS.
 GATE = 0x8a5a; HANDLE = 0x8a62
+# (the 4.18 addresses; a symbol file that has the labels wins)
+GATE = SYM.get('check_adlc_flag', GATE); HANDLE = SYM.get('dispatch_svc_with_state', HANDLE)
 for flag in (0x00, 0x80, 0xff):          # incl. bit7 set = old failure
     cpu.mem[0x0df0] = flag               # rom_ws_pages[slot 0]
     cpu.x = 0
@@ -1289,6 +1297,8 @@ print('== 18: service 15 must NOT clear our ROM type-table entry (the *HELP de-s
 # P12 NOPs the 5 bytes at &8A33-&8A37. Drive service_handler with service 15,
 # stub OSBYTE 0 to report a Master, and confirm the entry is left intact.
 SVCH = 0x8a15
+SVCH = SYM.get('service_handler', SVCH)
+RESTORE = SYM.get('restore_rom_slot', 0x8a38)
 cpu.mem[0xfff4] = 0xa2; cpu.mem[0xfff5] = 0x03; cpu.mem[0xfff6] = 0x60  # OSBYTE stub: LDX #3 (Master) / RTS
 cpu.mem[0xf4]   = 0x00          # romsel_copy = slot 0
 cpu.mem[0x02a1] = 0x82          # our cached ROM type byte (service + language bits)
@@ -1296,10 +1306,10 @@ cpu.sp = 0xf0
 cpu.a  = 0x0f                   # service 15 (vectors claimed)
 cpu.pc = SVCH
 for _ in range(40):
-    if cpu.pc == 0x8a38:        # reached restore_rom_slot, just past the (NOPed) clear
+    if cpu.pc == RESTORE:       # reached restore_rom_slot, just past the (NOPed) clear
         break
     cpu.step()
-check(cpu.pc == 0x8a38, 'service_handler reached restore_rom_slot after service 15')
+check(cpu.pc == RESTORE, 'service_handler reached restore_rom_slot after service 15')
 check(cpu.mem[0x02a1] == 0x82, 'service 15 left rom_type_table[slot] intact (P12 fix)')
 
 reset()
@@ -1361,14 +1371,16 @@ stn, net = init_and_status('aun_station=ip.ip')
 check(stn == 20, 'aun_station=ip.ip -> station 20 (got %d)' % stn)
 check(net == 1,  'aun_station=ip.ip -> net = third IP octet 1 (got %d)' % net)
 
-print('== 20: model-B (NMOS 6502) compatibility across the whole suite ==')
-# Standing invariants accumulated over every test above: the 4.18 AUNFS path
+print('== 20: model-B (NMOS 6502) compatibility across the whole suite'
+      + (' - SKIPPED, a Master-only 65C02 build' if CPU_65C02 else '') + ' ==')
+# Standing invariants accumulated over every test above: a model-B AUNFS path
 # must run on a stock BBC B, so across all init/tx/rx-pump/svc5/immediate/tube
 # exercises it must never touch a Master-only register or execute a 65C02 op.
-check(cpu.master_hits == 0,
-      'no ACCCON/INTOFF (&FE34/&FE38) access in %d instructions' % cpu.instructions)
-check(cpu.c02_hits == 0,
-      'no 65C02-only opcode fetched (run aborts on first if any)')
+if not CPU_65C02:
+    check(cpu.master_hits == 0,
+          'no ACCCON/INTOFF (&FE34/&FE38) access in %d instructions' % cpu.instructions)
+    check(cpu.c02_hits == 0,
+          'no 65C02-only opcode fetched (run aborts on first if any)')
 
 H.stdin.write('Q\n')
 print(f'\nALL {ok} LOCKSTEP CHECKS PASSED  ({cpu.instructions} instructions executed)')

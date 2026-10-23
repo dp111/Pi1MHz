@@ -4,8 +4,9 @@
 > (`pi1mhz-patch/*` - `apply.py`, `eco_library.asm`, `eco_lib_b.asm`,
 > `basm.py`; `anfs-4.21-pi1mhz.asm`) and the `AUNFS-4.21.rom` build output
 > are not in this repo; only the assembled ROMs ship, as
-> `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom` (plus
-> `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom`). The Pi-side files it names
+> `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom` (the
+> lockstep harness ran `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` until
+> 2026-10-23, and now runs `AUNFSM128.rom`). The Pi-side files it names
 > are current.
 
 Audit of the complete AUN path on both sides — the 6502 **AUNFS** ROM patch

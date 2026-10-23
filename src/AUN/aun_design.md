@@ -159,7 +159,8 @@ per-line byte comments). NOTE: the assembler source and patch scripts
 (`anfs-4.18-pi1mhz.asm`, the `ANFS418` folder, `pi1mhz-patch/basm.py`,
 `pi1mhz-patch/apply.py`) are NOT in this repo — only the assembled
 binaries are: `firmware/Pi1MHz/AUNFSbeeb.rom`, `AUNFSM128.rom`, and
-`src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` for the lockstep harness.
+(until 2026-10-23) `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` for the
+lockstep harness, which now runs `AUNFSM128.rom`.
 Changed regions: &8028-&802C (svc5 econet IRQ
 check), &8074-&80BC (init), &80BE-&80FC and &80FD-&84BA (the dead scout/
 NMI-rx handlers, now the rx pump, svc5 handler, immediate-op handler and
@@ -453,7 +454,8 @@ run every layer with `src/tests/aun/run_tests.sh`:
   pump delivery → release; non-econet interrupts passed on).
   This caught a real bug (aun_cmd_issue returned CMP-loop flags, not
   result flags — every command would have "failed" on hardware; fixed
-  with ORA #0). Uses `anfs-4.18-pi1mhz.rom`.
+  with ORA #0). Written against `anfs-4.18-pi1mhz.rom`; runs the shipped
+  4.26 `AUNFSM128.rom` since 2026-10-23.
 - **Interop layer** — `src/tests/aun/interop/`: the real engine against
   a real PiEconetBridge (`econet-hpbridge`). `interop.c` asserts the
   bytes we emit and `run.sh` greps the bridge's debug output for what it
