@@ -480,8 +480,7 @@ the host, so it works with a second processor on:
   flag lives in both machines; the Pi raises it the way the MOS does, which also
   tells the second processor.
 - **F12 (BREAK) resets the second processor too**, as the BREAK key does: the Pi
-  holds it in reset from the moment of the BREAK until the ROM's start-up lets it
-  go. CTRL-F12 pulses its reset in the same moment as the BREAK.
+  pulses its reset in the same moment as the BREAK.
 - **Not covered:** a program on the second processor that draws by writing to
   the host's screen memory across the Tube, as a host program writing to the
   screen directly, is not seen.

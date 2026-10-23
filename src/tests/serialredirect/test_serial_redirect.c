@@ -219,7 +219,7 @@ int main(int argc, char **argv)
    CHECK(gate_open() && stub(OFF_EXIT) == 0x6C && stub(OFF_EXITOLD) == 0xFC && stub(OFF_EXITOLD + 1u) == 0xFF,
          "the exit is JMP (&FFFC) before the gate opens");
    CHECK(stub(OFF_JSR) == ESCR && fred[ESCR] == 0x8E && stub(OFF_INBUF) == 0x00 && stub(OFF_RXBYTE) == 0xA0,
-         "no ROM to let it go: the second processor pulsed (STA &FEE0 &A0, then &20), &00 to the IER");
+         "the second processor pulsed (STA &FEE0 &A0, then &20), &00 to the IER");
    bus_write(OFF_GATE, 0);
    CHECK(!gate_open() && !nirq, "the trip taken: nothing more asserted");
    CHECK(fred[ESCR] == 0x85 && jsr_insv(), "the escape routine back");
@@ -257,7 +257,7 @@ int main(int argc, char **argv)
    CHECK(serial_redirect_beeb->key_gen == 1 && serial_redirect_beeb->key_other_gen == 1
          && serial_redirect_beeb->unseen_gen == 1, "keys taken and a ROM FS operation counted");
 
-   step("BREAK with the ROM: the second processor held until the ROM hooks in again");
+   step("BREAK with the ROM: the second processor pulsed as well, as the BREAK key's reset line");
    bus_write(OFF_CONTROL, 0x26);
    bus_write(OFF_CONTROL, 0x17);
    tick(10);
@@ -265,20 +265,19 @@ int main(int argc, char **argv)
    CHECK(!gate_open(), "hooked, quiet");
    serial_redirect_break(SER_BRK_PLAIN);
    tick(2100);
-   CHECK(gate_open() && trip_to(0x8D, 0xFEE0) && stub(OFF_RXBYTE) == 0xA0 && stub(OFF_EXIT) == 0x6C,
-         "STA &FEE0 with &A0 (P held), the exit JMP (&FFFC)");
+   CHECK(gate_open() && stub(OFF_JSR) == ESCR && fred[ESCR] == 0x8E && stub(OFF_INBUF) == 0x00
+         && stub(OFF_RXBYTE) == 0xA0 && stub(OFF_ROUTINE) == 0x8D && stub(OFF_TRIPLO) == 0xE0
+         && stub(OFF_TRIPHI) == 0xFE && stub(OFF_EXIT) == 0x6C,
+         "STA &FEE0 (&A0), then (&20), &00 to the IER, the exit JMP (&FFFC)");
    bus_write(OFF_GATE, 0);
-   CHECK(!gate_open() && jsr_insv(), "taken");
+   CHECK(!gate_open() && fred[ESCR] == 0x85 && jsr_insv(), "taken: the escape routine back");
    bus_write(OFF_CONTROL, 0x26);
    tick(10);
-   CHECK(!(gate_open() && stub(OFF_RXBYTE) == 0x20), "the reset reported: still held");
    if (gate_open())
       bus_write(OFF_GATE, 0);                     /* (the idle trip the report starts) */
    bus_write(OFF_CONTROL, 0x17);
    tick(10);
-   CHECK(gate_open() && trip_to(0x8D, 0xFEE0) && stub(OFF_RXBYTE) == 0x20, "hooked in again: STA &FEE0 with &20");
-   bus_write(OFF_GATE, 0);
-   CHECK(gate_open() && trip_to(0x8D, 0x024F), "then the idle trip");
+   CHECK(gate_open() && trip_to(0x8D, 0x024F), "hooked in again: no release trip, the idle one");
    bus_write(OFF_GATE, 0);
    CHECK(!gate_open() && jsr_insv(), "and nothing more");
 
@@ -312,8 +311,7 @@ int main(int argc, char **argv)
    CHECK(fred[WS_SHIFT] == 0, "let go after a second");
    bus_write(OFF_CONTROL, 0x17);
    tick(10);
-   CHECK(gate_open() && stub(OFF_RXBYTE) == 0x20, "the second processor let go");
-   bus_write(OFF_GATE, 0);
+   CHECK(gate_open() && trip_to(0x8D, 0x024F), "pulsed: no release trip, the idle one");
    bus_write(OFF_GATE, 0);
    CHECK(!gate_open(), "quiet");
 
