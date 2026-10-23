@@ -264,8 +264,10 @@ client is built around:
 all counters) via `aun_status_text()`. The shared nIRQ line is now
 arbitrated per-source in Pi1MHz.c (`Pi1MHz_SetnIRQ_src`), so econet and
 harddisc requests cannot clear each other — closing former item 8.
-The ROM titles itself "AUNFS 4.18 (Pi)" and ships as
-`firmware/Pi1MHz/AUNFSbeeb.rom` (and `AUNFSM128.rom` for the Master).
+The shipped ROMs are `firmware/Pi1MHz/AUNFSbeeb.rom` (NFS 3.65, titled
+"AUN 3.65") and `AUNFSM128.rom` (ANFS 4.26, "AUNFS 4.26 (P1)"). Their
+sources live in the Pi1MHzANFS repo; its 4.18 and 4.21 ports were dropped
+on 2026-10-23.
 For hardware bring-up, run `src/tests/aun/beeb/ECOTEST.bas` on the Beeb
 first (self-contained checks via the loopback responder). (There is no
 SETUP.md / ANFS folder in this repo.)

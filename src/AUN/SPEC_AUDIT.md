@@ -7,7 +7,8 @@
 > `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom` (the
 > lockstep harness ran `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` until
 > 2026-10-23, and now runs `AUNFSM128.rom`). The Pi-side files it names
-> are current.
+> are current. The 4.18 and 4.21 ports it audits were dropped on
+> 2026-10-23; the shipped ROMs are now 3.65 (BBC B) and 4.26 (Master).
 
 Audit of the complete AUN path on both sides — the 6502 **AUNFS** ROM patch
 (ANFS 4.21/4.18) and the **Pi1MHz** C engine + glue — against the published
