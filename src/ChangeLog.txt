@@ -325,3 +325,18 @@ v.1.41
 WiFi time: *DATE/*TIME ask the NTP server in ntp_server, else the one in the DHCP lease (option 42), else pool.ntp.org. The status page shows which.
 WiFi time: time_shift shows another date, any year 1-9999 (dd.mm.yyyy, mm.yyyy, y1990), or moves the clock (h2, -m30, d10).
 WiFi time: ntp_timezone takes a zone name (BST for the UK, CET, MET, EET, WET, UTC, GMT, EST, MST, HST) or a POSIX TZ string with summer time (GMT0BST,M3.5.0/1,M10.5.0); else the DHCP lease's time zone (option 100); else wifi_service_utc_offset_minutes. A value that is not understood is ignored, and the status page says so.
+TelnetD: the Beeb's keyboard and screen over telnet, with F12 as BREAK; see docs/user/telnetd.md and tools/telnetd-terminal for BBC fonts.
+storage=smb: the Beeb's discs and files on a network share; *FX147,203,6 switches to it.
+MMFS/MMFS2 1.61: a Pi1MHz file mode (discs as files on the card) and fourteen MMFS fixes.
+SCSI: DriveController= makes the drives behave as the chosen controller (Mixed is the default); DriveGeometry= for a .cfg with no geometry page.
+SCSI: mode pages keep factory, changeable and current values; MODE SENSE answers page 3F; READ and WRITE use the LUN's block size.
+SCSI: FORMAT sets 32 or 33 sectors per track from the interleave (issue #2).
+AUNFS: loads and saves to a second processor work (they moved no data before).
+A BREAK, and a helper's ROM load, reset the second processor too.
+Network: no longer stops under heavy web use (an lwIP buffer leak), plus nine more lwIP fixes.
+DNS: local names resolve with the DHCP domain (option 15).
+Wifi ROM: *RDRUN comes back from a program that ends with RTS.
+Helpers: a ROM loader replaces its own earlier copy in sideways RAM.
+The status page shows the Pi's hostname on every page; the main loop's idle pass is 60% faster.
+config.txt: one os_prefix=debug/ line boots the debug kernel on every Pi.
+TinyUSB and libsmb2 updated from upstream.
