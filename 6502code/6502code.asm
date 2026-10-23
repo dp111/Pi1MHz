@@ -517,10 +517,7 @@ ORG &FD00
     LDY #0   : STY discaccess
              : STY discaccess+1
     LDA #&F0 : STA discaccess+2
-
-             : STY swrpointer+1
-    LDA #&80 : STA swrpointer+2
-
+                                    ; swrpointer is &8000: the page is fresh
     LDX #&C0-&80
 .copyswrloop
     LDA discaccess+3
@@ -533,11 +530,17 @@ ORG &FD00
     DEX
     BNE copyswrloop;
     JSR fclose
-    BCC doviareset  ; BEEB and B+
-    JMP (&FFFC) ; Reset
-.doviareset
-    LDA #&7F
-    STA &FE4E ; clear IER
+    BCS tubereset   ; Master: OSBYTE 200 above
+    LDA #&7F        ; BEEB and B+
+    STA &FE4E       ; clear IER
+;; The jump through the reset vector restarts only this CPU, so the second
+;; processor's reset is pulsed first, as the BREAK key's does (and F12's, in
+;; serial_redirect.c): &A0 at &FEE0 sets P, &20 clears it.  Left running, a
+;; second processor kept the Master from taking keys until a BREAK.  Without
+;; a Tube nothing answers at &FEE0.
+.tubereset
+    LDA #&A0 : STA &FEE0
+    AND #&7F : STA &FEE0
     JMP (&FFFC) ; Reset
 
 .fclose

@@ -68,6 +68,8 @@ class Memory:
         self.irq_on_write = False      # a RAM bank was written with I clear
         self.os_after_write = []       # OS calls after the first such write
         self.busy = False              # the next status read says busy
+        self.resets = []               # (address, value) stored at the IER (&FE4E) or the Tube (&FEE0)
+        self.osbytes = []              # (A, X) of every OSBYTE
 
     def show(self, page):
         self.ram[0xFD00:0xFE00] = self.image[page * 256:page * 256 + 256]
@@ -125,6 +127,9 @@ class Memory:
             self.bank = v & 15
         elif a == 0xFC88:
             self.show(v)
+        elif a in (0xFE4E, 0xFEE0):
+            self.resets.append((a, v))
+            self.ram[a] = v
         elif DISC <= a < DISC + 3:
             shift = 8 * (a - DISC)
             self.ptr = (self.ptr & ~(0xFF << shift)) | (v << shift)
@@ -160,6 +165,7 @@ def run(image, page, banks, files, machine=1):
                 cpu.pc = (cpu.stPopWord() + 1) & 0xFFFF
                 continue
             if pc == OSBYTE:
+                mem.osbytes.append((cpu.a, cpu.x))
                 if cpu.a == 0:
                     cpu.x = machine
                 cpu.pc = (cpu.stPopWord() + 1) & 0xFFFF
@@ -282,6 +288,15 @@ def main(args):
     r, mem, dots, depth = run(image, page, banks_of(b12=b12), files)
     check(r == ("reset",) and b12[0] == new, "free RAM: the ROM is copied byte for byte")
     check(set(mem.writes) == {12}, f"free RAM: only that bank is written: {mem.writes}")
+    # The reset: a power-on (the IER cleared on a B or B+, OSBYTE 200 on a Master), and the second
+    # processor's reset pulsed (&A0 then &20 at &FEE0), as the BREAK key's, before the jump.
+    tube = [(0xFEE0, 0xA0), (0xFEE0, 0x20)]
+    check(mem.resets == [(0xFE4E, 0x7F)] + tube and (200, 2) not in mem.osbytes,
+          f"free RAM on a B: the IER cleared, then the second processor pulsed: {mem.resets}")
+    b12 = ram()
+    r, mem, dots, depth = run(image, page, banks_of(b12=b12), files, machine=3)
+    check(r == ("reset",) and b12[0] == new and mem.resets == tube and (200, 2) in mem.osbytes,
+          f"free RAM on a Master: OSBYTE 200, then the second processor pulsed: {mem.resets}")
 
     # An 8K ROM: the read ends early (status 20) and that is not an error.
     short = bytes(new[:0x2000])
