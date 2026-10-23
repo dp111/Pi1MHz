@@ -250,6 +250,35 @@ its picture behind it (place the two side by side with
 `xterm -xrm 'XTerm*tekGeometry: +620+0'`). Tested in a real xterm (2026-10-18).
 Nothing changes for any other terminal, and `telnetd_tek=0` turns it off.
 
+### Making it look like a BBC Micro
+
+Any terminal works, but you can make your terminal look like the Beeb itself.
+`tools/telnetd-terminal` has fonts and settings that are ready to install, with the
+BBC's eight colours.
+
+The Beeb's characters change shape with the MODE, and a terminal cannot change its
+font when the Beeb does, so there is one font for each width of the screen:
+"BBC Micro Teletext" for MODE 7 (40 x 25, in the teletext chip's style), and
+"BBC Micro MOS", "BBC Micro MOS 40" and "BBC Micro MOS 20" for MODE 0/3, 1/4/6
+and 2/5 (80, 40 and 20 x 32, the MOS's own character set). Use the one for the
+mode you work in; the Beeb starts in MODE 7, so that is the default.
+
+- **Windows Terminal**: run `windows\install.cmd` to install the fonts and a
+  profile for each mode. `windows\BBC-Micro-telnet.cmd [host] [mode]` then opens
+  a window of the right size. Windows' own telnet client cannot show UTF-8, which
+  the pound sign and the teletext graphics need. The profiles therefore use WSL's
+  telnet when you have one (`sudo apt install telnet` in Debian).
+- **PuTTY**: double-click `putty\BBC-Micro-telnet.reg` to add a saved session for
+  each mode. `windows\BBC-Micro-putty.cmd [host] [mode]` opens one.
+- **Debian (bookworm, trixie)**: run `sh linux/install.sh`, then
+  `beeb-telnet [-m mode] [host]`. On the Linux console it loads that mode's console
+  font and the BBC's colours for the session.
+
+The host is `Pi1MHz` in all of them; use your Pi's hostname or IP address if it is
+different. The [README](../../tools/telnetd-terminal/README.md) explains each one.
+The Linux console can only show 512 characters, so on the console the teletext
+mosaics come out as the nearest block instead of the six-cell sextants.
+
 ### The daemon keeps a picture of the Beeb's text screen
 
 The Beeb's screen is not the terminal's. Its size depends on the mode (40, 80 or

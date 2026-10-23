@@ -1,0 +1,97 @@
+{
+    "profiles": [
+        {
+            "guid": "{5b7d3c9e-2f41-4c8a-9d6e-1a0b2c3d4e61}",
+            "name": "BBC Micro MODE 7",
+            "commandline": "cmd.exe /c \"%LOCALAPPDATA%\\Pi1MHz TelnetD\\connect.cmd\" Pi1MHz",
+            "colorScheme": "BBC Micro",
+            "font": {
+                "face": "BBC Micro Teletext",
+                "size": 15
+            },
+            "cursorShape": "filledBox",
+            "padding": "8",
+            "scrollbarState": "hidden",
+            "suppressApplicationTitle": true,
+            "tabTitle": "BBC Micro - MODE 7",
+            "closeOnExit": "graceful",
+            "elevate": false
+        },
+        {
+            "guid": "{5b7d3c9e-2f41-4c8a-9d6e-1a0b2c3d4e62}",
+            "name": "BBC Micro MODE 0/3",
+            "commandline": "cmd.exe /c \"%LOCALAPPDATA%\\Pi1MHz TelnetD\\connect.cmd\" Pi1MHz",
+            "colorScheme": "BBC Micro",
+            "font": {
+                "face": "BBC Micro MOS",
+                "size": 15
+            },
+            "cursorShape": "filledBox",
+            "padding": "8",
+            "scrollbarState": "hidden",
+            "suppressApplicationTitle": true,
+            "tabTitle": "BBC Micro - MODE 0/3",
+            "closeOnExit": "graceful",
+            "elevate": false
+        },
+        {
+            "guid": "{5b7d3c9e-2f41-4c8a-9d6e-1a0b2c3d4e63}",
+            "name": "BBC Micro MODE 1/4/6",
+            "commandline": "cmd.exe /c \"%LOCALAPPDATA%\\Pi1MHz TelnetD\\connect.cmd\" Pi1MHz",
+            "colorScheme": "BBC Micro",
+            "font": {
+                "face": "BBC Micro MOS 40",
+                "size": 15
+            },
+            "cursorShape": "filledBox",
+            "padding": "8",
+            "scrollbarState": "hidden",
+            "suppressApplicationTitle": true,
+            "tabTitle": "BBC Micro - MODE 1/4/6",
+            "closeOnExit": "graceful",
+            "elevate": false
+        },
+        {
+            "guid": "{5b7d3c9e-2f41-4c8a-9d6e-1a0b2c3d4e64}",
+            "name": "BBC Micro MODE 2/5",
+            "commandline": "cmd.exe /c \"%LOCALAPPDATA%\\Pi1MHz TelnetD\\connect.cmd\" Pi1MHz",
+            "colorScheme": "BBC Micro",
+            "font": {
+                "face": "BBC Micro MOS 20",
+                "size": 15
+            },
+            "cursorShape": "filledBox",
+            "padding": "8",
+            "scrollbarState": "hidden",
+            "suppressApplicationTitle": true,
+            "tabTitle": "BBC Micro - MODE 2/5",
+            "closeOnExit": "graceful",
+            "elevate": false
+        }
+    ],
+    "schemes": [
+        {
+            "name": "BBC Micro",
+            "background": "#000000",
+            "foreground": "#FFFFFF",
+            "cursorColor": "#FFFFFF",
+            "selectionBackground": "#FFFFFF",
+            "black": "#000000",
+            "brightBlack": "#000000",
+            "red": "#FF0000",
+            "brightRed": "#FF0000",
+            "green": "#00FF00",
+            "brightGreen": "#00FF00",
+            "yellow": "#FFFF00",
+            "brightYellow": "#FFFF00",
+            "blue": "#0000FF",
+            "brightBlue": "#0000FF",
+            "purple": "#FF00FF",
+            "brightPurple": "#FF00FF",
+            "cyan": "#00FFFF",
+            "brightCyan": "#00FFFF",
+            "white": "#FFFFFF",
+            "brightWhite": "#FFFFFF"
+        }
+    ]
+}
