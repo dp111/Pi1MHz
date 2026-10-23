@@ -70,7 +70,11 @@ class CPU:
         self.jim_addr = 0
         self.tube_in = b''; self.tube_in_pos = 0
         self.tube_out = bytearray(); self.tube_r4 = bytearray()
-        self.tube_claim_addr = None     # 4-byte address of the last Tube claim
+        self.tube_claim_addr = None     # 4-byte address of the last transfer start
+        self.tube_claimed = False       # an &C0+id claim is held
+        self.tube_xfer = None           # started transfer type (0 = P->H, 1 = H->P)
+        self.tube_xfers = []            # (type, 4-byte address) per start
+        self.tube_bad = []              # R3 accesses no started transfer allows
         self.fred_aa = 0
         self.instructions = 0
         self.sheila = {}       # Master: ACCCON/Sheila scratch (65C02 mode only)
@@ -94,9 +98,14 @@ class CPU:
         if a == 0xfcaa: return self.fred_aa
         if a == 0xfcab: return hx('F')
         if a == 0xfee5:                 # Tube R3 data: parasite -> host
+            # The parasite fills R3 only once a type 0 transfer was started:
+            # a claim alone moves no data, so a read then sees a stale byte.
+            if self.tube_xfer != 0:
+                self.tube_bad.append(('R3 read', self.pc)); return 0xf8
             v = self.tube_in[self.tube_in_pos] if self.tube_in_pos < len(self.tube_in) else 0
             self.tube_in_pos += 1
             return v
+        if a == 0xfee4: return 0xc0     # Tube R3 status: data available, not full
         if a == 0xfee6: return 0xc0     # Tube R4/R1 status: always ready
         return self.mem[a]
     def wr(self, a, v):
@@ -113,6 +122,9 @@ class CPU:
             self.jim_addr = (self.jim_addr + 1) & 0xffffff
             return
         if a == 0xfee5:                 # Tube R3 data: host -> parasite
+            # Only a started type 1 transfer stores R3 bytes in the parasite.
+            if self.tube_xfer != 1:
+                self.tube_bad.append(('R3 write', self.pc)); return
             self.tube_out.append(v); return
         if a == 0xfee7:                 # Tube R4 data: claim command stream
             self.tube_r4.append(v); return
@@ -144,16 +156,28 @@ class CPU:
 
     def step(self):
         # Stubs for the relocated OS Tube routines (not present in the
-        # lockstep image, which skips ROM relocation): claim succeeds
-        # (C=1), release is a no-op. This isolates the econet Tube code.
+        # lockstep image, which skips ROM relocation), modelling the host
+        # code's protocol: A >= &C0 claims (always granted, C=1), &80-&BF
+        # and &0414 release, A < &80 starts a transfer of that type at the
+        # 4-byte address at (Y:X) - only that makes R3 carry data.
         if self.pc == 0x0406:           # tube_addr_data_dispatch
-            # entry: A=claim type, (Y:X) points at the 4-byte transfer address.
-            # Capture it so tests can check WHICH parasite address was claimed.
-            p = ((self.y << 8) | self.x) & 0xffff
-            self.tube_claim_addr = bytes(self.mem[p:p+4])
-            self.c = True
+            if self.a >= 0xc0:
+                self.tube_claimed = True; self.c = True
+            elif self.a >= 0x80:
+                self.tube_claimed = False; self.tube_xfer = None
+            else:
+                # Capture the address so tests can check WHICH parasite
+                # address the transfer was started at.
+                p = ((self.y << 8) | self.x) & 0xffff
+                self.tube_claim_addr = bytes(self.mem[p:p+4])
+                if not self.tube_claimed:
+                    self.tube_bad.append(('start unclaimed', self.pc))
+                self.tube_xfer = self.a
+                self.tube_xfers.append((self.a, self.tube_claim_addr))
+                self.x = self.y = 0     # the host code uses both
             lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
         if self.pc == 0x0414:           # tube_release_claim
+            self.tube_claimed = False; self.tube_xfer = None
             lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
         self.instructions += 1
         op = self.rd(self.pc); pc = self.pc + 1
@@ -321,6 +345,13 @@ class CPU:
         return n
 
 # ---------------- helpers ----------------
+def tube_started(t, what):
+    # The transfer must have been started with type t (0 = parasite -> host,
+    # 1 = host -> parasite) and no R3 access may fall outside it.
+    check(cpu.tube_xfers and cpu.tube_xfers[-1][0] == t and not cpu.tube_bad,
+          f'{what}: Tube transfer type {t} started before R3 moved '
+          f'(starts {cpu.tube_xfers}, stray {cpu.tube_bad[:2]})')
+    cpu.tube_xfers.clear(); cpu.tube_bad.clear()
 def aun(t, port, ctrl, seq, data=b''):
     return bytes([t, port, ctrl, 0, seq & 0xff, (seq>>8)&0xff, (seq>>16)&0xff, (seq>>24)&0xff]) + data
 
@@ -616,6 +647,7 @@ check(state['acked'], 'Tube-buffer immediate emitted and answered')
 _reply = b'\xaa\xbb\xcc\xdd'
 check(bytes(cpu.tube_out) == _reply and bytes(cpu.mem[0x3200:0x3204]) != _reply,
       'F4 FIXED: reply streamed to Tube R3, host buffer untouched')
+tube_started(1, 'immediate reply to the parasite')
 cpu.mem[0x0d63] = 0
 
 print('== 7c: outbound POKE carries its data block, not just 4 args (R4) ==')
@@ -823,6 +855,7 @@ cpu.call(SYM['svc5_irq_check'])
 reps = [d for _, _, d in udp_out if d[0] == 6]
 check(reps and reps[0][8:8+16] == bytes(range(0x40, 0x50)),
       'parasite PEEK reply came from Tube R3, not host memory (R1)')
+tube_started(0, 'parasite PEEK')
 # POKE &00003200 + 6 bytes: the data must go to R3, host RAM untouched.
 cpu.tube_out = bytearray()
 cpu.mem[0x3200:0x3206] = b'\xee' * 6
@@ -831,6 +864,7 @@ poke = bytes([0x00, 0x32, 0x00, 0x00]) + b'PARA!!'    # dest &00003200 + data
 hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x02, 0x7204, poke).hex())); hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(bytes(cpu.tube_out) == b'PARA!!', 'parasite POKE streamed data to Tube R3 (R1)')
+tube_started(1, 'parasite POKE')
 check(bytes(cpu.mem[0x3200:0x3206]) == b'\xee' * 6, 'parasite POKE left host memory untouched (R1)')
 cpu.mem[0x0d63] = 0                              # 2nd proc absent again for later groups
 
@@ -985,6 +1019,7 @@ cpu.mem[0x3000:0x3040] = b'\xee'*64            # poison host memory
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x7000, tube_payload).hex()))
 cpu.call(SYM['eco_rx_pump'])
 check(bytes(cpu.tube_out) == tube_payload, 'rx payload streamed to Tube R3 in order')
+tube_started(1, 'receive into the parasite')
 check(cpu.mem[0x3000] == 0xee, 'host memory untouched (data went to the Tube)')
 acks = [d for _,_,d in udp_out if d[0] == 3]
 check(acks, 'Tube-delivered frame ACKed')
@@ -1012,6 +1047,7 @@ CPU.wr = wr_tube
 cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check(state['acked'], 'Tube-sourced transmit completed and was ACKed')
+tube_started(0, 'transmit from the parasite')
 check(cpu.mem[txcb] == 0x00, 'TXCB result success')
 
 reset()
@@ -1053,6 +1089,7 @@ tp600 = bytes((i*3) & 0xff for i in range(600))
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x8000, tp600).hex()))
 cpu.call(SYM['eco_rx_pump'])
 check(bytes(cpu.tube_out) == tp600, '600-byte rx payload streamed to Tube (page loop)')
+tube_started(1, '600-byte receive into the parasite')
 cpu.tube_in = bytes((i*5) & 0xff for i in range(600)); cpu.tube_in_pos = 0
 for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x00, 0x00, 0x00, 0x58, 0x02, 0x00, 0x00]):
     cpu.mem[txcb+off] = v                        # tube source, len &258=600
@@ -1070,6 +1107,7 @@ CPU.wr = wr_t600
 cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check(cpu.mem[txcb] == 0x00, '600-byte Tube tx success')
+tube_started(0, '600-byte transmit from the parasite')
 cpu.mem[0x0d63] = 0
 
 # 11c: 600-byte remote PEEK and POKE (esb_page / eub_page)
