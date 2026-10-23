@@ -825,11 +825,9 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 \ Send the screen to the Pi.  The Pi gets the characters only, as VDU 31,x,y,char, each
 \ byte put straight into the stub through INSV (buffer 2, which the stub takes: topich),
 \ with VDU 31,x,y left out where the cell is the next one along the row from the last one
-\ sent - the Pi's cursor is there already.  Build 23 sent each cell through OSWRCH with the
-\ VDU drivers switched off and on again around it (OSBYTE 3), and a MODE 0 screen full of
-\ text took 15 to 28 seconds, the keys waiting all that time.  The output streams are the
-\ screen only for the whole read: the Beeb's cursor is moved on the screen to read each
-\ cell, and put back.  A text window would keep the cursor inside it (VDU 31 is
+\ sent - the Pi's cursor is there already.  The output streams are the screen only for the
+\ whole read: the Beeb's cursor is moved on the screen to read each cell, and put back.
+\ A text window would keep the cursor inside it (VDU 31 is
 \ relative to it and ignores a cell outside it), so for the scan the window is opened
 \ to the whole screen in the MOS's VDU variables (&300+8 to &300+11, which OSBYTE 160
 \ reads), and put back afterwards; the Pi is sent VDU 26 before and VDU 28 with the

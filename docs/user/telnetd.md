@@ -68,7 +68,7 @@ nothing shows on the Beeb:
   The Beeb takes no keys while it runs. Blank cells are quick; the time goes on the cells with
   something in them, and most on the letters late in the character set, which OSBYTE 135 takes
   longest to recognise. On a Master a MODE 0 screen full of `!` takes about 5 seconds and one
-  full of `X` about 11 (ROM build 24; build 23 took 15 and 22).
+  full of `X` about 11.
 - When a terminal connects and the Pi's own copy of the screen (below) has something on it, the
   terminal is drawn from that copy first, in its colours, and the read only checks it. If every
   cell agrees, nothing more happens. If not - a program changed the screen where the Pi could not

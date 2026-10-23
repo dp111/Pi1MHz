@@ -1528,7 +1528,7 @@ static void test_scan_merge(void)
             "... which shows HI and X and no longer YO");
    }
 
-   /* ROM build 24: VDU 31 only where a run of cells starts; the cells after it follow on. */
+   /* VDU 31 only where a run of cells starts; the cells after it follow on. */
    tnd_out_reset(&s, true);
    FEED_OUT(&s, "\x16\x01" "HI\r\n\x11\x01YO", out);
    tnd_out_scan_merge(&s);

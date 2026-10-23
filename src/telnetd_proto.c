@@ -2037,9 +2037,9 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
    from its Tek window to the text screen, and CLG (VDU 16) clears the Tek page. */
 /* ---- a screen read compared with the model (tnd_out_scan_merge) -------------
    The ROM's read is VDU 26, VDU 12, then VDU 31,x,y,char for each cell that is not blank, then
-   VDU 28 with the Beeb's window and VDU 31,x,y with its cursor.  From ROM build 24 the VDU 31,x,y
-   is left out for the cell after the last one on the same row, where the cursor is already: a
-   character with no VDU 31 goes in the next column (sm_x, 0xFF before the first). */
+   VDU 28 with the Beeb's window and VDU 31,x,y with its cursor.  The VDU 31,x,y is left out for the
+   cell after the last one on the same row, where the cursor is already: a character with no
+   VDU 31 goes in the next column (sm_x, 0xFF before the first). */
 
 void tnd_out_scan_merge(tnd_out_t *s)
 {

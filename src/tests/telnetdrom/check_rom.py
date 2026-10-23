@@ -307,7 +307,7 @@ def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a
                 mpu.x = old_stream
         elif mpu.pc == OSWRCH:
             if st["stream"] & 1:
-                st["wrch_pi"].append(mpu.a)            # through the MOS to RS423: build 23's way, none now
+                st["wrch_pi"].append(mpu.a)            # through the MOS to RS423: the read sends none this way
             if not st["stream"] & 2:
                 if st["args"]:
                     st["args"].append(mpu.a)
