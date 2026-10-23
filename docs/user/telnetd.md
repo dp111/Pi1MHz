@@ -180,7 +180,7 @@ power-on: a second copy in another bank answers the same reset call.
 | F1 to F9, F10 | f1 to f9, f0 |
 | F12 | BREAK: a soft reset, the same jump as `CALL !-4`, so it works whatever is running. The terminal is cleared and the cursor put where the Beeb reports it; the session comes back when something hooks the daemon in again (HELPERS or the auto-start ROM). Boot banners printed before the hook are not shown. |
 | SHIFT-F12 | SHIFT-BREAK: a BREAK, and the Beeb is told SHIFT is held while it starts, so the filing system boots (`!BOOT`, as `*OPT 4` says). Needs the auto-start ROM. A boot that waits for ever (the DFS with no drive) can only be ended by the BREAK key or the power: see "Things to know". |
-| CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. |
+| CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. On a Master it also empties sideways RAM, TelnetD included: see "Things to know". |
 | Page Down | SHIFT, pressed once: in paged mode (`VDU 14`, CTRL-N) the Beeb stops at the end of each page until SHIFT is pressed, and Page Down lets it go on a page. Needs the auto-start ROM. |
 | F11 or Ctrl-L | Draw the screen again: the Pi asks the auto-start ROM for what is on the Beeb's screen (see above). Nothing shows on the Beeb. |
 | the pound sign | the Beeb's pound (character 96) |
@@ -447,6 +447,10 @@ mode; PuTTY's "local line editing") send ESC and F12 only with the line. `send b
   waits for a drive that is not there (the 1770 DFS with no drive fitted). On the
   Beeb's own keyboard only BREAK gets out of that, as it pulls the reset line;
   from telnet, switch the Beeb off and on.
+- **On a Master, CTRL-F12 unloads TelnetD.** The Master's power-on start
+  empties sideways RAM (banks 4-7), so TelnetD, and any other ROM image loaded
+  there, is gone and the session cannot come back. A real CTRL-BREAK keeps
+  them. Use F12 instead, or reload the ROM from the Beeb's own keyboard.
 - **One session at a time.** A second connection is told the BBC is in use
   and closed. The exception is a session that has died: if the client's machine
   crashed or the client was killed, the old session may still be holding the
