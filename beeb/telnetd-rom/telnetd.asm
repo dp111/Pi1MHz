@@ -845,7 +845,7 @@ VDUVARS = &0300
                 cmp #STUBPAGE
                 bne scanno
                 lda SPOOLH                  \ not while a *SPOOL file is open or the printer is on
-                bne scanno                  \ (VDU 2): what is sent to the Pi would go there too.
+                bne scanno                  \ (VDU 2): the read's cursor moves (VDU 31) would go there too.
                 lda VDUSTAT                 \ (Build 16 turned them off with *FX3 &17/&14 instead,
                 and #1                      \ and the Beeb then stalled now and then after a read,
                 beq scango                  \ for reasons not found: build 17 is back to *FX3 3/0.)

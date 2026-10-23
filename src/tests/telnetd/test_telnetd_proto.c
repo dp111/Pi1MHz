@@ -1594,6 +1594,38 @@ static void test_scan_merge(void)
    CHECK(n == 0u, "MODE 7: a read with the same colour code and text draws nothing"); if (n) printf("    got %u bytes\n", (unsigned)n);
 }
 
+/* An ordinary screen read (tnd_out_scan_full): a character in the bottom right cell is placed,
+   not printed, so nothing scrolls.  Anything else still scrolls there as the Beeb does. */
+static void test_scan_full(void)
+{
+   tnd_out_t s;
+   char out[4096];
+
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07", out);
+   tnd_out_scan_full(&s);
+   FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "A" "\x1f\x26\x18" "YZ" "\x1c\x00\x18\x27\x00" "\x1f\x00\x00", out);
+   CHECK(s.ch[0][0] == 'A' && s.ch[24][38] == 'Y' && s.ch[24][39] == 'Z', "a read: the bottom right cell does not scroll");
+   CHECK(strstr(out, "\x1b" "D") == NULL, "a read: the terminal is not scrolled either");
+   CHECK(s.sread == 0u && s.cx == 0u && s.cy == 0u, "a read ends at its VDU 28, the cursor put back");
+   FEED_OUT(&s, "\x1f\x27\x18" "Q", out);
+   CHECK(s.ch[23][39] == 'Q' && s.ch[23][38] == 'Y', "after the read, the bottom right cell scrolls again");
+
+   /* Asked for, but the program prints first: not a read, so it scrolls as before. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07", out);
+   tnd_out_scan_full(&s);
+   FEED_OUT(&s, "\x1f\x00\x00" "A" "\x1a\x0c" "\x1f\x27\x18" "Z", out);
+   CHECK(s.ch[23][39] == 'Z' && s.sread == 0u, "output before the read's VDU 26 ends it");
+
+   /* A control code that is not the read's ends it: the program's printing scrolls. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07", out);
+   tnd_out_scan_full(&s);
+   FEED_OUT(&s, "\x1a\x0c" "\r" "\x1f\x27\x18" "Z", out);
+   CHECK(s.ch[23][39] == 'Z' && s.sread == 0u, "a CR in the read ends it");
+}
+
 /* The boot banners (tnd_banner_byte). */
 static bool banner_feed(tnd_banner_t *b, const char *data, size_t len, bool open)
 {
@@ -1727,6 +1759,7 @@ int main(void)
    test_copy_cursor();
    test_session();
    test_scan_merge();
+   test_scan_full();
    test_cursor_line();
    test_banner();
    test_stalled();

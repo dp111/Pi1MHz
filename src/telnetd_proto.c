@@ -899,6 +899,7 @@ void tnd_out_beeb_reset(tnd_out_t *s)
    s->coloured = false;                          /* a reset puts the colours and the cursor back */
    s->curoff = false;
    s->smerge = false;                            /* ... and ends a screen read half sent */
+   s->sread = 0u;
 }
 
 void tnd_out_session(tnd_out_t *s)
@@ -1540,7 +1541,7 @@ static size_t ttx_glyph(tnd_out_t *s, uint8_t c, uint8_t *dst)
       n += put_col(dst + n, (unsigned)s->cx + 1u);
    if (s->cx < s->wr)
       s->cx++;
-   else
+   else if (s->sread != 2u)                     /* not in a read: see tnd_out_scan_full */
       n += scr_newline(s, dst + n);
    return n;
 }
@@ -2026,7 +2027,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
       }
       if (s->cx < s->wr)
          s->cx++;
-      else                                       /* the last column: on to the next line */
+      else if (s->sread != 2u)                   /* the last column: on to the next line */
          n += scr_newline(s, dst + n);
       return n;
    }
@@ -2046,6 +2047,11 @@ void tnd_out_scan_merge(tnd_out_t *s)
    s->rescan = false;
    s->sm_st = 0u;
    s->sm_n = 0u;
+}
+
+void tnd_out_scan_full(tnd_out_t *s)
+{
+   s->sread = 1u;
 }
 
 /* What the model keeps for a character the read reports (as the printing paths store it). */
@@ -2173,6 +2179,13 @@ size_t tnd_out_byte(tnd_out_t *s, uint8_t c, uint8_t dst[TND_OUT_MAX])
 
    if (s->smerge)
       return merge_byte(s, c, dst);
+
+   if (s->sread != 0u && s->code == 0u && !s->disabled) {   /* an ordinary read: its VDU 26 to its VDU 28 */
+      if (s->sread == 1u)
+         s->sread = c == 26u ? 2u : 0u;
+      else if (c < 32u && c != 12u && c != 31u)
+         s->sread = 0u;
+   }
 
    if (s->code == 0u && !s->disabled) {
       if (c == 16u)

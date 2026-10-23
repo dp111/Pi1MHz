@@ -207,6 +207,7 @@ typedef struct {
    int16_t  g1x, g1y, g2x, g2y; /* the two points visited before it, for a triangle */
    bool     smerge;             /* the next screen read is compared with the model (tnd_out_scan_merge) */
    bool     rescan;             /* ... and was cut short: the daemon asks for an ordinary one */
+   uint8_t  sread;              /* an ordinary screen read: 1 asked for, 2 between its VDU 26 and 28 (tnd_out_scan_full) */
    uint8_t  sm_st, sm_x, sm_y, sm_n;
    uint8_t  sm_tail[8];         /* the read's last bytes: VDU 28 and its window, VDU 31 and the cursor */
    uint8_t  sh[TND_ROWS_MAX][TND_COLS_MAX];   /* the read's cells */
@@ -245,6 +246,12 @@ void   tnd_out_reset(tnd_out_t *s, bool utf8);
    Anything else arriving first ends it and is handled as usual; if that happens in the middle of
    the read, rescan is set. */
 void   tnd_out_scan_merge(tnd_out_t *s);
+
+/* The next screen read is an ordinary one, drawn as it comes.  It places every cell with VDU 31
+   and the Beeb is not printing, so a character in the last column does not take the cursor on:
+   one in the bottom right cell would scroll the model and the terminal (the read's VDU 31 or 28
+   always comes next).  Anything other than the read's own codes ends it. */
+void   tnd_out_scan_full(tnd_out_t *s);
 
 /* The screen size the model assumes until the Beeb sends a MODE (the daemon's
    telnetd_mode setting): the Beeb's mode at the start cannot be read.  Nothing

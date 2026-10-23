@@ -1409,6 +1409,8 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
        && serial_redirect_beeb->rom && g_khead == g_ktail) {
       if (g_scan == SCAN_MERGE)
          tnd_out_scan_merge(&g_out);
+      else
+         tnd_out_scan_full(&g_out);
       g_scan = SCAN_NONE;
       k_push(SCAN_KEY);
    }
