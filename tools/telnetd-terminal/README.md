@@ -26,21 +26,31 @@ have on a 4:3 screen:
 The Beeb starts in MODE 7, so MODE 7 is the default everywhere. A window opened for
 one mode still shows the others, in its own font.
 
-The three MOS fonts are drawn pixel for pixel from the character set in the BBC
-Micro's MOS 1.20 ROM, which is out of copyright. They include ASCII, the pound
-sign, and the characters TelnetD sends for MODE 7's special ones: `← → ↑ ½ ¼ ¾ ‖ ― ÷`
-and the solid block.
+The fonts are made from the Pi1MHz framebuffer's own character sets, so a telnet
+session shows the same characters as the Pi's screen:
 
-The teletext font is our own drawing in the style of the teletext chip (SAA5050).
-Each character is drawn as a 5 x 9 dot matrix. The chip's "character rounding" then
-smooths it to 12 x 20 pixels by adding a half dot wherever two dots meet only at a
-corner. As on the chip, it has `£ ← ½ → ↑ # ― ¼ ‖ ¾ ÷` and the block in place of
-some ASCII characters.
+- The three MOS fonts are the framebuffer's BBC Micro character set
+  (`src/framebuffer/fonts/bbc.fnt.h`), dot for dot. They include ASCII, the pound
+  sign, and the characters TelnetD sends for MODE 7's special ones:
+  `← → ↑ ½ ¼ ¾ ‖ ― ÷` and the solid block. The MOS has no glyphs for these, so
+  `make-fonts.py` draws them itself, the only glyphs it does.
+- The teletext font is the framebuffer's teletext chip (SAA5050) character set
+  (`src/framebuffer/fonts/saa5050.fnt.h`). Each 6 x 10 dot character is smoothed to
+  12 x 20 pixels by the chip's "character rounding", which adds a half dot wherever
+  two dots meet only at a corner, the way the framebuffer does it. As on the chip,
+  it has `£ ← ½ → ↑ # ― ¼ ‖ ¾ ÷` and the block in place of some ASCII characters.
 
 Every TrueType font also has Unicode's 60 sextant characters (U+1FB00-1FB3B) and the
 full and half blocks, filling the whole cell. TelnetD uses these to draw MODE 7's
 mosaic graphics, so in Windows Terminal, PuTTY or a desktop terminal the graphics
-join up as on the Beeb.
+join up as on the Beeb. They are the chip's own mosaics, from the same table.
+
+`make-fonts.py` writes all eight font files from those tables (the TrueType fonts
+need `fontTools`: `apt install python3-fonttools` or `pip install fonttools`). The
+font files are committed, so installing them needs neither. After a change to
+either table, run `python3 make-fonts.py`. `python3 make-fonts.py --check` fails if
+the committed fonts are out of date (a different fontTools version can write the
+same glyphs to a different `.ttf` file; these were made with fontTools 4.67).
 
 Each font also comes as a PSF2 console font for the Linux console (`*.psf`): 12 x 20
 for MODE 7, and 8 x 16, 16 x 16 and 32 x 16 for the others. The Linux console
