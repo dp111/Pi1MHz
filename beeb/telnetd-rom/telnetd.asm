@@ -14,7 +14,7 @@
 \ so this ROM takes that vector (as an extended vector, which pages this ROM in).  The
 \ Pi puts one byte, &FF, in the keyboard buffer; REMV sees it come out, keeps it from
 \ the program, reads every character cell of the screen (OSBYTE 135) and sends the ones
-\ that are not blank to the Pi as VDU 31,x,y,char with the screen drivers switched off,
+\ that are not blank to the Pi as VDU 31,x,y,char, straight into the stub through INSV,
 \ so nothing shows on the Beeb, and puts the cursor back.  It runs on the host, so it
 \ works with a second processor on.  The scan keeps nothing in zero page, which the MOS's
 \ OSBYTE and VDU routines use: only the stack (the check before hooking in again borrows &A8-&A9,
@@ -68,7 +68,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 23           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 24           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -822,9 +822,14 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 .coltab         equb 80, 40, 20, 80, 40, 20, 40, 40     \ text columns in MODE 0 to 7
 .rowtab         equb 32, 32, 32, 25, 32, 32, 25, 25     \ ... and rows
 
-\ Send the screen to the Pi.  The Pi gets the characters only, as VDU 31,x,y,char with
-\ the VDU drivers off (OSBYTE 3, X=3); the Beeb's cursor is moved on the screen to read
-\ each cell, and put back.  A text window would keep the cursor inside it (VDU 31 is
+\ Send the screen to the Pi.  The Pi gets the characters only, as VDU 31,x,y,char, each
+\ byte put straight into the stub through INSV (buffer 2, which the stub takes: topich),
+\ with VDU 31,x,y left out where the cell is the next one along the row from the last one
+\ sent - the Pi's cursor is there already.  Build 23 sent each cell through OSWRCH with the
+\ VDU drivers switched off and on again around it (OSBYTE 3), and a MODE 0 screen full of
+\ text took 15 to 28 seconds, the keys waiting all that time.  The output streams are the
+\ screen only for the whole read: the Beeb's cursor is moved on the screen to read each
+\ cell, and put back.  A text window would keep the cursor inside it (VDU 31 is
 \ relative to it and ignores a cell outside it), so for the scan the window is opened
 \ to the whole screen in the MOS's VDU variables (&300+8 to &300+11, which OSBYTE 160
 \ reads), and put back afterwards; the Pi is sent VDU 26 before and VDU 28 with the
@@ -834,6 +839,7 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 \   &101,x column  &102,x row  &103,x the output streams as they were
 \   &104,x cursor column  &105,x cursor row  &106,x columns  &107,x rows
 \   &108,x window top  &109,x right  &10A,x bottom  &10B,x left
+\   &10C,x the column the Pi's cursor is at on this row, &FF when not known
 VDUVARS = &0300
 .scan           lda INSV+1                  \ the Pi is hooked in when the keyboard vector is its stub
                 cmp #STUBPAGE
@@ -844,7 +850,9 @@ VDUVARS = &0300
                 and #1                      \ and the Beeb then stalled now and then after a read,
                 beq scango                  \ for reasons not found: build 17 is back to *FX3 3/0.)
 .scanno         rts
-.scango         ldx #8                      \ the text window: left, bottom, right, top
+.scango         lda #&FF                    \ the Pi's cursor: not known
+                pha
+                ldx #8                      \ the text window: left, bottom, right, top
                 jsr rdvdu
                 pha
                 ldx #9
@@ -891,12 +899,10 @@ VDUVARS = &0300
                 lda #0
                 pha                         \ row
                 pha                         \ column
-                jsr topi
                 lda #26                     \ the Pi: no window, and a clear screen
-                jsr OSWRCH
+                jsr topich
                 lda #12
-                jsr OSWRCH
-                jsr toscr
+                jsr topich
 .scancol        tsx
                 lda &101,x
                 ldy &102,x
@@ -920,14 +926,22 @@ VDUVARS = &0300
                 bcs scanchr
                 ora #&80                    \ MODE 7: a control code stored as &00-&1F (WordWise-Plus's
 .scanchr        pha                         \ colours) is sent as &80-&9F, the same to the chip, not VDU codes
-                jsr topi
                 tsx
                 lda &102,x                  \ column and row are one deeper with the character pushed
+                cmp &10D,x
+                beq scanput                 \ the Pi's cursor is on this cell already
                 ldy &103,x
-                jsr locate
-                pla
-                jsr OSWRCH
-                jsr toscr
+                jsr pilocate
+.scanput        pla
+                jsr topich
+                tsx
+                ldy &101,x
+                iny                         \ the Pi's cursor has moved on to the next cell ...
+                cmp #127
+                bne scannext
+                ldy #&FF                    \ ... but 127 is DELETE to whatever prints it: VDU 31 again
+.scannext       tya
+                sta &10C,x
 .scanskip       tsx
                 inc &101,x
                 lda &101,x
@@ -935,6 +949,8 @@ VDUVARS = &0300
                 bne scancol
                 lda #0
                 sta &101,x
+                lda #&FF                    \ a new row: VDU 31 for its first cell
+                sta &10C,x
                 inc &102,x
                 lda &102,x
                 cmp &107,x
@@ -951,27 +967,26 @@ VDUVARS = &0300
                 lda &104,x                  \ ... and its cursor
                 ldy &105,x
                 jsr locate
-                jsr topi                    \ the Pi: the same window and cursor
-                lda #28
-                jsr OSWRCH
+                lda #28                     \ the Pi: the same window and cursor
+                jsr topich
                 tsx
                 lda &10B,x
-                jsr OSWRCH
+                jsr topich
                 lda &10A,x
-                jsr OSWRCH
+                jsr topich
                 lda &109,x
-                jsr OSWRCH
+                jsr topich
                 lda &108,x
-                jsr OSWRCH
+                jsr topich
                 lda &104,x
                 ldy &105,x
-                jsr locate
+                jsr pilocate
                 tsx
                 lda &103,x
                 tax
                 lda #3
                 jsr OSBYTE                  \ the streams as they were
-                ldx #11
+                ldx #12
 .scandrop       pla
                 dex
                 bne scandrop
@@ -989,12 +1004,29 @@ VDUVARS = &0300
                 jsr OSWRCH
                 tya
                 jmp OSWRCH
-.topi           lda #3                      \ output to RS423 only (no screen); a spool file and the
-                ldx #3                      \ printer cannot be on: scango does not read the screen then
-                jmp OSBYTE
-.toscr          lda #3                      \ output to the screen only
-                ldx #0
-                jmp OSBYTE
+.pilocate       pha                         \ VDU 31,A,Y to the Pi (Y kept)
+                lda #31
+                jsr topich
+                pla
+                jsr topich
+                tya
+                jmp topich
+\ A to the Pi: the stub's INSV (scan checked it is the stub, so nothing else is in front of it)
+\ with X=2, the RS423 output buffer, until it is taken - C set says the Pi's buffer is full,
+\ as it does to the MOS, which sends the byte again.  A, X and Y are kept.
+.topich         pha
+                txa
+                pha
+                tsx
+                lda &102,x                  \ A back
+.topich1        ldx #2
+                jsr insvcall
+                bcs topich1
+                pla
+                tax
+                pla
+                rts
+.insvcall       jmp (INSV)
 
 \ *HELP with nothing after it: the title, version and build, so it is easy to see which
 \ image is fitted.  *HELP with a topic says nothing.  Not claimed either way: every ROM

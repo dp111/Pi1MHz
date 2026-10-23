@@ -2036,7 +2036,9 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
    from its Tek window to the text screen, and CLG (VDU 16) clears the Tek page. */
 /* ---- a screen read compared with the model (tnd_out_scan_merge) -------------
    The ROM's read is VDU 26, VDU 12, then VDU 31,x,y,char for each cell that is not blank, then
-   VDU 28 with the Beeb's window and VDU 31,x,y with its cursor. */
+   VDU 28 with the Beeb's window and VDU 31,x,y with its cursor.  From ROM build 24 the VDU 31,x,y
+   is left out for the cell after the last one on the same row, where the cursor is already: a
+   character with no VDU 31 goes in the next column (sm_x, 0xFF before the first). */
 
 void tnd_out_scan_merge(tnd_out_t *s)
 {
@@ -2132,6 +2134,7 @@ static size_t merge_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
    case 1u:
       if (c == 12u) {
          memset(s->sh, ' ', sizeof s->sh);
+         s->sm_x = 0xFFu;
          s->sm_st = 2u;
          return 0u;
       }
@@ -2139,10 +2142,11 @@ static size_t merge_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
    case 2u:
       if (c == 31u) { s->sm_st = 3u; return 0u; }
       if (c == 28u) { s->sm_tail[0] = c; s->sm_n = 1u; s->sm_st = 6u; return 0u; }
+      if (c >= 32u && s->sm_x < s->cols) { s->sh[s->sm_y][s->sm_x++] = c; return 0u; }   /* the next cell along */
       break;
    case 3u: if (c < s->cols) { s->sm_x = c; s->sm_st = 4u; return 0u; } break;
    case 4u: if (c < s->rows) { s->sm_y = c; s->sm_st = 5u; return 0u; } break;
-   case 5u: s->sh[s->sm_y][s->sm_x] = c; s->sm_st = 2u; return 0u;
+   case 5u: s->sh[s->sm_y][s->sm_x++] = c; s->sm_st = 2u; return 0u;
    case 6u:
       s->sm_tail[s->sm_n++] = c;
       if (s->sm_n == 5u)

@@ -1528,6 +1528,24 @@ static void test_scan_merge(void)
             "... which shows HI and X and no longer YO");
    }
 
+   /* ROM build 24: VDU 31 only where a run of cells starts; the cells after it follow on. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "HI\r\n\x11\x01YO", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "HI" "\x1f\x00\x01" "YO" "\x1c\x00\x1f\x27\x00" "\x1f\x02\x01", out);
+   CHECK(n == 0u && !s.smerge && !s.rescan, "a read with runs (VDU 31 at each run's start) that agrees draws nothing");
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "HI\r\n\x11\x01YO", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "HI" "\x1f\x03\x01" "ABC" "\x1c\x00\x1f\x27\x00" "\x1f\x06\x01", out);
+   CHECK(s.ch[0][1] == 'I' && s.ch[1][0] == ' ' && s.ch[1][3] == 'A' && s.ch[1][5] == 'C' && s.cx == 6u,
+         "... one that differs puts each run's cells one after another from its VDU 31");
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "HI", out);
+   tnd_out_scan_merge(&s);
+   FEED_OUT(&s, "\x1a\x0c" "H", out);
+   CHECK(!s.smerge && s.rescan, "... a character before any VDU 31 is not a read: an ordinary one is asked for");
+
    /* An inverse heading (COLOUR 0 on COLOUR 129): OSBYTE 135 cannot read text on a background, so
       the read has blanks there; the model's heading stands (such headings went blank). */
    tnd_out_reset(&s, true);

@@ -230,9 +230,13 @@ def run_command(rom, line, mode=1, screen=None, cur=(3, 4), hooked=True, stream0
     return st
 
 
-def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a=0x5A, mode=1, win=None, pokes=None, flaky=None):
+def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a=0x5A, mode=1, win=None, pokes=None, flaky=None,
+             full=0):
     """Call the REMV handler the way the MOS's extended vector entry does, with the MOS's own
-    routine modelled by a stub that returns Y=old_y and C=old_c.  Returns what happened."""
+    routine modelled by a stub that returns Y=old_y and C=old_c.  Returns what happened.
+    The Pi's stub is at &FCCC with its INSV entry (CPX #2 / BNE / CLC or SEC / STA &FCCC / RTS):
+    what is written to &FCCC while its flag is CLC is what the Pi receives ("pi").  With full=n
+    the flag is SEC for the first n bytes, which the Pi drops, as when its buffer is full."""
     boot = call(rom, 1, 6, 0, pi_after=0, reset_type=2)
     handler = boot["mem"]._subject[0x0DE1] | (boot["mem"]._subject[0x0DE2] << 8)
     mem = ObservableMemory()
@@ -251,12 +255,27 @@ def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a
     for addr in (OSBYTE, OSWRCH, RETURN_TRAP):
         mem._subject[addr] = 0x60
     mem._subject[RETURN_TRAP] = 0xEA
+    for i, b in enumerate((0xE0, 0x02, 0xD0, 0x05, 0x38 if full else 0x18, 0x8D, 0xCC, 0xFC, 0x60)):
+        if 0xFCCC + i not in (pokes or {}):
+            mem._subject[0xFCCC + i] = b
     wl, wb, wr, wt = win if win else (0, ROWS[mode] - 1, COLS[mode] - 1, 0)
     for i, v8 in enumerate((wl, wb, wr, wt)):
         mem._subject[0x308 + i] = v8                    # the MOS's VDU variables 8-11: the text window
     # cur is relative to the window, as OSBYTE 134 gives it; the model keeps it absolute
     st = {"stream": 1, "cx": wl + cur[0], "cy": wt + cur[1], "args": [], "pi": [], "calls": 0, "ctl": []}
     mem.subscribe_to_write([0xFCF4], lambda addr, value: st["ctl"].append(value))   # the stub's control port
+    st["full"] = full
+    st["wrch_pi"] = []
+    def on_tx(addr, value):
+        if mem._subject[0xFCD0] == 0x38:              # SEC: told full, the byte is not taken
+            st["full"] -= 1
+            if st["full"] <= 0:
+                mem._subject[0xFCD0] = 0x18
+            st["dropped"] = st.get("dropped", 0) + 1
+        else:
+            st["pi"].append(value)
+        return 0xE0                                  # a write-only port: the stub's CPX #2 stays
+    mem.subscribe_to_write([0xFCCC], on_tx)
     mpu = MPU(memory=mem, pc=handler)
     mpu.a, mpu.x, mpu.y = a, x, 7
     mpu.p = (mpu.p & ~0x41) | (0x40 if v else 0) | (1 if c else 0)
@@ -288,7 +307,7 @@ def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a
                 mpu.x = old_stream
         elif mpu.pc == OSWRCH:
             if st["stream"] & 1:
-                st["pi"].append(mpu.a)
+                st["wrch_pi"].append(mpu.a)            # through the MOS to RS423: build 23's way, none now
             if not st["stream"] & 2:
                 if st["args"]:
                     st["args"].append(mpu.a)
@@ -752,19 +771,31 @@ def main(path):
         check(r["helper_writes"] == [] and r["osbytes"] == [] and r["reads"] == 0, f"service {reason}: no helper, no OS call, no look at the Pi")
         check(r["regs"] == (reason, 6, 4) and r["sp_after"] == r["sp_before"], f"service {reason}: passed on untouched")
 
+    def scan_bytes(cells, cols, rows):
+        """What the ROM sends for these cells (build 24): VDU 31,x,y only where a cell does not follow
+        the last one sent on its row (after 127, DELETE to a terminal, always)."""
+        out, nxt = [], None
+        for y in range(rows):
+            nxt = None
+            for x in range(cols):
+                ch = cells.get((x, y), 32)
+                if ch in (0, 32):
+                    continue
+                if ch < 32:
+                    ch |= 0x80
+                if x != nxt:
+                    out += [31, x, y]
+                out.append(ch)
+                nxt = None if ch == 127 else x + 1
+        return out
+
     # 5. the request: the screen goes to the Pi, character by character, and nothing else changes
     scr = {(0, 0): 0x41, (5, 0): 0x42, (39, 31): 0x43, (2, 7): 0x44, (3, 3): 0x20, (9, 9): 0x00}
     for mode in range(8):
         cols, rows = COLS[mode], ROWS[mode]
         s2 = {k: v for k, v in scr.items() if k[0] < cols and k[1] < rows}
         r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen=s2, cur=(1, 2), mode=mode)
-        expect = [26, 12]
-        for y in range(rows):
-            for x in range(cols):
-                ch = s2.get((x, y), 32)
-                if ch not in (0, 32):
-                    expect += [31, x, y, ch]
-        expect += [28, 0, rows - 1, cols - 1, 0, 31, 1, 2]
+        expect = [26, 12] + scan_bytes(s2, cols, rows) + [28, 0, rows - 1, cols - 1, 0, 31, 1, 2]
         check(r["pi"] == expect, f"mode {mode}: the Pi gets VDU 26 and CLS, VDU 31,x,y,char for each character, then the window and the cursor (got {len(r['pi'])} bytes, expected {len(expect)})")
         check((r["cx"], r["cy"]) == (1, 2), f"mode {mode}: the cursor is back where it was on the screen")
         check(r["stream"] == 1, f"mode {mode}: the output streams are put back (stream {r['stream']})")
@@ -777,6 +808,19 @@ def main(path):
     check(r["pi"] == expect, f"a text window: every cell is read, then the Pi gets the window and the cursor in it (got {r['pi']})")
     check(r["win_after"] == (5, 20, 30, 8), f"... and the Beeb's window is put back: {r['win_after']}")
     check((r["cx"], r["cy"]) == (5 + 2, 8 + 3), f"... with its cursor where it was: {(r['cx'], r['cy'])}")
+
+    # 5b2. build 24: a run of cells along a row needs one VDU 31; a gap, a new row or a 127 starts again;
+    # the bytes go straight into the stub's INSV, and one it says it cannot take (full) is sent again
+    scr = {(3, 2): 0x41, (4, 2): 0x42, (5, 2): 0x43, (7, 2): 0x44, (39, 2): 0x45, (0, 3): 0x46,
+           (10, 4): 0x7F, (11, 4): 0x47, (12, 4): 0x48}
+    for full in (0, 5):
+        r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen=scr, cur=(1, 2), mode=1, full=full)
+        expect = [26, 12] + scan_bytes(scr, 40, 32) + [28, 0, 31, 39, 0, 31, 1, 2]
+        check(r["pi"] == expect, f"runs (stub full for the first {full} bytes): {r['pi'][2:-8]} want {expect[2:-8]}")
+        check(r.get("dropped", 0) == full and r["wrch_pi"] == [] and r["sp_after"] == r["sp_before"],
+              f"... each refused byte sent again ({r.get('dropped', 0)}), nothing through OSWRCH to RS423, stack balanced")
+    check(scan_bytes(scr, 40, 32)[:8] == [31, 3, 2, 0x41, 0x42, 0x43, 31, 7],
+          "(the expected bytes: ABC after one VDU 31, then VDU 31 again for the D after the gap)")
 
     # 5c. *HELP: the title, version and build on a plain *HELP; nothing for a topic; never claimed
     r = run_command(rom, "", reason=9, slot=6, y0=0)
@@ -803,8 +847,8 @@ def main(path):
           f"... and the screen is sent: CLS, the characters, the cursor back ({len(r['pi'])} bytes)")
     check(r["stream"] == 1 and (r["cx"], r["cy"]) == (3, 1) and r["sp_after"] == r["sp_before"], "... with the output streams and the cursor as they were, and the stack balanced")
     fx3 = r.get("fx3", [])
-    check(set(fx3[1:-1]) <= {3, 0} and 3 in fx3,   # first: reads the old; last: puts it back
-          f"the scan switches *FX3 3 (to the Pi) and 0 (the screen), as before build 16: {[hex(x) for x in fx3]}")
+    check(fx3 == [0, 1],                          # the screen only for the whole read, then put back
+          f"the scan sets *FX3 0 once (the screen) and puts the streams back, none per cell (build 24): {[hex(x) for x in fx3]}")
     # PR review: a scan must not go into an open *SPOOL file or to the printer; build 17 does not read
     # the screen at all then (build 16's *FX3 &17/&14 made the Beeb stall now and then)
     for what, pk in (("a *SPOOL file open", {0x0257: 0x41}), ("the printer on (VDU 2)", {0xD0: 0x01})):
@@ -816,7 +860,8 @@ def main(path):
     check(0x41 in r["pi"] and 0x42 not in r["pi"] and r["sp_after"] == r["sp_before"],
           "a cell read as nothing is read again (2 misses: sent; more than the tries: left out), stack balanced")
     r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen={(0, 14): 0x01, (1, 14): 0x45, (2, 14): 0x83}, cur=(3, 1), mode=7)
-    cells = [r["pi"][i + 3] for i in range(len(r["pi"]) - 3) if r["pi"][i] == 31 and r["pi"][i + 2] == 14]
+    pos = [i for i in range(len(r["pi"]) - 2) if r["pi"][i:i + 3] == [31, 0, 14]]
+    cells = r["pi"][pos[0] + 3:pos[0] + 6] if pos else []      # one run: VDU 31,0,14 then the three cells
     check(cells == [0x81, 0x45, 0x83],
           f"MODE 7: a control code stored below 32 (WordWise-Plus's &01) is sent as &81, never as a VDU code ({cells})")
     r = run_remv(rom, 0, 1, 0, 0xFF, 0, screen=scr)

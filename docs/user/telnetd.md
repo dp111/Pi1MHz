@@ -62,10 +62,13 @@ nothing shows on the Beeb:
   over and over, outside any interrupt, so that is a safe place to run code.
 - The Pi puts one byte, `&FF`, in the keyboard buffer. REMV sees it come out and keeps it from
   the program; the ROM reads every character cell of the screen (OSBYTE 135) and sends the ones
-  that are not blank to the Pi as `VDU 31,x,y,char` with the screen drivers off, then puts the
-  cursor back. The Pi clears the terminal and draws that.
-- It is done whenever a terminal connects, and on F11 or Ctrl-L. It takes a second or two
-  (about a millisecond per cell); characters only, not colours.
+  that are not blank to the Pi, straight into the Pi's stub, as `VDU 31,x,y` and the characters
+  along the row from there, then puts the cursor back. The Pi clears the terminal and draws that.
+- It is done whenever a terminal connects, and on F11 or Ctrl-L; characters only, not colours.
+  The Beeb takes no keys while it runs. Blank cells are quick; the time goes on the cells with
+  something in them, and most on the letters late in the character set, which OSBYTE 135 takes
+  longest to recognise. On a Master a MODE 0 screen full of `!` takes about 5 seconds and one
+  full of `X` about 11 (ROM build 24; build 23 took 15 and 22).
 - When a terminal connects and the Pi's own copy of the screen (below) has something on it, the
   terminal is drawn from that copy first, in its colours, and the read only checks it. If every
   cell agrees, nothing more happens. If not - a program changed the screen where the Pi could not
