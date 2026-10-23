@@ -1,0 +1,113 @@
+From 8526ab6b2eba13a8816056ade83e2454ff53724e Mon Sep 17 00:00:00 2001
+From: dp111 <dp111@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 11:02:43 +0100
+Subject: [PATCH] ip4: read the UDP port of a link-layer-addressed packet from
+ the packet
+
+ip4_input() lets a UDP packet that is not addressed to any netif through to
+DHCP when its destination port is the DHCP client's
+(IP_ACCEPT_LINK_LAYER_ADDRESSING, on whenever LWIP_DHCP is).  It read that
+port through a struct udp_hdr pointer just past the IP header without
+checking that the first pbuf holds it: a packet that ends with its IP
+header, or whose UDP header is in the next pbuf of a chain, made it read up
+to 4 bytes beyond p->len - stale data, or past the buffer of a PBUF_REF.
+
+The port is now read with pbuf_copy_partial(), which follows the chain and
+reads nothing past tot_len; a packet too short to have one is not taken for
+DHCP.
+
+Test: test_ip4_link_layer_port_in_next_pbuf - the IP header ends its pbuf,
+the bytes after it say port 68, the real UDP header in the next pbuf says
+99.  Without the fix the packet is accepted for DHCP (ip.drop stays 0).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WXCX8VH6qZPmvFo4uyP1V5
+---
+ src/core/ipv4/ip4.c      | 11 ++++++-----
+ test/unit/ip4/test_ip4.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/ipv4/ip4.c b/src/core/ipv4/ip4.c
+index b382e808..918d3e06 100644
+--- a/src/core/ipv4/ip4.c
++++ b/src/core/ipv4/ip4.c
+@@ -611,12 +611,13 @@ ip4_input(struct pbuf *p, struct netif *inp)
+    * #define LWIP_IP_ACCEPT_UDP_PORT(dst_port) ((dst_port) == PP_NTOHS(12345))
+    */
+   if (netif == NULL) {
+-    /* remote port is DHCP server? */
+-    if (IPH_PROTO(iphdr) == IP_PROTO_UDP) {
+-      const struct udp_hdr *udphdr = (const struct udp_hdr *)((const u8_t *)iphdr + iphdr_hlen);
++    u16_t dest_port;
++    /* remote port is DHCP server? (The port may lie beyond p->len: a short packet, or a chain.) */
++    if ((IPH_PROTO(iphdr) == IP_PROTO_UDP) &&
++        (pbuf_copy_partial(p, &dest_port, sizeof(dest_port), (u16_t)(iphdr_hlen + 2)) == sizeof(dest_port))) {
+       LWIP_DEBUGF(IP_DEBUG | LWIP_DBG_TRACE, ("ip4_input: UDP packet to DHCP client port %"U16_F"\n",
+-                                              lwip_ntohs(udphdr->dest)));
+-      if (IP_ACCEPT_LINK_LAYER_ADDRESSED_PORT(udphdr->dest)) {
++                                              lwip_ntohs(dest_port)));
++      if (IP_ACCEPT_LINK_LAYER_ADDRESSED_PORT(dest_port)) {
+         LWIP_DEBUGF(IP_DEBUG | LWIP_DBG_TRACE, ("ip4_input: DHCP packet accepted.\n"));
+         netif = inp;
+         check_ip_src = 0;
+diff --git a/test/unit/ip4/test_ip4.c b/test/unit/ip4/test_ip4.c
+index 613c5bdf..290f3458 100644
+--- a/test/unit/ip4/test_ip4.c
++++ b/test/unit/ip4/test_ip4.c
+@@ -271,6 +271,45 @@ START_TEST(test_ip4_reass_frag_beyond_last)
+ }
+ END_TEST
+ 
++/* A UDP packet not addressed to us is let through to DHCP when its destination port is the DHCP
++   client's.  The port must be read from the packet: here the IP header ends its pbuf and the UDP
++   header is in the next one, while the bytes after the first pbuf's data say port 68. */
++START_TEST(test_ip4_link_layer_port_in_next_pbuf)
++{
++  static u8_t hdr[sizeof(struct ip_hdr) + 4];
++  struct pbuf *p, *q;
++  struct ip_hdr *iphdr = (struct ip_hdr *)hdr;
++  u8_t *udp;
++  struct netif *input_netif = netif_list;
++  LWIP_UNUSED_ARG(_i);
++
++  memset(&lwip_stats.ip, 0, sizeof(lwip_stats.ip));
++  memset(&lwip_stats.udp, 0, sizeof(lwip_stats.udp));
++  memset(hdr, 0, sizeof(hdr));
++  IPH_VHL_SET(iphdr, 4, sizeof(struct ip_hdr) / 4);
++  IPH_LEN_SET(iphdr, lwip_htons(sizeof(struct ip_hdr) + 8));
++  IPH_TTL_SET(iphdr, 5);
++  IPH_PROTO_SET(iphdr, IP_PROTO_UDP);
++  IP4_ADDR(&iphdr->src, 10, 0, 0, 1);
++  IP4_ADDR(&iphdr->dest, 10, 0, 0, 2);                       /* not ours */
++  IPH_CHKSUM_SET(iphdr, inet_chksum(iphdr, sizeof(struct ip_hdr)));
++  hdr[sizeof(struct ip_hdr) + 1] = 67;                        /* past the first pbuf: 67 -> 68 */
++  hdr[sizeof(struct ip_hdr) + 3] = 68;
++  p = pbuf_alloc(PBUF_RAW, sizeof(struct ip_hdr), PBUF_REF);
++  fail_unless(p != NULL);
++  p->payload = hdr;
++  q = pbuf_alloc(PBUF_RAW, 8, PBUF_RAM);
++  fail_unless(q != NULL);
++  udp = (u8_t *)q->payload;                                    /* the real header: 67 -> 99 */
++  memset(udp, 0, 8);
++  udp[1] = 67; udp[3] = 99; udp[5] = 8;
++  pbuf_cat(p, q);
++  fail_unless(ip4_input(p, input_netif) == ERR_OK);
++  fail_unless(lwip_stats.ip.drop == 1);                       /* not for us, and not DHCP */
++  fail_unless(lwip_stats.udp.recv == 0 && lwip_stats.udp.lenerr == 0);
++}
++END_TEST
++
+ /* packets to 127.0.0.1 shall not be sent out to netif_default */
+ START_TEST(test_127_0_0_1)
+ {
+@@ -371,6 +410,7 @@ ip4_suite(void)
+     TESTFUNC(test_ip4_frag),
+     TESTFUNC(test_ip4_reass),
+     TESTFUNC(test_ip4_reass_frag_beyond_last),
++    TESTFUNC(test_ip4_link_layer_port_in_next_pbuf),
+     TESTFUNC(test_127_0_0_1),
+     TESTFUNC(test_ip4addr_aton),
+     TESTFUNC(test_ip4_icmp_replylen_short),
+-- 
+2.56.0
+

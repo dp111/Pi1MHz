@@ -36,7 +36,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SSH_RX_SIZE 16384u
+/* The receive ring, a power of two above TCP_WND.  The window is opened only as wolfSSH reads
+   (io_recv), so the server can never send more than the ring has room for.  It was 16 KB with the
+   window opened at once on arrival: a full ring then refused data (ERR_MEM), lwIP merges what
+   comes after into the refused chain, and once that was over 16 KB it could never be taken. */
+#define SSH_RX_SIZE 65536u
 #define SSH_FILE_SIZE 4096u
 /* Absolute, like WiFi.profile and /cacert.pem: a Beeb *CD moves FatFs's
    current directory (fat_service f_chdir), and a relative path would then
@@ -72,7 +76,7 @@ typedef struct {
     uint16_t port;
     uint16_t rx_head;
     uint16_t rx_tail;
-    uint16_t rx_count;
+    uint32_t rx_count;
     char host[192];
     char host_id[224];
     char username[64];
@@ -356,7 +360,7 @@ static int hostkey_callback(const byte *key, word32 key_size, void *opaque)
     return persist_known_host();
 }
 
-static uint16_t ring_free(void) { return (uint16_t)(SSH_RX_SIZE - client.rx_count); }
+static uint32_t ring_free(void) { return SSH_RX_SIZE - client.rx_count; }
 
 static err_t nts_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
                           err_t error)
@@ -369,11 +373,10 @@ static err_t nts_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
         return ERR_OK;
     }
     if (p == NULL) { state->eof = true; return ERR_OK; }
-    if (p->tot_len > ring_free()) return ERR_MEM;
+    if (p->tot_len > ring_free()) return ERR_MEM;   /* never: the window is smaller than the ring */
     state->rx_head = (uint16_t)byte_ring_put_pbuf(rx_ring, SSH_RX_SIZE - 1u,
                                                   state->rx_head, p);
-    state->rx_count = (uint16_t)(state->rx_count + p->tot_len);
-    altcp_recved(pcb, p->tot_len);
+    state->rx_count += p->tot_len;
     pbuf_free(p);
     return ERR_OK;
 }
@@ -409,8 +412,12 @@ static int io_recv(WOLFSSH *ssh, void *out, word32 size, void *opaque)
         state->rx_tail = (uint16_t)((state->rx_tail + 1u) &
                                     (SSH_RX_SIZE - 1u));
     }
-    state->rx_count = (uint16_t)(state->rx_count - count);
-    if (count != 0u) return (int)count;
+    state->rx_count -= count;
+    if (count != 0u) {
+        if (state->pcb != NULL)                  /* the window opens by what was read */
+            altcp_recved(state->pcb, (u16_t)(count > 0xFFFFu ? 0xFFFFu : count));
+        return (int)count;
+    }
     if (state->transport_error) return WS_CBIO_ERR_CONN_RST;
     if (state->eof) return WS_CBIO_ERR_CONN_CLOSE;
     return WS_CBIO_ERR_WANT_READ;

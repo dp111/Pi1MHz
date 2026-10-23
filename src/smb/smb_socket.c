@@ -75,9 +75,9 @@ static err_t sk_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
       s->peer_closed = true;
       return ERR_OK;
    }
-   if (err != ERR_OK) {
-      pbuf_free(p);
-      return err;
+   if (err != ERR_OK) {                /* freed here, so ERR_OK: any other answer but ERR_ABRT */
+      pbuf_free(p);                    /* tells lwIP to keep p as refused data and free it again */
+      return ERR_OK;
    }
    if (s->rx == NULL)
       s->rx = p;

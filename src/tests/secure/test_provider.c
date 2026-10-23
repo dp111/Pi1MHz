@@ -170,7 +170,7 @@ err_t tcp_write(struct tcp_pcb *pcb, const void *d, u16_t len, u8_t f)
 err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t f)
 { (void)c; (void)d; (void)len; (void)f; return ERR_OK; }
 void altcp_output(struct altcp_pcb *c) { (void)c; }
-void altcp_recved(struct altcp_pcb *c, u16_t len) { (void)c; (void)len; }
+void altcp_recved(struct altcp_pcb *c, u16_t len) { c->t_recved += len; }
 err_t altcp_close(struct altcp_pcb *c) { c->t_closed = 1; return ERR_OK; }
 void altcp_abort(struct altcp_pcb *c) { c->t_closed = 1; }
 u8_t pbuf_free(struct pbuf *p) { (void)p; return 1; }
@@ -185,7 +185,8 @@ int wolfSSH_Init(void) { return WS_SUCCESS; }
 int wolfSSH_Cleanup(void) { return WS_SUCCESS; }
 WOLFSSH_CTX *wolfSSH_CTX_new(byte side, void *heap) { (void)side; (void)heap; return &the_ctx; }
 void wolfSSH_CTX_free(WOLFSSH_CTX *ctx) { (void)ctx; }
-void wolfSSH_SetIORecv(WOLFSSH_CTX *ctx, WS_CallbackIORecv cb) { (void)ctx; (void)cb; }
+static WS_CallbackIORecv io_recv_cb;
+void wolfSSH_SetIORecv(WOLFSSH_CTX *ctx, WS_CallbackIORecv cb) { (void)ctx; io_recv_cb = cb; }
 void wolfSSH_SetIOSend(WOLFSSH_CTX *ctx, WS_CallbackIOSend cb) { (void)ctx; (void)cb; }
 void wolfSSH_SetUserAuth(WOLFSSH_CTX *ctx, WS_CallbackUserAuth cb) { (void)ctx; (void)cb; }
 void wolfSSH_CTX_SetPublicKeyCheck(WOLFSSH_CTX *ctx, WS_CallbackPublicKeyCheck cb) { ctx->check = cb; }
@@ -194,7 +195,8 @@ void wolfSSH_free(WOLFSSH *ssh) { (void)ssh; }
 int wolfSSH_SetUsername(WOLFSSH *ssh, const char *u) { (void)ssh; (void)u; return WS_SUCCESS; }
 int wolfSSH_SetChannelType(WOLFSSH *ssh, byte t, byte *d, word32 s)
 { (void)ssh; (void)t; (void)d; (void)s; return WS_SUCCESS; }
-void wolfSSH_SetIOReadCtx(WOLFSSH *ssh, void *c) { (void)ssh; (void)c; }
+static void *io_read_ctx;
+void wolfSSH_SetIOReadCtx(WOLFSSH *ssh, void *c) { (void)ssh; io_read_ctx = c; }
 void wolfSSH_SetIOWriteCtx(WOLFSSH *ssh, void *c) { (void)ssh; (void)c; }
 void wolfSSH_SetUserAuthCtx(WOLFSSH *ssh, void *c) { (void)ssh; (void)c; }
 void wolfSSH_SetPublicKeyCheckCtx(WOLFSSH *ssh, void *c) { ssh->check_ctx = c; }
@@ -321,6 +323,34 @@ int main(void)
    CHECK(mkdirs != 0, "the directory is made when it is first written to (%d f_mkdir)", mkdirs);
    CHECK(all_absolute(), "every path the provider used is absolute (%d paths)", npaths);
    for (int i = 0; i < npaths; i++) printf("    %s\n", paths[i]);
+   port->ssh_close(ctx);
+
+   printf("== N5: a full TCP window while wolfSSH reads nothing ==\n");
+   password();
+   (void)open_url("TCP://c.test:22", 1);
+   (void)open_url("TCP://c.test:22", 1);
+   the_pcb.connected(the_pcb.arg, &the_pcb, ERR_OK);
+   {
+      static uint8_t seg[1460], got[4096];
+      struct pbuf pb;
+      int refused = 0;
+      uint32_t sent = 0, read = 0;
+      bool order = true;
+      for (int i = 0; i < 44; i++) {             /* TCP_WND: 44 segments of 1460 */
+         memset(seg, i, sizeof seg);
+         pb.next = NULL; pb.payload = seg; pb.len = pb.tot_len = sizeof seg;
+         if (the_pcb.recv(the_pcb.arg, &the_pcb, &pb, ERR_OK) != ERR_OK) refused++;
+         else sent += sizeof seg;
+      }
+      CHECK(refused == 0, "every segment of a full window is taken (%d refused)", refused);
+      CHECK(the_pcb.t_recved == 0u, "the window stays closed until wolfSSH reads (%u opened)",
+            (unsigned)the_pcb.t_recved);
+      for (int r; (r = io_recv_cb(&the_ssh, got, sizeof got, io_read_ctx)) > 0; read += (uint32_t)r)
+         for (int k = 0; k < r; k++)
+            if (got[k] != (uint8_t)((read + (uint32_t)k) / 1460u)) order = false;
+      CHECK(read == sent && order, "wolfSSH reads it all back in order (%u of %u)", (unsigned)read, (unsigned)sent);
+      CHECK(the_pcb.t_recved == sent, "and the window opens by what was read (%u)", (unsigned)the_pcb.t_recved);
+   }
    port->ssh_close(ctx);
    dns_sync = false;
 
