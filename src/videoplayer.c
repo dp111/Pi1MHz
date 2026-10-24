@@ -99,7 +99,7 @@ typedef enum {
     VP_IDLE,                         /* no video open */
     VP_STILL,                        /* frozen on cur_picture */
     VP_PLAY,                         /* pipelined forward play */
-    VP_PLAY_REV,                     /* reverse = paced backwards stills */
+    VP_PLAY_REV,                     /* the same pipeline, fed backwards */
 } vp_mode_t;
 
 #define NUM_FRAME_BUFFERS 2
@@ -124,7 +124,9 @@ static struct {
     bool play_audio;                 /* slow/fast motion runs silent */
     bool show_picture;               /* D1: draw the picture number overlay */
     uint32_t cur_picture;            /* 1-based, on screen */
-    uint32_t next_frame;             /* 0-based, next to feed the decoder */
+    uint32_t next_frame;             /* 0-based, next to feed the decoder;
+                                        reverse: one past it, 0 = none left */
+    uint32_t last_fed;               /* reverse: the record the tail push repeats */
     uint32_t stop_picture;           /* stop register, 0 = none */
     int32_t  in_flight;              /* AUs submitted minus frames back */
 
@@ -589,32 +591,57 @@ static void videoplayer_poll(void)
         break;
     }
 
-    case VP_PLAY_REV:
-        /* Reverse play = random-access stills marched backwards. Each is
-           an independent IDR decode, so this sustains full rate. */
-        if (vp.pending_phys && !vp_armed_phys)
-            arm_flip();
-        if ((int32_t)(RPI_GetSystemTime() - vp.next_frame_due) >= 0 &&
-            vp.in_flight == 0) {
-            {
-                uint32_t back = 1u + (vp.stride ? vp.stride : 1u);
-                /* record cur_picture-back is valid exactly when
-                   cur_picture >= back (records are 0-based, pictures
-                   1-based): '>' stopped reverse play on picture 2 */
-                if (vp.cur_picture >= back) {
-                    uint32_t rec = vp.cur_picture - back;
-                    if (feed_frame(rec, false, true)) {
-                        /* keep the forward position in step, so a later
-                           *PLAY resumes where reverse play left off */
-                        vp.next_frame = rec + 1u;
-                        vp.next_frame_due += vp.frame_period_us;
-                    }
-                } else {
-                    vp.mode = VP_STILL;
-                }
+    case VP_PLAY_REV: {
+        /* Forward play's pipeline fed backwards.  Every picture is an IDR,
+           so the decoder takes them in any order, and as going forwards the
+           next AU pushes the previous picture out: one SD read per picture,
+           up to 2 in flight.  The stop register ends the range here too
+           (VFS *PLAY <start>,<end> with end < start sends 'O'); a record
+           below 'low' is not played. */
+        const uint32_t step = vp.stride ? vp.stride : 1u;
+        const uint32_t low = (vp.stop_picture && vp.stop_picture <= vp.cur_picture)
+                           ? vp.stop_picture - 1u : 0u;
+        while (vp.in_flight < 2 && vp.next_frame > low) {
+            uint32_t rec = vp.next_frame - 1u;
+            if (!feed_frame(rec, false, false))
+                break;
+            vp.last_fed = rec;
+            vp.next_frame = (rec >= low + step) ? rec + 1u - step : low;
+        }
+        /* The last picture needs a pusher, as at the end of forward play */
+        if (vp.next_frame <= low && vp.in_flight == 1 && !vp.tail_pushed) {
+            if (submit_au(vp.last_fed, false, false))
+                vp.tail_pushed = true;
+        }
+
+        /* Display at the frame rate, on a frame boundary */
+        {
+            uint32_t now = RPI_GetSystemTime();
+            if (vp.pending_phys && !vp_armed_phys &&
+                (int32_t)(now - vp.next_frame_due) >= 0) {
+                arm_flip();
+                vp.next_frame_due += vp.frame_period_us;
             }
         }
+
+        /* Ended once the last picture fed is the one on screen: cur_picture
+           only follows a flip when it is reaped, a pass after the commit */
+        if (vp.next_frame <= low && !vp.in_flight && !vp.pending_phys &&
+            vp.cur_picture == vp.last_fed + 1u) {
+            vp.mode = VP_STILL;
+            vp.tail_pushed = false;
+            /* Stopped on the register's picture (with a stride, up to
+               stride-1 above it) - not at picture 1 under a forward
+               register still set above us */
+            if (vp.stop_picture && vp.cur_picture >= vp.stop_picture &&
+                vp.cur_picture < vp.stop_picture + step) {
+                vp.stop_picture = 0;
+                vp_stop_reached = true;  /* the F-code layer owes an A2 */
+            }
+            h264dec_resume();
+        }
         break;
+    }
 
     case VP_STILL:
     case VP_IDLE:
@@ -978,6 +1005,11 @@ void videoplayer_play_rev(void)
     h264dec_resume();
     vp.in_flight = 0;
     vp.dup_owed = 0;
+    vp.tail_pushed = false;
+    /* the picture before the one on screen (pictures 1-based, records 0);
+       last_fed starts as the one on screen, for a range with nothing in it */
+    vp.next_frame = vp.cur_picture > 1u ? vp.cur_picture - 1u : 0u;
+    vp.last_fed = vp.cur_picture ? vp.cur_picture - 1u : 0u;
     audio_flush();
     vp.mode = VP_PLAY_REV;
     vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
@@ -1045,6 +1077,10 @@ static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
     vp.stride = stride;
     vp.play_audio = false;
     vp.next_frame = vp.cur_picture;  /* see videoplayer_play_fwd */
+    if (mode == VP_PLAY_REV) {       /* one past the record 'stride' back */
+        vp.next_frame = vp.cur_picture > stride ? vp.cur_picture - stride : 0u;
+        vp.last_fed = vp.cur_picture ? vp.cur_picture - 1u : 0u;
+    }
     vp.mode = mode;
     vp.next_frame_due = RPI_GetSystemTime() + period_us;
 }
