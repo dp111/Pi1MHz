@@ -104,17 +104,6 @@
 #define CFG_TUD_MTP               1
 #define CFG_TUD_MTP_EP_BUFSIZE    2048
 
-/* Local fix to the vendored MTP driver (mtp_device.c): when the host does not
-   declare a length - ObjectCompressedSize 0 or 0xFFFFFFFF, so total_len is
-   UINT32_MAX - let a short OUT packet end the data phase.  Upstream ends an
-   OUT phase only on total_len or a ZLP, which for an undeclared length can
-   only happen when the data is an exact multiple of the packet size; any
-   other length hangs the operation with the file open and the LUN locked.
-   Named so the change stays visible in a future TinyUSB diff.  The edit
-   is tinyusb-mtp-unknown-length.patch beside this file, which the build
-   applies to a copy of mtp_device.c in the build tree (src/CMakeLists.txt,
-   MTP_DEVICE_PATCHED); the submodule stays a plain upstream pin. */
-#define PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT 1
 #define CFG_TUD_MTP_EP_CONTROL_BUFSIZE  16 // should be enough to hold data in MTP control request
 
 //------------- MTP device info -------------//
@@ -178,8 +167,9 @@
 #define CFG_TUH_DWC2_SLAVE_ENABLE  1
 #define CFG_TUH_DWC2_DMA_ENABLE    0
 /* The controller's interrupt output is never enabled in host mode: usb.c
-   polls tuh_int_handler (usb/tinyusb-hcd-polled.patch). */
-#define PI1MHZ_TUH_POLLED          1
+   polls tuh_int_handler.  Upstream option from our TinyUSB PR; until the pin
+   has it, usb/tinyusb-hcd-polled.patch carries its hcd_dwc2.c half. */
+#define CFG_TUH_DWC2_POLLED        1
 #define CFG_TUH_ENUMERATION_BUFSIZE 256
 /* A mouse may be behind a hub - a Pi 1/2/3 Model B's own (with its
    Ethernet chip on it too) and a user's hub beyond that.  Every device on

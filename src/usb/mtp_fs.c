@@ -2149,7 +2149,7 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
  * the file open and the LUN locked, and an extra read would still be armed
  * when the response goes.  A mismatch is an error, reported once the stream
  * has been drained.  An unknown length (0xFFFFFFFF) ends on a short packet
- * (usb/tinyusb-mtp-unknown-length.patch), so re-arm after every full one. */
+ * (TinyUSB #3911), so re-arm after every full one. */
 static void fs_write_rearm(tud_mtp_cb_data_t* cb_data, uint32_t offset, uint32_t xact_len) {
   mtp_container_info_t* io_container = &cb_data->io_container;
   if (offset == 0u) {

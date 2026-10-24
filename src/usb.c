@@ -352,7 +352,7 @@ static void usb_boot_task(void)
   RPI_PropertySettle();            /* the answer is here; this will not block */
 
   s_usb_host = usb_choose_host();
-  BP_usb_host_polled = PI1MHZ_TUH_POLLED && s_usb_host;
+  BP_usb_host_polled = CFG_TUH_DWC2_POLLED && s_usb_host;
   tusb_rhport_init_t port_init = {
     .role = s_usb_host ? TUSB_ROLE_HOST : TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_AUTO
@@ -361,7 +361,7 @@ static void usb_boot_task(void)
 
   if (s_usb_host) {
     /* Polled - see usb_host_task.  hcd_init never enabled the controller's
-       output (usb/tinyusb-hcd-polled.patch), and TinyUSB's hcd_int_enable
+       output (CFG_TUH_DWC2_POLLED), and TinyUSB's hcd_int_enable
        on every tuh_task leaves the ARM's IRQ 9 alone (BP_EnableIRQ in
        usb/broadcom/interrupts.h), so this stays as set here: */
     USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;

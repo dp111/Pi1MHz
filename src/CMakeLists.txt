@@ -149,29 +149,16 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 
 set( CMAKE_EXE_LINKER_FLAGS " -Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
-# Our fix to TinyUSB's MTP class driver (usb/tinyusb-mtp-unknown-length.patch,
-# guarded by PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT in tusb_config.h)
-# is applied to a copy in the build tree and that copy is compiled.  The
+# Our change to TinyUSB's dwc2 host driver (usb/tinyusb-hcd-polled.patch,
+# CFG_TUH_DWC2_POLLED in tusb_config.h): the controller's interrupt output is
+# never enabled in host mode - see usb.c.  It is the hcd_dwc2.c half of our
+# upstream PR; delete the patch and this step once the pin contains it.  The
+# patch is applied to a copy in the build tree and that copy is compiled.  The
 # submodule stays a plain upstream pin: an edit in its working tree is hidden
 # by ignore=dirty and lost by any fresh checkout or submodule update, which
-# is how builds went out without it.  A patch that stops applying after an
-# upstream bump fails the build here instead of silently disappearing.
-set(MTP_DEVICE_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp/mtp_device.c)
-set(MTP_DEVICE_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb-mtp-unknown-length.patch)
-set(MTP_DEVICE_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched/mtp_device.c)
-add_custom_command(
-   OUTPUT  ${MTP_DEVICE_PATCHED}
-   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched
-   COMMAND patch --forward --fuzz=0 -o ${MTP_DEVICE_PATCHED} ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
-   DEPENDS ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
-   COMMENT "Applying the Pi1MHz MTP patch to TinyUSB mtp_device.c"
-   VERBATIM
-)
-
-# Our change to TinyUSB's dwc2 host driver (usb/tinyusb-hcd-polled.patch,
-# guarded by PI1MHZ_TUH_POLLED in tusb_config.h): the controller's interrupt
-# output is never enabled in host mode - see usb.c.  Applied to a build-tree
-# copy, as the MTP patch above.
+# is how builds went out without the MTP fix that preceded this.  A patch that
+# stops applying after an upstream bump fails the build here instead of
+# silently disappearing.
 set(HCD_DWC2_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/portable/synopsys/dwc2/hcd_dwc2.c)
 set(HCD_DWC2_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb-hcd-polled.patch)
 set(HCD_DWC2_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched/hcd_dwc2.c)
@@ -350,7 +337,7 @@ set(core_files
    usb/tinyusb/src/tusb.c
    usb/tinyusb/src/common/tusb_fifo.c
    usb/tinyusb/src/device/usbd.c
-   ${MTP_DEVICE_PATCHED}          # usb/tinyusb/src/class/mtp/mtp_device.c + our patch
+   usb/tinyusb/src/class/mtp/mtp_device.c
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
    ${HCD_DWC2_PATCHED}            # usb/tinyusb/.../hcd_dwc2.c + our patch
@@ -586,7 +573,7 @@ set_source_files_properties(
    usb/tinyusb/src/tusb.c
    usb/tinyusb/src/common/tusb_fifo.c
    usb/tinyusb/src/device/usbd.c
-   ${MTP_DEVICE_PATCHED}
+   usb/tinyusb/src/class/mtp/mtp_device.c
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
    ${HCD_DWC2_PATCHED}            # usb/tinyusb/.../hcd_dwc2.c + our patch
@@ -599,9 +586,7 @@ set_source_files_properties(
 )
 
 # The patched copy lives in the build tree, so its own directory - which holds
-# mtp_device.h, included with quotes - has to be named explicitly.
-set_source_files_properties(${MTP_DEVICE_PATCHED} PROPERTIES
-   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp)
+# the dwc2 headers, included with quotes - has to be named explicitly.
 set_source_files_properties(${HCD_DWC2_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/portable/synopsys/dwc2)
 
