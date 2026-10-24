@@ -73,7 +73,7 @@ date checks. mbedTLS 3.6.7 LTS is a submodule (src/wifi/mbedtls, config
 wifi/mbedtls_config_pi1mhz.h: TLS 1.2 client, ECDHE-RSA/ECDSA, AES-GCM and
 ChaCha20-Poly1305, no clock); lwIP's adapter is 2.x-only, so
 wifi/lwip-altcp-tls-mbedtls3.patch ports it, applied to a build-tree copy
-as the TinyUSB host patch is. Certificates must verify
+of the file. Certificates must verify
 (ALTCP_MBEDTLS_AUTHMODE REQUIRED) against /cacert.pem on the card, with
 SNI and the host-name check from the URL; a missing bundle or a failed
 handshake is NET_ERR_TLS (0x31). Entropy is the BCM2835 RNG (rpi/hwrng.c),

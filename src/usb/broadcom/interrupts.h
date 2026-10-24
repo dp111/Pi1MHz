@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-/* usb.c: the controller is a polled host (CFG_TUH_DWC2_POLLED).  The ARM's USB IRQ then stays
+/* usb.c: the controller is a polled host (PI1MHZ_TUH_POLLED).  The ARM's USB IRQ then stays
    off whatever TinyUSB asks: IRQHandler_main neither services nor masks it in host mode, and
    TinyUSB's hcd_int_enable runs on every tuh_task (osal_spin_unlock) through upstream's
    dwc2_int_set, which enables it for either role. */

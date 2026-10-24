@@ -292,16 +292,14 @@ static bool usb_choose_host(void)
   return true;
 }
 
-/* Host mode is polled, never interrupt driven: with the controller's
-   interrupt output enabled, the first interrupt after the port is powered
-   resets the whole board (MEASURED on a Zero 2 W, chain-booted kernels;
-   never tried from a cold boot - presumably the VideoCore, which sees the
-   same IRQ, as nothing on the ARM side runs or is reported).
-   So usb_boot_task turns that output off, and the controller's interrupt
-   work is done from here, every USB_HOST_POLL_US - a mouse needs nothing
-   faster, and in slave mode the receive FIFO is still emptied promptly. */
-#define USB_GAHBCFG      (*(volatile uint32_t *)(PERIPHERAL_BASE + 0x980008u))
-#define GAHBCFG_GINT_BIT (1u << 0)
+/* Host mode is polled, never interrupt driven: with the ARM's USB IRQ (9)
+   enabled, the board resets within seconds of the host port starting
+   (MEASURED on a Zero 2 W, 2026-10-24: a build with IRQ 9 enabled reset; the
+   same build with it masked ran on, the controller's own interrupt output
+   on and asserted, so the controller's GINT does not matter).  So
+   usb_boot_task keeps IRQ 9 masked, and the controller's interrupt work is
+   done from here, every USB_HOST_POLL_US - a mouse needs nothing faster, and
+   in slave mode the receive FIFO is still emptied promptly. */
 
 #define USB_HOST_POLL_US 250u
 static void usb_host_work(void) {
@@ -352,21 +350,20 @@ static void usb_boot_task(void)
   RPI_PropertySettle();            /* the answer is here; this will not block */
 
   s_usb_host = usb_choose_host();
-  BP_usb_host_polled = CFG_TUH_DWC2_POLLED && s_usb_host;
+  BP_usb_host_polled = PI1MHZ_TUH_POLLED && s_usb_host;
+  /* Polled - see usb_host_task.  IRQ 9 is masked before tusb_init, whose
+     hcd_init turns the controller's interrupt output on: a chain-booted
+     kernel can find it still enabled.  TinyUSB's hcd_int_enable on every
+     tuh_task then leaves it alone (BP_EnableIRQ in usb/broadcom/interrupts.h). */
+  if (s_usb_host)
+    RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);
   tusb_rhport_init_t port_init = {
     .role = s_usb_host ? TUSB_ROLE_HOST : TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_AUTO
   };
   tusb_init(BOARD_TUD_RHPORT, &port_init);
 
-  if (s_usb_host) {
-    /* Polled - see usb_host_task.  hcd_init never enabled the controller's
-       output (CFG_TUH_DWC2_POLLED), and TinyUSB's hcd_int_enable
-       on every tuh_task leaves the ARM's IRQ 9 alone (BP_EnableIRQ in
-       usb/broadcom/interrupts.h), so this stays as set here: */
-    USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;
-    RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);
-  } else {
+  if (!s_usb_host) {
     // Enable USB IRQ (IRQ #9 in Enable_IRQs_1)
     // The IRQ handler is already attached in IRQHandler_main() - see Pi1MHz.c
     RPI_GetIrqController()->Enable_IRQs_1 = (1 << 9);

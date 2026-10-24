@@ -166,10 +166,9 @@
 #define CFG_TUH_MAX_SPEED          BOARD_TUD_MAX_SPEED
 #define CFG_TUH_DWC2_SLAVE_ENABLE  1
 #define CFG_TUH_DWC2_DMA_ENABLE    0
-/* The controller's interrupt output is never enabled in host mode: usb.c
-   polls tuh_int_handler.  Upstream option from our TinyUSB PR; until the pin
-   has it, usb/tinyusb-hcd-polled.patch carries its hcd_dwc2.c half. */
-#define CFG_TUH_DWC2_POLLED        1
+/* Host mode is polled: the ARM's USB IRQ stays masked and usb.c calls
+   tuh_int_handler from its poll loop (see usb_host_task). */
+#define PI1MHZ_TUH_POLLED          1
 #define CFG_TUH_ENUMERATION_BUFSIZE 256
 /* A mouse may be behind a hub - a Pi 1/2/3 Model B's own (with its
    Ethernet chip on it too) and a user's hub beyond that.  Every device on
