@@ -109,6 +109,20 @@ static volatile uint8_t flash_space_time = 25;
 
 // VDU Queue
 #define VDU_QSIZE 8192
+// VDU 23,0,<this>: the copy cursor report (edit_cursor_emit), not a CRTC register
+#define EDIT_CURSOR_REG 0xFFu
+// The copy cursor stubs (fb_edit_cursor_init): offsets from their base
+#define EDIT_REMV_OFF 0x00u   // the REMV stub: JMP (idle) or CMP (reporting) old REMV
+#define EDIT_INSV_OFF 0x1Au   // the INSV stub: a keyboard-buffer key arms the REMV stub
+#define EDIT_KEY_OFF  0x1Au   // its port
+#define EDIT_INSV_JMP 0x21u   // its JMP old INSV
+// Non-zero once the stub has run since the reset (the helper indexes them)
+#define EDIT_LIVE_INSV 0x27u
+#define EDIT_LIVE_REMV 0x29u
+#define EDIT_OP_JMP 0x4Cu
+#define EDIT_OP_CMP 0xCDu
+// How long the REMV stub keeps reporting after the last key (us)
+#define EDIT_ARM_US 100000u
 #define VDU_BUF_LEN 16
 
 /* VDU log (vdu_log=1 in Pi1MHz.cfg): every command the drain consumes,
@@ -247,6 +261,7 @@ static void set_text_area(const t_clip_window_t *window);
 static void invert_cursor(int x_pos, int y_pos, int start, int end);
 static void enable_edit_cursor(void);
 static void disable_edit_cursor(void);
+static void edit_cursor_report(uint8_t on, uint8_t x, uint8_t y);
 static void update_cursors(void);
 static void cursor_interrupt(void);
 static void edit_cursor_up(void);
@@ -562,6 +577,23 @@ static void disable_edit_cursor(void) {
       e_y_pos = 0;
       update_cursors();
    }
+}
+
+/* The Beeb's own copy cursor, as its MOS holds it (see fb_edit_cursor_init):
+   on = the cursors are separate, x/y = the copy cursor's column and row on the
+   screen (not the text window).  The MOS moves it itself, so the Pi only
+   draws where it says. */
+static void edit_cursor_report(uint8_t on, uint8_t x, uint8_t y) {
+   if (!on) {
+      disable_edit_cursor();
+      return;
+   }
+   if (text_at_g_cursor || x >= text_width || y >= text_height)
+      return;
+   e_enabled = 1;
+   e_x_pos = x;
+   e_y_pos = y;
+   update_cursors();
 }
 
 static void edit_cursor_up(void) {
@@ -906,6 +938,9 @@ static void vdu23_0(const uint8_t *buf) {
    // VDU 23,0: Write CRTC Register
    int tmp;
    switch (buf[1]) {
+   case EDIT_CURSOR_REG:
+      edit_cursor_report(buf[2], buf[3], buf[4]);
+      break;
    case 10:
    case 11:
       // Cursor Start or End
@@ -2570,14 +2605,12 @@ uint8_t fb_get_gcol_from_colnum(uint8_t colnum) {
    }
 }
 
-static void fb_emulator_vdu(unsigned int gpio)
+static unsigned int drop_remaining;  // bytes of a dropped command to swallow
+
+static void vdu_fiq_put(uint8_t data)
 {
-   // FIQ context: append one Beeb VDU byte. Writes near the ring start are
+   // FIQ context: append one VDU byte. Writes near the ring start are
    // mirrored into the over-allocated tail (see vdu_queue).
-   static unsigned int drop_remaining;  // bytes of a dropped command to swallow
-
-   uint8_t data = (uint8_t)GET_DATA(gpio);
-
    if (drop_remaining != 0) {
       // The queue was full at this command's first byte: swallow the rest
       // of the command whole so the consumer never sees a partial command
@@ -2604,6 +2637,119 @@ static void fb_emulator_vdu(unsigned int gpio)
    if (wp < VDU_BUF_LEN)
       vdu_queue[wp + VDU_QSIZE] = data;  // keep the mirrored tail in sync
    vdu_wp = (wp + 1) & (VDU_QSIZE - 1);
+}
+
+/* The copy cursor stub (fb_edit_cursor_init) reports the MOS's copy cursor
+   on keyboard-buffer REMVs while it is armed.  A change goes into the VDU
+   queue as VDU 23,0,EDIT_CURSOR_REG,on,x,y,0,0,0,0 - in order with the Beeb's
+   own VDU bytes, so it is drawn after whatever was printed before it.  6845
+   register 255 (31) does not exist, so no real program sends that.  A report
+   that lands inside a Beeb command waits until the command is whole. */
+static uint8_t edit_x, edit_y;               /* latched from the stub's first two writes */
+static uint8_t edit_sent_on, edit_sent_x, edit_sent_y;
+static bool edit_pending;
+static uint8_t edit_base;                    /* the stubs' FRED offset */
+static bool edit_stub;                       /* the stubs are there (Editcursor_addr not off) */
+static bool edit_live_remv, edit_live_insv;  /* the stubs have run since the Beeb's last reset */
+static bool edit_armed;                      /* the REMV stub's first byte is EDIT_OP_CMP */
+static uint32_t edit_armed_at;               /* the last key (us) */
+
+static void edit_cursor_emit(void)
+{
+   if (vdu_fiq_cmd_remaining != 0 || drop_remaining != 0) {
+      edit_pending = true;
+      return;
+   }
+   edit_pending = false;
+   const uint8_t msg[10] = { 23, 0, EDIT_CURSOR_REG, edit_sent_on, edit_sent_x, edit_sent_y, 0, 0, 0, 0 };
+   for (unsigned int i = 0; i < sizeof msg; i++)
+      vdu_fiq_put(msg[i]);
+}
+
+static void edit_cursor_live(bool *live, uint8_t offset)
+{
+   if (!*live) {
+      *live = true;
+      Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + offset, 1u);
+   }
+}
+
+static void fb_edit_cursor_x(unsigned int gpio) { edit_x = (uint8_t)GET_DATA(gpio); }
+static void fb_edit_cursor_y(unsigned int gpio) { edit_y = (uint8_t)GET_DATA(gpio); }
+
+static void fb_edit_cursor_status(unsigned int gpio)
+{
+   /* &D0 bit 6: the MOS has split the write and copy cursors */
+   const uint8_t on = (GET_DATA(gpio) & 0x40u) ? 1u : 0u;
+   edit_cursor_live(&edit_live_remv, EDIT_LIVE_REMV);
+   if (on != edit_sent_on || (on && (edit_x != edit_sent_x || edit_y != edit_sent_y))) {
+      edit_sent_on = on;
+      edit_sent_x = edit_x;
+      edit_sent_y = edit_y;
+      edit_cursor_emit();
+   }
+   /* The MOS has long since acted on the last key: back to the JMP.  A copy
+      cursor still on is sent again at the next report - the screen may drop
+      it meanwhile (VDU 13) without the stub watching. */
+   if (RPI_GetSystemTime() - edit_armed_at > EDIT_ARM_US) {
+      edit_armed = false;
+      if (edit_sent_on)
+         edit_sent_on = 0xFFu;
+      Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + EDIT_REMV_OFF, EDIT_OP_JMP);
+   }
+}
+
+/* A key into the keyboard buffer: the REMV stub reports until EDIT_ARM_US
+   after the last one.  FIQ context. */
+void fb_edit_cursor_arm(void)
+{
+   if (!edit_stub)
+      return;
+   edit_armed_at = RPI_GetSystemTime();
+   if (!edit_armed) {
+      edit_armed = true;
+      Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + EDIT_REMV_OFF, EDIT_OP_CMP);
+   }
+}
+
+/* TelnetD's REMV handler tells the Pi each key a program takes (the serial
+   redirector arms the REMV stub from it), and re-hooks the serial stub on
+   every keyboard REMV - quickly only while INSV is the serial stub itself
+   (~57 us a REMV otherwise, MEASURED).  So while it does, helper 2 leaves
+   INSV alone: the INSV stub's live byte reads as set.  A reset clears it
+   (fb_edit_cursor_init); TelnetD says again.  FIQ context. */
+void fb_edit_cursor_keys_told(bool told)
+{
+   if (edit_stub)
+      Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + EDIT_LIVE_INSV, (told || edit_live_insv) ? 1u : 0u);
+}
+
+/* The INSV stub: a key through INSV into the keyboard buffer */
+static void fb_edit_cursor_key(unsigned int gpio)
+{
+   (void)gpio;
+   edit_cursor_live(&edit_live_insv, EDIT_LIVE_INSV);
+   fb_edit_cursor_arm();
+}
+
+/* The helper hooks both stubs alike, writing the old vector after the first
+   opcode; the INSV stub's goes on to its JMP */
+static void fb_edit_cursor_insv_lo(unsigned int gpio)
+{
+   Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + EDIT_INSV_JMP + 1u, (uint8_t)GET_DATA(gpio));
+}
+
+static void fb_edit_cursor_insv_hi(unsigned int gpio)
+{
+   Pi1MHz_MemoryWrite_FIQ((uint32_t)edit_base + EDIT_INSV_JMP + 2u, (uint8_t)GET_DATA(gpio));
+}
+
+static void fb_emulator_vdu(unsigned int gpio)
+{
+   // FIQ context: one Beeb VDU byte
+   vdu_fiq_put((uint8_t)GET_DATA(gpio));
+   if (edit_pending && vdu_fiq_cmd_remaining == 0 && drop_remaining == 0)
+      edit_cursor_emit();
 }
 
 /* Oldest first: text runs on one line, each control command starts a new
@@ -2667,4 +2813,99 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
   Pi1MHz_Register_Memory(WRITE_FRED, (address + 5u), Pi1MHz_EmulatedMemoryByte);
 
  // Pi1MHz_Register_Poll(fb_emulator_poll, "fb");
+}
+
+/* The copy cursor stubs, hooked into REMV and INSV by the screen redirector
+   (helper 2) at the same time as WRCHV.  The MOS moves the copy cursor
+   itself, never through WRCHV, but takes each key out of the keyboard buffer
+   through REMV and keeps calling it while it waits for the next (~10k calls
+   a second at a prompt).  So the REMV stub hands the Pi the text cursor
+   (&0318/&0319) and the VDU status byte on calls with X=0, and the Pi works
+   out whether it changed.  While the cursors are split (&D0 bit 6) the MOS
+   moves the text cursor as the copy cursor and keeps the write cursor in
+   &0364/&0365, swapping the two only while it prints (MOS 1.20 &C56A,
+   3.20/3.50 &E2AC).  Other buffers (sound, printer, RS423) are emptied from
+   interrupts, which can land inside that swap - X=0 never does.
+
+   Each report costs the Beeb ~27 1MHz-bus accesses, so the REMV stub reports
+   only just after a key: its first byte is JMP old REMV (3 accesses) until
+   the INSV stub sees a key go into the keyboard buffer (the keyboard
+   interrupt, OSBYTE 138/153), then CMP, which falls into the report.  CMP
+   reads the old handler's first byte, which is code, never a port, and
+   leaves V alone: REMV takes it as examine/remove.
+   TelnetD's keys skip the INSV vector (the serial stub calls the INSV it
+   saved), so the serial redirector arms it itself (fb_edit_cursor_arm).
+   EDIT_ARM_US after the last key the next report puts the JMP back.  The
+   opcode is one byte, so the Beeb sees one or the other whole.  ESCAPE goes
+   round INSV (the MOS raises the escape condition instead), but BASIC then
+   starts a new line (VDU 13), which drops the copy cursor anyway.
+
+   The INSV stub runs on every insert into every buffer (printer, sound,
+   RS423), so it tests X first and goes straight on for the others: 8 bus
+   accesses.  The helper hooks both stubs alike, writing the old vector at
+   +1/+2; for the INSV stub those are CPX's operand and BNE's offset, whose
+   writes the Pi moves to its JMP.  The ports are the stubs' own code bytes
+   (TXA, BNE, its offset; CPX and its operand, BNE's offset): a write there is
+   a callback, the code stays.  The helper looks for the TXA before hooking
+   in.  This runs again on every Beeb reset, and a Master's BREAK
+   can leave REMV in the chain through the stub (a ROM that claims REMV at
+   reset then goes on to it).  The helper must not hook a stub in a second
+   time - its saved vector would lead back to itself - so a byte after the
+   stubs says whether each has run since the reset: the REMV stub reports at
+   once after a reset (it starts armed), and the keys typed to run the helper
+   go through INSV. */
+void fb_edit_cursor_init(uint8_t instance, uint8_t address)
+{
+  (void)instance;
+  edit_base = address;
+  edit_stub = true;
+  edit_live_remv = false;
+  edit_live_insv = false;
+  edit_pending = false;
+  edit_sent_on = 0xFFu;
+  edit_armed = true;
+  edit_armed_at = RPI_GetSystemTime();
+  Pi1MHz_MemoryWrite((uint32_t)(address + EDIT_LIVE_INSV), 0u);
+  Pi1MHz_MemoryWrite((uint32_t)(address + EDIT_LIVE_REMV), 0u);
+  static const uint8_t stub[] = {
+     /* REMV */
+     EDIT_OP_CMP,                            // +00 JMP/CMP old REMV
+     0x00, 0x00,
+     0x8A,                                   // +03 TXA        port: copy cursor X
+     0xD0, 0x11,                             // +04 BNE +17    ports: Y, VDU status
+     0xAD, 0x18, 0x03,                       // +06 LDA &0318  copy cursor X (while split)
+     0x8D, 0x03, 0xFC,                       // +09 STA base+3
+     0xAD, 0x19, 0x03,                       // +0C LDA &0319  copy cursor Y
+     0x8D, 0x04, 0xFC,                       // +0F STA base+4
+     0xA5, 0xD0,                             // +12 LDA &D0    VDU status
+     0x8D, 0x05, 0xFC,                       // +14 STA base+5 (compares and reports)
+     0x6C, 0x01, 0xFC,                       // +17 JMP (base+1)
+     /* INSV */
+     0xE0, 0x00,                             // +1A CPX #0     ports: a key; old INSV low
+     0xD0, 0x03,                             // +1C BNE +21    (not the keyboard buffer); port: old INSV high
+     0x8D, 0x1A, 0xFC,                       // +1E STA base+&1A
+     0x4C, 0x00, 0x00,                       // +21 JMP old INSV
+  };
+  /* The operands are left alone, as fb_emulator_init leaves its own: a Pi
+     that restarts (kernel.now) under a Beeb still hooked in must not send
+     REMV or INSV to &0000. */
+  static const uint8_t operand[] = { EDIT_REMV_OFF + 1u, EDIT_REMV_OFF + 2u, EDIT_INSV_JMP + 1u, EDIT_INSV_JMP + 2u };
+  for (unsigned int i = 0; i < sizeof stub; i++) {
+     if (memchr(operand, (int)i, sizeof operand) == NULL)
+        Pi1MHz_MemoryWrite((uint32_t)(address + i), stub[i]);
+  }
+  /* the stubs' references to themselves, for any base */
+  Pi1MHz_MemoryWrite((uint32_t)(address + 0x0Au), (uint8_t)(address + 3u));
+  Pi1MHz_MemoryWrite((uint32_t)(address + 0x10u), (uint8_t)(address + 4u));
+  Pi1MHz_MemoryWrite((uint32_t)(address + 0x15u), (uint8_t)(address + 5u));
+  Pi1MHz_MemoryWrite((uint32_t)(address + 0x18u), (uint8_t)(address + 1u));
+  Pi1MHz_MemoryWrite((uint32_t)(address + 0x1Fu), (uint8_t)(address + EDIT_KEY_OFF));
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 3u, fb_edit_cursor_x);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 4u, fb_edit_cursor_y);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 5u, fb_edit_cursor_status);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + EDIT_KEY_OFF, fb_edit_cursor_key);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + EDIT_INSV_OFF + 1u, fb_edit_cursor_insv_lo);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + EDIT_INSV_OFF + 2u, fb_edit_cursor_insv_hi);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + EDIT_REMV_OFF + 1u, Pi1MHz_EmulatedMemoryByte);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + EDIT_REMV_OFF + 2u, Pi1MHz_EmulatedMemoryByte);
 }

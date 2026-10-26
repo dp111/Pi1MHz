@@ -75,6 +75,8 @@ uint32_t RPI_GetSystemTime(void) { return Pi1MHz_now_us; }
 void modem_reset(void) { }
 void modem_attach(void) { }
 void telnetd_attach(void) { }
+void fb_edit_cursor_arm(void) { }
+void fb_edit_cursor_keys_told(bool told) { (void)told; }
 bool telnetd_enabled(void) { return true; }
 
 /* ---- the Beeb's side --------------------------------------------------- */

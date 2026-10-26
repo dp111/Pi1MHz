@@ -19,9 +19,22 @@ It starts by copying the text already on the Beeb's screen, and from
 then on everything printed through the OS (`PRINT`, `*CAT`, listings,
 MODE changes and so on) also appears on the HDMI screen.
 
+Cursor editing shows too: when the cursor keys split the cursors, the
+HDMI screen shows the copy cursor where the Beeb has it and the write
+cursor as a block, as the Beeb's own screen does, until RETURN or
+ESCAPE ends the edit.
+
 Under the hood the Beeb-side hook sends each VDU byte to `&FCA0`, so
 software can also write to `&FCA0` directly to print on the HDMI
-display without affecting the Beeb's own screen.
+display without affecting the Beeb's own screen. The MOS moves the copy
+cursor without printing anything, so helper 2 also hooks the
+buffer-insert and buffer-remove vectors (INSV, REMV) into small routines
+at `&FC45-&FC6E`: for a moment after each key goes into the keyboard
+buffer, the Beeb passes the copy cursor to the Pi as it reads the
+buffer. The rest of the time the routine costs a program that polls the
+keyboard a few microseconds a call. Like the VDU hook, BREAK undoes them
+on a BBC B; a Master can keep them, and running helper 2 again then
+leaves them as they are.
 
 You can see the same picture from another computer: with
 [WiFi](wifi.md) running, the [web interface](web-interface.md) shows a

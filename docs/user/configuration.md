@@ -67,6 +67,7 @@ plus `_addr`:
 | `Services_addr` | `0xA6` | The services port at `&FCA6-&FCAB`: SD card / FAT access plus the Econet AUN commands |
 | `Videoplayer_addr` | (none) | Video background plane |
 | `Framebuffer_addr` | `0xA0` | HDMI framebuffer / VDU port at `&FCA0-&FCA5` |
+| `Editcursor_addr` | `0x45` | The screen redirector's copy cursor routines at `&FC45-&FC6E` (helper 2 looks for it there: do not move it; `-1` turns the copy cursor off) |
 | `Mouseredirect_addr` | `0xAC` | [Mouse pointer](screen-and-video.md#mouse-pointer) registers at `&FCAC-&FCAF` |
 | `usb_addr` | (none) | USB MTP file access |
 | `wifi_addr` | (none) | WiFi stack |

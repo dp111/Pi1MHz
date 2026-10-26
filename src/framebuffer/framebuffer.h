@@ -133,6 +133,14 @@ void fb_set_c_bg_col(pixel_t colour);
 uint8_t fb_get_gcol_from_colnum(uint8_t colnum);
 
 void fb_emulator_init(uint8_t instance, uint8_t address);
+void fb_edit_cursor_init(uint8_t instance, uint8_t address);
+/* FIQ context: a key went into the keyboard buffer without going through
+   the INSV vector (TelnetD's keys), or a program took one (TelnetD's report)
+   - the copy cursor is watched again. */
+void fb_edit_cursor_arm(void);
+/* FIQ context: whether TelnetD tells the Pi each key a program takes; while
+   it does, helper 2 leaves INSV alone (TelnetD is slow with INSV claimed). */
+void fb_edit_cursor_keys_told(bool told);
 
 /* The VDU command log (vdu_log=1), as text for /vdulog; returns bytes written. */
 size_t fb_vdu_log_text(char *out, size_t max);

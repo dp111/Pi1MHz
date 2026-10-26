@@ -115,6 +115,7 @@
 #include "serial_redirect.h"
 #include "serial_modem.h"
 #include "telnetd.h"
+#include "framebuffer/framebuffer.h"   /* fb_edit_cursor_arm */
 
 #define SER_TX_PORT    0x00u
 #define SER_TX_FLAG    0x04u
@@ -563,6 +564,8 @@ static void ser_rx_consume(unsigned int gpio)
          return;
       rx.head++;
       ser_rx_count++;
+      if (ser_telnet)                        /* into the keyboard buffer, round the INSV vector */
+         fb_edit_cursor_arm();
       break;
    }
    ser_trip = TRIP_NONE;
@@ -655,14 +658,17 @@ static void ser_control(unsigned int gpio)
       return;
    case SER_CTL_KEY_TOLD:                     /* the ROM: a program took a cursor key, COPY or RETURN */
       ser_rep.key_gen++;
+      fb_edit_cursor_arm();
       return;
    case SER_CTL_KEY_OTHER:                    /* ... or any other byte */
       ser_rep.key_other_gen++;
+      fb_edit_cursor_arm();
       return;
    case SER_CTL_RESET:                        /* the auto-start ROM: a reset, seen or not on the reset line */
    case SER_CTL_RESET_LIT:
       ser_after_break();                      /* a soft reset leaves the screen as it was: not a new screen */
       ser_rep.rom = (v == SER_CTL_RESET_LIT);
+      fb_edit_cursor_keys_told(ser_rep.rom && ser_telnet && ser_hooked);
       if (ser_brk_shift && ser_base >= SER_WS_OFF) {   /* SHIFT-BREAK: SHIFT for the auto-boot test to come */
          ser_brk_shift = false;
          Pi1MHz_MemoryWrite_FIQ((uint32_t)ser_base - SER_WS_OFF + SER_WS_SHIFT, 1u);
@@ -710,6 +716,7 @@ static void ser_control(unsigned int gpio)
       ser_esc_req = false;
       ser_idle_req = false;
    }
+   fb_edit_cursor_keys_told(ser_rep.rom && ser_telnet && ser_hooked);   /* the ROM tells each key taken */
 }
 
 /* ---- the byte API, main loop only ------------------------------------ */

@@ -2,6 +2,7 @@
 ; Pi1MHz 6502 helper code
 ;
 newoswrch = &FCA0
+editcursor = &FC45   ; the copy cursor stub (src/framebuffer fb_edit_cursor_init)
 discaccess =newoswrch+6
 OSBYTE = &FFF4
 OSWRCH = &FFEE
@@ -579,6 +580,8 @@ ORG &FD00
 
 .setupredirector
 
+  JSR hookremv
+
   LDA &20F
   CMP #(newoswrch DIV 256)
   BNE redirectnextbyte
@@ -650,26 +653,56 @@ ORG &FD00
 
     CMP #32
     BEQ restorecursoroff
-    LDX #10
+    LDX #1
 .restorecursoroff
-.cursoronoff
-    LDY #10
+.cursoronoff                  ; X = 0 off, 1 on: VDU 23,1,X,0,0,0,0,0,0,0
+    LDA #23 : JSR newoswrch+3 ;STA newoswrch ; just the Pi cursor
+    LDA #1 : JSR newoswrch+3
+    TXA : LDY #8
 .cursoronoffloop
-    LDA cursoroffdata,X
-    JSR newoswrch+3 ;STA newoswrch ; just the Pi cursor
-    INX:DEY
+    JSR newoswrch+3
+    LDA #0 : DEY
     BNE cursoronoffloop
 
     RTS
 
-.cursoroffdata
-    EQUB 23,1,0,0,0,0,0,0,0,0
-.cursoroondata
-    EQUB 23,1,1,0,0,0,0,0,0,0
 .xcounter
     EQUB 0
 .ycounter
     EQUB 0
+
+; The copy cursor: the MOS moves it without WRCHV, so the Pi's stubs at
+; editcursor watch REMV (OSRDCH takes each key there and keeps calling it
+; while it waits) and INSV (a key going into the keyboard buffer arms the
+; REMV stub's report).  Each hooked like WRCHV: whatever the vector holds is
+; chained, unless it is the stub already or the stub has run since the reset
+; (a Master's BREAK can leave it in the chain behind a ROM's claim: hooked
+; again, its saved vector would lead back to itself).  The old vector goes
+; at +1/+2 of either stub (the Pi moves INSV's on to its JMP).  Not there
+; (Editcursor_addr off) = no hook.  SEI: both vectors are called from
+; interrupts.
+ec_live = editcursor+&27    ; +0 the INSV stub has run since the reset, +2 REMV
+.hookremv
+  LDA editcursor+3 : CMP #&8A : BNE hookremvdone ; the REMV stub's TXA
+  PHP : SEI
+  LDX #2                                         ; X = 2 REMV (&22C), 0 INSV (&22A)
+.hookloop
+  LDY ecstub,X                                   ; the stub's FRED offset
+  LDA &22B,X : CMP #&FC : BNE hooknow
+  TYA : CMP &22A,X : BEQ hooknext                ; the stub already
+.hooknow
+  LDA ec_live,X : BNE hooknext                   ; in the chain already, behind another claim
+  LDA &22A,X : STA &FC01,Y
+  LDA &22B,X : STA &FC02,Y
+  TYA : STA &22A,X
+  LDA #&FC : STA &22B,X
+.hooknext
+  DEX : DEX : BPL hookloop
+  PLP
+.hookremvdone
+  RTS
+.ecstub
+  EQUB (editcursor+&1A) MOD 256, 0, editcursor MOD 256
 
 .setupredirectorwithmessage
   JSR setupredirector

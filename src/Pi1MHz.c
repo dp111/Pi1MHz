@@ -157,6 +157,9 @@ static emulator_list emulator[] = {
    {"Services",services_emulator_init, 0xA6, 1 },
    {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
+   /* The copy cursor stubs at &FC45-&FC6E that the screen redirector (helper 2)
+      hooks into REMV and INSV; helper 2 looks for them here, so leave it at 0x45. */
+   {"Editcursor",fb_edit_cursor_init, 0x45, 1},
    {"Mouseredirect",mouse_redirect_init, 0xAC, 1 },
    {"usb",usb_init, 0x00, 1 },
    {"wifi",wifi_emulator_init, 0x00, 1 },

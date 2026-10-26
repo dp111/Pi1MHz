@@ -85,6 +85,7 @@ void mouse_redirect_mouseoff(void) { }
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr func)
 { (void)access; (void)addr; (void)func; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { (void)addr; (void)data; }
+void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data) { (void)addr; (void)data; }
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio) { (void)gpio; }
 
 // ---- added 2026-09-13: symbols the driver grew since the harness was written --
