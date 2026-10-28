@@ -14,6 +14,8 @@
      End                      -> 139   (COPY)     Delete -> 127
      F1-F9, F10               -> 129-137, 128 (f1-f9, f0; the MOS expands *KEY
                                 definitions, as for the real keys)
+     ... with SHIFT, CTRL     -> &10, &20 more (as the keyboard scan stores them;
+                                the cursor keys and COPY too)
      a lone ESC, Ctrl-C       -> TND_KEY_ESCAPE (the Beeb's ESCAPE condition; a
                                 lone ESC is only that after TND_ESC_US with
                                 nothing behind it)
@@ -215,6 +217,18 @@ static uint8_t arrow(uint8_t f)
    }
 }
 
+/* SHIFT and CTRL with a function key, a cursor key or COPY: xterm's modifier parameter (ESC [ n ; m ~,
+   ESC [ 1 ; m A), where m - 1 holds SHIFT 1, Alt 2, CTRL 4.  The Beeb's keyboard scan stores those keys
+   (&80-&8F) &10 higher with SHIFT and &20 higher with CTRL, and OSBYTE 4 and 225-228 then make of them what
+   the program asked for, as for the real keys.  Alt is not a Beeb key. */
+static uint8_t with_mods(const tnd_in_t *s, uint8_t k)
+{
+   if (k < 0x80u || k > 0x8Fu || s->nparam < 1u || s->param[1] < 2u)
+      return k;
+   unsigned m = (unsigned)s->param[1] - 1u;
+   return (uint8_t)(k + ((m & 1u) != 0u ? 0x10u : 0u) + ((m & 4u) != 0u ? 0x20u : 0u));
+}
+
 /* The final byte of ESC [ params f. */
 static uint8_t csi_key(const tnd_in_t *s, uint8_t f)
 {
@@ -227,11 +241,13 @@ static uint8_t csi_key(const tnd_in_t *s, uint8_t f)
    if (f == '~') {
       switch (s->param[0]) {
       case 3: return 127u;
-      case 4: case 8: return 139u;                /* End: COPY */
-      default: return fkey_csi(s->param[0]);
+      case 4: case 8: return with_mods(s, 139u);  /* End: COPY */
+      default: return with_mods(s, fkey_csi(s->param[0]));
       }
    }
-   return arrow(f);
+   if (f >= 'P' && f <= 'S')                     /* F1-F4 with a modifier: ESC [ 1 ; m P */
+      return with_mods(s, (uint8_t)(0x81u + (unsigned)f - (unsigned)'P'));
+   return with_mods(s, arrow(f));
 }
 
 /* The terminal's name, in its answer to XTVERSION (CSI > q): "|XTerm(379)" from xterm, which has a
