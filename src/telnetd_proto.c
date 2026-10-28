@@ -908,6 +908,7 @@ void tnd_out_session(tnd_out_t *s)
    s->tsgr = 0xFFu;                              /* a new terminal: its colours are not known */
    s->hl_on = false;
    s->cc_on = false;
+   s->parked = false;
    s->npend = 0u;                                /* (the Beeb's own colours, `coloured`, carry on) */
 }
 
@@ -2197,13 +2198,15 @@ size_t tnd_out_byte(tnd_out_t *s, uint8_t c, uint8_t dst[TND_OUT_MAX])
 }
 
 /* ---- the copy cursor -------------------------------------------------------
-   The BBC's cursor editing has two cursors: the one where typing goes, which is
-   the terminal's cursor, and the copy cursor that the cursor keys move over the
-   text and COPY copies from.  The MOS moves the second one itself and never
-   sends it down the serial line, so the translator follows it from the keys the
-   daemon sends and shows it as a reversed cell.  The keys are queued and acted
-   on once the Beeb has been quiet for a moment, so that it is the write cursor
-   after the echo of whatever was typed before. */
+   The BBC's cursor editing has two cursors: the one where typing goes, and the
+   copy cursor that the cursor keys move over the text and COPY copies from.  The
+   MOS moves the second one itself and never sends it down the serial line, so the
+   translator follows it from the keys the daemon sends.  It is shown as the Beeb
+   shows it: the flashing cursor (the terminal's) on the copy cursor, and a solid
+   block (a reversed cell) where typing goes.  The terminal's cursor is put back
+   before the Beeb prints anything (tnd_out_unpark).  The keys are queued and
+   acted on once the Beeb has been quiet for a moment, so that it is the write
+   cursor after the echo of whatever was typed before. */
 
 #define COPY_QUIET_US 40000u
 
@@ -2265,7 +2268,7 @@ void tnd_out_origin_lost(tnd_out_t *s)
    s->origin_ok = false;
    s->dirty = false;
    s->colok = true;                              /* the cursor's column is the Beeb's */
-   s->hl_on = s->cc_on = false;
+   s->hl_on = s->cc_on = s->parked = false;
    s->npend = 0u;
 }
 
@@ -2291,6 +2294,7 @@ size_t tnd_out_dirty_row(tnd_out_t *s, uint8_t dst[TND_REPAINT_MAX])
       if (s->hl_on && s->hly == y && s->hlx >= s->dl && s->hlx <= s->dr)
          s->hl_on = false;
       n += put_finish(s, dst + n);
+      s->parked = false;
       s->tsgr = s->coloured ? 0xFFu : TTX_SGR_PLAIN;
       if (y >= s->db)
          s->dirty = false;
@@ -2310,8 +2314,9 @@ size_t tnd_out_dirty_row(tnd_out_t *s, uint8_t dst[TND_REPAINT_MAX])
    }
    n += put_str(dst + n, "\x1b[0m");
    if (s->hl_on && s->hly == y && s->hlx >= s->dl && s->hlx <= s->dr)
-      s->hl_on = false;                          /* the copy cursor's mark was drawn over */
+      s->hl_on = false;                          /* the write cursor's block was drawn over */
    n += put_finish(s, dst + n);                  /* the Beeb's cursor and colours, for what comes next */
+   s->parked = false;
    if (y >= s->db)
       s->dirty = false;
    else
@@ -2387,7 +2392,7 @@ static void cc_apply(tnd_out_t *s, uint8_t op)
    }
 }
 
-/* One teletext cell as the chip shows it, reversed for the copy cursor's mark. */
+/* One teletext cell as the chip shows it, reversed for the write cursor's block. */
 static size_t ttx_mark(const tnd_out_t *s, uint8_t *dst, unsigned x, unsigned y, bool reverse)
 {
    ttx_t    t;
@@ -2413,7 +2418,7 @@ size_t tnd_out_redraw(tnd_out_t *s, uint8_t dst[TND_COPY_MAX])
    n = put_str(dst, "\x1b[0m\x1b[2J");
    s->origin_ok = true;
    s->tsgr = s->coloured ? 0xFFu : TTX_SGR_PLAIN;
-   s->hl_on = false;
+   s->hl_on = s->parked = false;
    if (s->tele) {
       memset(s->lattr, 0xFF, s->rows);             /* not known after the clear: all sent again */
       n += ttx_sync_lattr(s, dst + n, TND_COPY_MAX - 16u - n);
@@ -2423,12 +2428,22 @@ size_t tnd_out_redraw(tnd_out_t *s, uint8_t dst[TND_COPY_MAX])
    return n;
 }
 
+/* The copy cursor is to be shown: active, away from the write cursor, on a cell the model has seen. */
+static bool cc_shown(const tnd_out_t *s)
+{
+   return s->cc_on && (s->ccx != s->cx || s->ccy != s->cy) && (s->at[s->ccy][s->ccx] & AT_KNOWN) != 0u;
+}
+
 size_t tnd_out_copyflush(tnd_out_t *s, uint32_t now_us, uint8_t dst[TND_COPY_MAX])
 {
    size_t n = 0u;
 
-   if (s->npend == 0u)
-      return 0u;
+   if (s->npend == 0u) {
+      /* No keys: only the terminal's cursor to put back on the copy cursor, or the block to draw
+         again where typing now goes, after the Beeb printed (an echo, a row drawn again). */
+      if (!s->sync || !cc_shown(s) || (s->parked && s->hl_on && s->hlx == s->cx && s->hly == s->cy))
+         return 0u;
+   }
    if (!s->sync) {                               /* the marks are drawn where the model says */
       s->npend = 0u;
       return 0u;
@@ -2440,11 +2455,13 @@ size_t tnd_out_copyflush(tnd_out_t *s, uint32_t now_us, uint8_t dst[TND_COPY_MAX
    if (s->dirty)                                 /* rows still to draw: the mark after them */
       return 0u;
 
+   bool keys = s->npend != 0u;
    for (unsigned i = 0u; i < s->npend; i++)
       cc_apply(s, s->pend[i]);
    s->npend = 0u;
 
-   if (s->hl_on) {                              /* the old mark goes: the cell as it was */
+   bool shown = cc_shown(s);
+   if (s->hl_on && (!shown || s->hlx != s->cx || s->hly != s->cy)) {   /* the old block goes */
       n += put_pos(dst + n, s->hlx, s->hly);
       if (s->tele) {
          n += ttx_mark(s, dst + n, s->hlx, s->hly, false);
@@ -2454,25 +2471,35 @@ size_t tnd_out_copyflush(tnd_out_t *s, uint32_t now_us, uint8_t dst[TND_COPY_MAX
       }
       s->hl_on = false;
    }
-   if (s->cc_on && (s->ccx != s->cx || s->ccy != s->cy)
-       && (s->at[s->ccy][s->ccx] & AT_KNOWN) != 0u) {
-      n += put_pos(dst + n, s->ccx, s->ccy);
+   if (shown && !s->hl_on && s->cx < s->cols && (s->at[s->cy][s->cx] & AT_KNOWN) != 0u) {
+      n += put_pos(dst + n, s->cx, s->cy);      /* the block where typing goes */
       if (s->tele) {
-         n += ttx_mark(s, dst + n, s->ccx, s->ccy, true);
+         n += ttx_mark(s, dst + n, s->cx, s->cy, true);
       } else {
-         n += put_attr(s, dst + n, s->at[s->ccy][s->ccx]);
+         n += put_attr(s, dst + n, s->at[s->cy][s->cx]);
          n += put_str(dst + n, "\x1b[7m");
-         n += put_glyph(s, dst + n, s->ch[s->ccy][s->ccx]);
+         n += put_glyph(s, dst + n, s->ch[s->cy][s->cx]);
       }
       s->hl_on = true;
-      s->hlx = s->ccx;
-      s->hly = s->ccy;
+      s->hlx = s->cx;
+      s->hly = s->cy;
    }
-   if (n != 0u) {
+   if (n != 0u || shown != s->parked || (shown && keys)) {   /* (a key moves the cursor, the block stays) */
       n += put_finish(s, dst + n);
       s->tsgr = s->coloured ? 0xFFu : TTX_SGR_PLAIN;
+      if (shown)                                 /* the flashing cursor on the copy cursor */
+         n += put_pos(dst + n, s->ccx, s->ccy);
+      s->parked = shown;
    }
    return n;
+}
+
+size_t tnd_out_unpark(tnd_out_t *s, uint8_t dst[TND_UNPARK_MAX])
+{
+   if (!s->parked)
+      return 0u;
+   s->parked = false;
+   return put_pos(dst, s->cx, s->cy);
 }
 
 bool tnd_stalled(bool pending, uint32_t now_us, uint32_t progress_us, uint32_t limit_us)

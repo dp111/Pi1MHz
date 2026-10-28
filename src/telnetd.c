@@ -740,6 +740,12 @@ static void beeb_byte(uint8_t c)
    if (g_ansi) {
       uint8_t d[TND_OUT_MAX];
       uint8_t pre = 0u;
+      if (g_out.parked) {                        /* the terminal's cursor is on the copy cursor: back first */
+         uint8_t u[TND_UNPARK_MAX];
+         size_t  un = tnd_out_unpark(&g_out, u);
+         if (un != 0u)
+            o_put(u, un);
+      }
       if (g_debug && c >= 32u && c < 127u && g_out.code == 0u && !g_out.disabled && !g_out.smerge)
          pre = 1u;                              /* a character to print, not a parameter or a read */
       size_t  n = tnd_out_byte(&g_out, c, d);

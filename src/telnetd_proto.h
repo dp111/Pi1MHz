@@ -189,7 +189,8 @@ typedef struct {
    uint8_t  fg, bg;             /* the colours set: logical colour numbers */
    uint8_t  ncol;               /* how many logical colours the mode has: 2, 4, 8 or 16 */
    uint8_t  pal[16];            /* the physical colour (0-7) each logical colour shows as */
-   bool     cc_on, hl_on;       /* the copy cursor is active; its mark is on the terminal */
+   bool     cc_on, hl_on;       /* the copy cursor is active; the write cursor's block is on the terminal */
+   bool     parked;             /* the terminal's cursor stands on the copy cursor, not where typing goes */
    uint8_t  ccx, ccy, hlx, hly;
    uint8_t  pend[8];            /* cursor keys waiting for the Beeb to be quiet */
    uint8_t  npend;
@@ -302,6 +303,12 @@ void   tnd_out_tek(tnd_out_t *s, bool on);
 void   tnd_out_touch(tnd_out_t *s, uint32_t now_us);
 void   tnd_out_copykey(tnd_out_t *s, uint8_t key);
 size_t tnd_out_copyflush(tnd_out_t *s, uint32_t now_us, uint8_t dst[TND_COPY_MAX]);
+
+/* While the copy cursor is in use the terminal's cursor is left on it, as the Beeb's flashing
+   cursor is (tnd_out_copyflush).  Before anything the Beeb prints is sent, this puts the
+   terminal's cursor back where the Beeb writes (0 bytes if it is there already). */
+#define TND_UNPARK_MAX 16u
+size_t tnd_out_unpark(tnd_out_t *s, uint8_t dst[TND_UNPARK_MAX]);
 
 /* The terminal cleared and drawn again from the model, by position (a new window size, or rows
    that are not the Beeb's): writes the clear, MODE 7's line attributes and the cursor, and puts
