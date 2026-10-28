@@ -183,7 +183,7 @@ power-on: a second copy in another bank answers the same reset call.
 | CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. On a Master it also empties sideways RAM, TelnetD included: see "Things to know". |
 | Page Down | SHIFT, pressed once: in paged mode (`VDU 14`, CTRL-N) the Beeb stops at the end of each page until SHIFT is pressed, and Page Down lets it go on a page. Needs the auto-start ROM. |
 | F11 or Ctrl-L | Draw the screen again: the Pi asks the auto-start ROM for what is on the Beeb's screen (see above). Nothing shows on the Beeb. |
-| the pound sign | the Beeb's pound (character 96) |
+| the pound sign | the Beeb's pound (character 96), as UTF-8, Latin-1 or, from Windows telnet, its console's code page 850 |
 | ESC | the Beeb's ESCAPE key (see below) |
 | Ctrl-letters | the control code, `Ctrl-A` = 1 and so on |
 

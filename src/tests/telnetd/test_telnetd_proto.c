@@ -237,7 +237,21 @@ static void test_pound_and_high_bytes(void)
    in_reset();
    FEED(&s, "x\xe9y");
    CHECK(nkeys == 4 && keys[1] == TND_KEY_LIT && keys[2] == 0xE9, "lit_ok: a Latin-1 client's byte &E9 too"); if (nkeys != 4) dump();
+   /* Windows' telnet (terminal type ANSI) types in code page 850: the pound sign is &9C, e-acute &82 */
+   tnd_in_reset(&s); s.lit_ok = true; strcpy(s.ttype, "ANSI"); s.ttype_got = true; in_reset();
+   FEED(&s, "a\x9c" "b");
+   CHECK(KEYS("a`b"), "Windows telnet: &9C is the pound sign, the Beeb's 96"); if (!KEYS("a`b")) dump();
    in_reset();
+   FEED(&s, "\x82");
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xE9, "Windows telnet: &82 is e-acute, &E9"); if (nkeys != 2) dump();
+   in_reset();
+   FEED(&s, "\xc6" "z");                        /* a-tilde: a UTF-8 lead byte with nothing after it */
+   CHECK(nkeys == 3 && keys[0] == TND_KEY_LIT && keys[1] == 0xE3 && keys[2] == 'z', "Windows telnet: &C6 is a-tilde, &E3");
+   if (nkeys != 3) dump();
+   in_reset();
+   FEED(&s, "\xc2\xa3");
+   CHECK(nkeys == 1 && keys[0] == 96, "Windows telnet in a UTF-8 console (chcp 65001): UTF-8 still");
+   tnd_in_reset(&s); s.lit_ok = true; in_reset();
    FEED(&s, "\xe2\x86\x91");
    CHECK(nkeys == 0, "not MODE 7: an up arrow is no Beeb byte");
    s.tele = true; in_reset();

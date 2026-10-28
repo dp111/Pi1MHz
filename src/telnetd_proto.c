@@ -17,7 +17,7 @@
      a lone ESC, Ctrl-C       -> TND_KEY_ESCAPE (the Beeb's ESCAPE condition; a
                                 lone ESC is only that after TND_ESC_US with
                                 nothing behind it)
-     the pound sign           -> 96    (UTF-8 C2 A3, or Latin-1 A3)
+     the pound sign           -> 96    (UTF-8 C2 A3, Latin-1 A3, or Windows telnet's &9C)
      other bytes 0x80 and up  -> dropped
   Telnet negotiation is answered once per option, so a peer cannot start a loop:
   WILL ECHO/SGA and DO ECHO/SGA are ours; anything else is refused.  DONT ECHO
@@ -119,6 +119,26 @@ static size_t char_key(const tnd_in_t *s, uint32_t cp, uint8_t *keys)
    return 0u;
 }
 
+/* Windows' own telnet client (terminal type "ANSI") types in the console's code page, not Latin-1: the pound
+   sign is &9C, which as Latin-1 is a C1 control and went to the Beeb as a teletext or function key code.  Its
+   bytes above 127 are read as code page 850 (437, the US one, agrees for the pound sign and the accented
+   letters); a UTF-8 console (chcp 65001) sends UTF-8, which is read as such before this. */
+static const uint16_t cp850[128] = {
+   0xC7, 0xFC, 0xE9, 0xE2, 0xE4, 0xE0, 0xE5, 0xE7, 0xEA, 0xEB, 0xE8, 0xEF, 0xEE, 0xEC, 0xC4, 0xC5,
+   0xC9, 0xE6, 0xC6, 0xF4, 0xF6, 0xF2, 0xFB, 0xF9, 0xFF, 0xD6, 0xDC, 0xF8, 0xA3, 0xD8, 0xD7, 0x192,
+   0xE1, 0xED, 0xF3, 0xFA, 0xF1, 0xD1, 0xAA, 0xBA, 0xBF, 0xAE, 0xAC, 0xBD, 0xBC, 0xA1, 0xAB, 0xBB,
+   0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0xC1, 0xC2, 0xC0, 0xA9, 0x2563, 0x2551, 0x2557, 0x255D, 0xA2, 0xA5, 0x2510,
+   0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0xE3, 0xC3, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0xA4,
+   0xF0, 0xD0, 0xCA, 0xCB, 0xC8, 0x131, 0xCD, 0xCE, 0xCF, 0x2518, 0x250C, 0x2588, 0x2584, 0xA6, 0xCC, 0x2580,
+   0xD3, 0xDF, 0xD4, 0xD2, 0xF5, 0xD5, 0xB5, 0xFE, 0xDE, 0xDA, 0xDB, 0xD9, 0xFD, 0xDD, 0xAF, 0xB4,
+   0xAD, 0xB1, 0x2017, 0xBE, 0xB6, 0xA7, 0xF7, 0xB8, 0xB0, 0xA8, 0xB7, 0xB9, 0xB3, 0xB2, 0x25A0, 0xA0
+};
+
+static bool oem_client(const tnd_in_t *s)
+{
+   return s->ttype_got && strncmp(s->ttype, "ANSI", 4) == 0;
+}
+
 /* A byte that is not part of a command or an escape sequence. */
 static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
 {
@@ -138,7 +158,7 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
       }
       s->u8_need = 0u;                          /* broken: this byte read afresh */
       if (s->u8_lead != 0u) {                   /* a lone lead byte was a Latin-1 client's character (&E9) */
-         size_t n = char_key(s, s->u8_lead, keys);
+         size_t n = char_key(s, oem_client(s) ? cp850[s->u8_lead - 0x80u] : s->u8_lead, keys);
          s->u8_lead = 0u;
          return n + plain_byte(s, c, keys + n);
       }
@@ -177,8 +197,8 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
       s->u8_lead = c;
       return 0u;
    }
-   if (c >= 0x80u)                              /* not UTF-8: a Latin-1 client's byte */
-      return char_key(s, c, keys);
+   if (c >= 0x80u)                              /* not UTF-8: a Latin-1 client's byte, or Windows telnet's */
+      return char_key(s, oem_client(s) ? cp850[c - 0x80u] : c, keys);
    keys[0] = c;
    return 1u;
 }
