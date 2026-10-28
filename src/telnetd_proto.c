@@ -1754,10 +1754,16 @@ static size_t glyph(tnd_out_t *s, uint8_t c, uint8_t *dst, uint8_t *stored, int 
       *stored = c;
       return put_glyph(s, dst, c);
    }
-   /* 128 and up.  Mode 7: 0x81-0x87 and 0x91-0x97 are colour codes, shown as a
-      space; the other controls are spaces too (and in the other modes all of them:
-      there they are the user-defined characters, with no colour of their own).  From 0xA0 the teletext chip
-      ignores bit 7 and shows the character. */
+   /* 128 and up.  MODE 0-6: all of them are the user-defined characters (VDU 23), blank until a program
+      defines them and with no colour of their own; the terminal is not told their shapes, so they stay
+      blank (not the character 128 lower, 193 as A).  Mode 7: 0x81-0x87 and 0x91-0x97 are colour codes,
+      shown as a space; the other controls are spaces too.  From 0xA0 the teletext chip ignores bit 7
+      and shows the character. */
+   if (!s->tele) {
+      dst[0] = ' ';
+      *stored = ' ';
+      return 1u;
+   }
    if (c < 0xA0u) {
       uint8_t colour = (uint8_t)(c & 0x0Fu);   /* 0x81-0x87 alpha, 0x91-0x97 graphics */
       n = 0u;

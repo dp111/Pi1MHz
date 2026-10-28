@@ -1056,6 +1056,11 @@ static void test_review_fixes_full(void)
    char out[2048];
    const char *r = RENDER("\x16\x04\x81Hi");
    CHECK(strstr(r, "\x1b[31m") == NULL && strstr(r, " Hi") != NULL, "MODE 4: 0x81 is a space, not red"); if (strstr(r, "\x1b[31m")) printf("    got [%s]\n", r);
+   r = RENDER("\x16\x04" "<\xc1\xe1\xff>");
+   CHECK(strstr(r, "<   >") != NULL, "MODE 4: 193, 225 and 255 are user-defined characters, blank (not A, a, DEL)");
+   if (strstr(r, "<   >") == NULL) printf("    got [%s]\n", r);
+   r = RENDER("\x16\x07" "<\xc1>");
+   CHECK(strstr(r, "<A>") != NULL, "MODE 7: 193 is still the teletext chip's A"); if (strstr(r, "<A>") == NULL) printf("    got [%s]\n", r);
 
    tnd_out_reset(&s, true);
    FEED_OUT(&s, "\x15", out);                    /* VDU 21, then a BREAK */
