@@ -151,6 +151,7 @@ static bool logged_in(void)
 #define NAWS_WAIT_US 500000u
 static uint8_t  g_win_gen;                      /* the last size acted on (tnd_in_t's win_gen) */
 static uint8_t  g_mode_gen;                     /* the client's last line or character mode acted on (tnd_in_t's mode_gen) */
+static uint8_t  g_line_gen;                     /* the line-mode client's last line acted on (tnd_in_t's line_gen) */
 static bool     g_win_first;                    /* the first size has been acted on */
 
 /* A new session (once logged in) is "connecting" for a moment: under the boot banners the line
@@ -928,6 +929,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_kgen_seen = serial_redirect_beeb->key_gen;
    g_win_gen = 0u;
    g_mode_gen = 0u;
+   g_line_gen = 0u;
    g_win_first = false;
    tnd_out_session(&g_out);                     /* the model has been following the Beeb all along */
    tnd_out_tek(&g_out, false);                  /* until this terminal says it is xterm */
@@ -1319,6 +1321,21 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
          } else {
             o_str("\r");
             o_beeb_line();
+         }
+      }
+   }
+
+   /* A line-mode client sent a line: it echoed it itself and went to a new line (scrolling its window at
+      the bottom), so the terminal is no longer the Beeb's screen.  An ANSI terminal is drawn again, and
+      the Beeb's own echo of the line then lands in its place. */
+   if (g_pcb != NULL && logged_in() && g_in.line_gen != g_line_gen && o_room() >= TND_COPY_MAX + 16u) {
+      g_line_gen = g_in.line_gen;
+      if (g_stage == S_LIVE && g_ansi) {
+         uint8_t rb[TND_COPY_MAX];
+         size_t  rn = tnd_out_redraw(&g_out, rb);
+         if (rn != 0u) {
+            o_put(rb, rn);
+            o_put(rb, tnd_out_colours(&g_out, rb));
          }
       }
    }

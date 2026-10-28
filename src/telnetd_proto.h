@@ -105,6 +105,9 @@ typedef struct {
    bool     echo_off;           /* the client said DONT ECHO, we said WONT */
    bool     sga_off;            /* the client said DONT SGA, we said WONT */
    uint8_t  mode_gen;
+   /* In line mode the client echoes the line itself, RETURN as a new line (which at the bottom scrolls its
+      window): line_gen counts the lines it sent, so the daemon can draw the screen again from the Beeb's. */
+   uint8_t  line_gen;
    /* LINEMODE (RFC 1184), which Linux telnet offers at "mode line": taken, so the client's special
       characters are ours to set - ESC its interrupt (sent at once as IAC IP, read as the ESC byte),
       Ctrl-C its abort (IAC ABORT, ESCAPE) and "~" a forwarding character, so the rest of F12

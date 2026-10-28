@@ -422,6 +422,22 @@ int main(int argc, char **argv)
    tick(20000u);
    CHECK(keys_have("PRINT 6*7\r"), "the keys reach the Beeb");
 
+   step("line mode (Linux telnet's \"mode line\"): the client echoes each line itself");
+   static const uint8_t DONT_ECHO[] = { 255, 254, 1 }, DO_ECHO[] = { 255, 253, 1 };
+   csend_n(c, DONT_ECHO, sizeof DONT_ECHO);
+   tick(20000u);                                 /* the mode change has its own redraw */
+   mark_at(c);
+   csend(c, "PRINT 1\r\n");
+   tick(20000u);
+   CHECK(got_has(c, "\x1b[2J"), "a line sent in line mode: the terminal drawn again, so the Beeb's echo is not a row low");
+   mark_at(c);
+   csend_n(c, DO_ECHO, sizeof DO_ECHO);
+   tick(20000u);
+   mark_at(c);
+   csend(c, "PRINT 2\r");
+   tick(20000u);
+   CHECK(!got_has(c, "\x1b[2J"), "character mode again: RETURN draws nothing");
+
    step("ESCAPE, F11, F12 and Page Down");
    csend(c, "\x1b");
    tick(400000u);

@@ -400,6 +400,9 @@ RETURN does not:
   their codes, is the client's forwarding key), so paged mode works in line mode.
 - **Ctrl-C** is ESCAPE at once (the client's abort key). `send brk` at the
   `telnet>` prompt is BREAK, and `send ip` is ESC.
+- **Each line shows once.** The client echoes the line and starts a new one
+  itself when you press RETURN, so the screen is drawn again before the Beeb's own
+  echo of the line arrives, which then lands in its place.
 - **Switching mode shows the screen again**: the client's `telnet>` prompt was
   over it. In teletype mode the Beeb's line is sent again instead - its prompt and
   what you had typed, however many rows it wraps over.
