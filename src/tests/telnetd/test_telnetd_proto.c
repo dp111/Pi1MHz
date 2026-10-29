@@ -837,22 +837,57 @@ static void test_copy_cursor(void)
    n = tnd_out_copyflush(&s, t + 50000, d);
    CHECK(n > 0 && n <= TND_COPY_MAX, "... then it is drawn");
    d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[1;2H") != NULL && strstr((char *)d, "\x1b[7mH") != NULL,
-         "up from the cursor marks the H above it, reversed"); if (!strstr((char *)d, "\x1b[7mH")) printf("    got [%s]\n", d);
-   CHECK(n >= 6 && strstr((char *)d + n - 12, "\x1b[2;2H") != NULL, "and the cursor goes back to where typing goes");
-
-   tnd_out_copykey(&s, 139);                            /* COPY: the mark moves on to the E */
-   n = tnd_out_copyflush(&s, t + 100000, d);
+   /* As the Beeb shows it: a solid block where typing goes, the flashing cursor on the copy cursor. */
+   CHECK(strstr((char *)d, "\x1b[2;2H") != NULL && strstr((char *)d, "\x1b[7m ") != NULL && s.hl_on && s.hlx == 1u && s.hly == 1u,
+         "up: a block (a reversed space) where typing goes"); if (!strstr((char *)d, "\x1b[7m ")) printf("    got [%s]\n", d);
+   CHECK(strstr((char *)d, "\x1b[7mH") == NULL, "... and the H above is not reversed");
+   CHECK(n >= 6 && strcmp((char *)d + n - 6, "\x1b[1;2H") == 0 && s.parked,
+         "the terminal's cursor is left on the H, the copy cursor"); if (n >= 6 && strcmp((char *)d + n - 6, "\x1b[1;2H")) printf("    got [%s]\n", d);
+   CHECK(tnd_out_copyflush(&s, t + 60000, d) == 0, "... and stays there: nothing more is sent");
+   tnd_out_copykey(&s, 141);                            /* right: the copy cursor moves, the block does not */
+   n = tnd_out_copyflush(&s, t + 61000, d);
    d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[1;2H\x1b[0mH") != NULL && strstr((char *)d, "\x1b[7mE") != NULL,
-         "COPY puts the H back and marks the E"); if (!strstr((char *)d, "\x1b[7mE")) printf("    got [%s]\n", d);
+   CHECK(n >= 6 && strcmp((char *)d + n - 6, "\x1b[1;3H") == 0 && strstr((char *)d, "\x1b[7m") == NULL && s.parked,
+         "a second key moves the terminal's cursor with the copy cursor"); if (n < 6 || strcmp((char *)d + n - 6, "\x1b[1;3H")) printf("    got [%s]\n", d);
+   tnd_out_copykey(&s, 140);                            /* and back left, onto the H */
+   n = tnd_out_copyflush(&s, t + 62000, d);
+   d[n] = 0;
+   CHECK(n >= 6 && strcmp((char *)d + n - 6, "\x1b[1;2H") == 0, "... and back");
+
+   {                                                    /* the Beeb prints: the cursor goes back first */
+      uint8_t u[TND_UNPARK_MAX + 1];
+      size_t un = tnd_out_unpark(&s, u);
+      u[un] = 0;
+      CHECK(strcmp((char *)u, "\x1b[2;2H") == 0 && !s.parked, "before output the cursor goes back where typing goes");
+      CHECK(tnd_out_unpark(&s, u) == 0, "... once");
+   }
+   FEED_OUT(&s, "H", out);                              /* COPY's echo */
+   tnd_out_touch(&s, t + 70000);
+   tnd_out_copykey(&s, 139);                            /* COPY: the copy cursor moves on to the E */
+   n = tnd_out_copyflush(&s, t + 120000, d);
+   d[n] = 0;
+   CHECK(strstr((char *)d, "\x1b[2;2H\x1b[0mH") != NULL && strstr((char *)d, "\x1b[2;3H") != NULL
+         && strstr((char *)d, "\x1b[7m ") != NULL && strcmp((char *)d + n - 6, "\x1b[1;3H") == 0,
+         "COPY: the old block shows the H copied, the block moves on, the cursor on the E"); if (strcmp((char *)d + n - 6, "\x1b[1;3H")) printf("    got [%s]\n", d);
+
+   /* Output with no key (a program printing, a row drawn again): the block and the cursor follow. */
+   (void)tnd_out_unpark(&s, d);
+   FEED_OUT(&s, "X", out);
+   tnd_out_touch(&s, t + 130000);
+   CHECK(tnd_out_copyflush(&s, t + 140000, d) == 0, "after output the block waits for quiet");
+   n = tnd_out_copyflush(&s, t + 180000, d);
+   d[n] = 0;
+   CHECK(strstr((char *)d, "\x1b[2;3H\x1b[0mX") != NULL && strstr((char *)d, "\x1b[2;4H") != NULL && s.hlx == 3u
+         && s.parked && strcmp((char *)d + n - 6, "\x1b[1;3H") == 0,
+         "... then it moves to where typing goes and the cursor goes back on the copy cursor"); if (!s.parked) printf("    got [%s]\n", d);
 
    tnd_out_copykey(&s, 13);                             /* RETURN ends it */
-   n = tnd_out_copyflush(&s, t + 150000, d);
+   n = tnd_out_copyflush(&s, t + 250000, d);
    d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[1;3H\x1b[0mE") != NULL && strstr((char *)d, "\x1b[7m") == NULL,
-         "RETURN removes the mark"); if (strstr((char *)d, "\x1b[7m")) printf("    got [%s]\n", d);
-   CHECK(tnd_out_copyflush(&s, t + 200000, d) == 0, "and nothing more is sent");
+   CHECK(strstr((char *)d, "\x1b[2;4H\x1b[0m ") != NULL && strstr((char *)d, "\x1b[7m") == NULL && !s.parked && !s.hl_on,
+         "RETURN removes the block"); if (strstr((char *)d, "\x1b[7m")) printf("    got [%s]\n", d);
+   CHECK(n >= 6 && strstr((char *)d, "\x1b[2;4H") != NULL, "... and the cursor is where typing goes");
+   CHECK(tnd_out_copyflush(&s, t + 300000, d) == 0, "and nothing more is sent");
 
    /* The mark moves with the text when the screen scrolls, and never stays on a cell the model has not seen. */
    tnd_out_reset(&s, true);
@@ -861,7 +896,9 @@ static void test_copy_cursor(void)
    tnd_out_copykey(&s, 143);
    n = tnd_out_copyflush(&s, t + 50000, d);
    d[n] = 0;
-   CHECK(strstr((char *)d, "\x1b[7mA") != NULL, "MODE 7: the mark is on the A");
+   CHECK(strstr((char *)d, "\x1b[7m") != NULL && s.hl_on && s.hlx == 1u && s.hly == 1u && s.parked
+         && strcmp((char *)d + n - 6, "\x1b[1;2H") == 0, "MODE 7: the block where typing goes, the cursor on the A");
+   (void)tnd_out_unpark(&s, d);
    FEED_OUT(&s, "\x1f\x00\x18\n", out);                 /* TAB to the bottom row and a LF: the screen scrolls */
    tnd_out_touch(&s, t + 60000);
    tnd_out_copykey(&s, 141);
@@ -1012,8 +1049,9 @@ static void test_session(void)
       CHECK(!s.dirty && strstr(out, "AB") != NULL && strstr(out, "CD") != NULL, "... the screen drawn again from the model");
       cn = tnd_out_copyflush(&s, 100000000u, cb);
       cb[cn] = 0;
-      CHECK(strstr((char *)cb, "\x1b[3;3H") != NULL && strstr((char *)cb, "\x1b[7m") != NULL && s.hl_on && s.hly == 2u,
-            "... then the mark, one row up from the cursor"); if (!strstr((char *)cb, "\x1b[3;3H")) printf("    got [%s]\n", cb);
+      CHECK(strstr((char *)cb, "\x1b[4;3H") != NULL && strstr((char *)cb, "\x1b[7m") != NULL && s.hl_on && s.hly == 3u
+            && strcmp((char *)cb + cn - 6, "\x1b[3;3H") == 0,
+            "... then the block, and the cursor one row up from it"); if (strcmp((char *)cb + cn - 6, "\x1b[3;3H")) printf("    got [%s]\n", cb);
    }
 
    /* The copy cursor wraps as the MOS's does (OS 1.20 &D8F0, &CD3F): inside the text window,
@@ -1048,9 +1086,9 @@ static void test_session(void)
    tnd_out_touch(&s, 100u);
    tnd_out_copykey(&s, 143);
    (void)tnd_out_copyflush(&s, 100000u, d);
-   CHECK(s.hl_on, "the copy cursor is marked");
+   CHECK(s.hl_on && s.parked, "the copy cursor is shown");
    tnd_out_session(&s);
-   CHECK(!s.hl_on && !s.cc_on && s.npend == 0, "a new session starts with no mark");
+   CHECK(!s.hl_on && !s.cc_on && !s.parked && s.npend == 0, "a new session starts with no mark");
 
    /* ... but the Beeb's colours go on, and the new terminal is told them. */
    tnd_out_reset(&s, true);

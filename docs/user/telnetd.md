@@ -336,7 +336,8 @@ BASIC's cursor editing has two cursors: the one where typing goes, and the copy
 cursor that the arrow keys move over the screen and End (COPY) copies from. The
 MOS moves the second one itself and never sends it down the serial line, so a
 terminal would show only the first. The daemon follows the arrow keys, End and
-RETURN, shows the copy cursor as a reversed character, and moves it as COPY
+RETURN and shows the two as the Beeb does: the terminal's cursor on the copy cursor,
+and a solid block (a reversed character) where typing goes. It moves them as COPY
 takes characters, as the MOS does, wrapping as the MOS's does: inside the text
 window, off the top to the bottom row and back, off either side to the other side of
 the row above or below. It moves only when the Beeb takes the key: the ROM tells the Pi each time a program takes a cursor key, COPY or RETURN out of
