@@ -197,7 +197,9 @@ The Beeb's output is its VDU stream, and the daemon turns it into ANSI for
 your terminal: `CLS` and `MODE` clear the screen, `TAB(x,y)` (VDU 31)
 positions the cursor, `COLOUR` sets the text and background colours, and DELETE
 rubs out a character. The parameter bytes of the VDU codes a terminal cannot
-show (palette, VDU 23) are swallowed, so they do not print as rubbish. In the
+show (palette, VDU 23) are swallowed, so they do not print as rubbish. In MODE
+0-6 the characters 128-255 are the ones a program defines with VDU 23; the
+terminal is not told their shapes, so they show as blanks. In the
 modes other than 7 `COLOUR` stays set from line to line, as on the Beeb. The
 colour numbers are the mode's own: in MODE 1 and 5
 `COLOUR 1`, `2` and `3` are red, yellow and white, in the two-colour modes `1` is
