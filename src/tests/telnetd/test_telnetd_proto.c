@@ -501,11 +501,18 @@ static void test_negotiation(void)
    static const uint8_t wonts[] = { 255, 252, 3, 255, 252, 1 };
    CHECK(nreply == 6 && memcmp(reply, wonts, 6) == 0 && s.echo_off && s.sga_off, "DONT SGA, DONT ECHO: WONT each, once"); if (nreply != 6) dump();
    CHECK((uint8_t)(s.mode_gen - gen0) == 2u, "line mode: counted (%u)", (unsigned)(uint8_t)(s.mode_gen - gen0));
+   uint8_t lines0 = s.line_gen;
+   FEED(&s, "AB\r\nCD\r\n");
+   CHECK((uint8_t)(s.line_gen - lines0) == 2u, "line mode: each line the client sent (and echoed) counted (%u)",
+         (unsigned)(uint8_t)(s.line_gen - lines0));
    in_reset();
    FEED(&s, "\xff\xfd\x01\xff\xfd\x03\xff\xfd\x01");
    static const uint8_t wills[] = { 255, 251, 1, 255, 251, 3 };
    CHECK(nreply == 6 && memcmp(reply, wills, 6) == 0 && !s.echo_off && !s.sga_off, "DO ECHO, DO SGA again: WILL each, once"); if (nreply != 6) dump();
    CHECK((uint8_t)(s.mode_gen - gen0) == 4u, "character mode: counted");
+   lines0 = s.line_gen;
+   FEED(&s, "AB\r\n");
+   CHECK(s.line_gen == lines0, "character mode: RETURN is not a client's line");
    in_reset();
    FEED(&s, "\xff\xfb\x01");
    static const uint8_t dont1[] = { 255, 254, 1 };

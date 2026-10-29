@@ -172,10 +172,14 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
    }
    if (c == '\r') {
       s->state = I_CR;
+      if (s->echo_off)
+         s->line_gen++;
       keys[0] = 13u;
       return 1u;
    }
    if (c == '\n') {
+      if (s->echo_off)
+         s->line_gen++;
       keys[0] = 13u;
       return 1u;
    }
