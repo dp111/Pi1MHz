@@ -178,6 +178,7 @@ power-on: a second copy in another bank answers the same reset call.
 | arrow keys | the cursor keys (the MOS's copy-cursor editing works) |
 | End | COPY (copies the character under the copy cursor) |
 | F1 to F9, F10 | f1 to f9, f0 |
+| SHIFT, CTRL or both with F1-F10, an arrow key or End | the same keys with SHIFT, CTRL or both, as the Beeb's keyboard gives them (`*FX4` and `*FX225-228` apply). Alt is ignored. |
 | F12 | BREAK: a soft reset, the same jump as `CALL !-4`, so it works whatever is running. The terminal is cleared and the cursor put where the Beeb reports it; the session comes back when something hooks the daemon in again (HELPERS or the auto-start ROM). Boot banners printed before the hook are not shown. |
 | SHIFT-F12 | SHIFT-BREAK: a BREAK, and the Beeb is told SHIFT is held while it starts, so the filing system boots (`!BOOT`, as `*OPT 4` says). Needs the auto-start ROM. A boot that waits for ever (the DFS with no drive) can only be ended by the BREAK key or the power: see "Things to know". |
 | CTRL-F12 | CTRL-BREAK, as near as software can: a BREAK the MOS takes for a power-on (the MOS reads CTRL from the keyboard itself). The language and the BREAK intercept go back to their defaults as after CTRL-BREAK, but memory from &0400 is cleared too, and OSBYTE 253 says 1 (power-on), not 2. CTRL-SHIFT-F12 is the same. On a Master it also empties sideways RAM, TelnetD included: see "Things to know". |

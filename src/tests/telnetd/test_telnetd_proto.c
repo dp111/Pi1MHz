@@ -284,7 +284,7 @@ static void test_cursor_and_function_keys(void)
 
    in_reset();
    FEED(&s, "\x1b[1;5A");
-   CHECK(nkeys == 1 && keys[0] == 143, "modifier parameters are ignored: Ctrl-Up is Up");
+   CHECK(nkeys == 1 && keys[0] == 0xAF, "Ctrl-Up is the keyboard's CTRL-up, &AF");
 
    in_reset();
    FEED(&s, "\x1b[3~");
@@ -301,6 +301,23 @@ static void test_cursor_and_function_keys(void)
    FEED(&s, "\x1bOP\x1bOQ\x1bOR\x1bOS");
    CHECK(nkeys == 4 && keys[0] == 0x81 && keys[1] == 0x82 && keys[2] == 0x83 && keys[3] == 0x84,
          "F1-F4 are f1-f4");
+
+   /* SHIFT and CTRL: the keyboard scan's codes, &10 and &20 above the key's */
+   in_reset();
+   FEED(&s, "\x1b[1;2P\x1b[1;5Q\x1b[1;6S\x1b[15;2~\x1b[21;5~\x1b[20;6~\x1b[1;3P");
+   CHECK(nkeys == 7 && keys[0] == 0x91 && keys[1] == 0xA2 && keys[2] == 0xB4 && keys[3] == 0x95 && keys[4] == 0xA0
+         && keys[5] == 0xB9 && keys[6] == 0x81,
+         "SHIFT-F1 &91, CTRL-F2 &A2, CTRL-SHIFT-F4 &B4, SHIFT-F5 &95, CTRL-F10 &A0, CTRL-SHIFT-F9 &B9, Alt-F1 f1");
+   if (nkeys != 7) dump();
+   in_reset();
+   FEED(&s, "\x1b[1;2A\x1b[1;5D\x1b[1;6C\x1b[1;2F\x1b[4;5~\x1b[1;3B");
+   CHECK(nkeys == 6 && keys[0] == 0x9F && keys[1] == 0xAC && keys[2] == 0xBD && keys[3] == 0x9B && keys[4] == 0xAB
+         && keys[5] == 142, "SHIFT-up &9F, CTRL-left &AC, CTRL-SHIFT-right &BD, SHIFT-End (COPY) &9B, CTRL-End &AB, Alt-down down");
+   if (nkeys != 6) dump();
+   in_reset();
+   FEED(&s, "\x1b[3;2~\x1b[6;2~");
+   CHECK(nkeys == 2 && keys[0] == 127 && keys[1] == TND_KEY_SHIFT, "SHIFT-Delete is DELETE, SHIFT-Page Down still SHIFT");
+   if (nkeys != 2) dump();
 
    in_reset();
    FEED(&s, "\x1b[15~\x1b[17~\x1b[18~\x1b[19~\x1b[20~\x1b[21~");
