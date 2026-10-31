@@ -93,6 +93,10 @@ Use https://wavedrom.com/editor.html
 
 //NB ample software access the waveform ram with bit 7 and 8 equal
 //Pi1MHz has the complete ram where as B-em masks bit 8 when the ram is written
+//(the hardware ignores JIM bit 8 / page bit 0, so aliased addresses AMPLE
+//never uses land elsewhere here).  Waveform 14 reads the normal register
+//bank at 0xE00 exactly as the hardware does; waveform 15 maps to 0xF80,
+//where the hardware would return the alternate bank (0xE80 in this layout).
 #define I_WAVEFORM(n,a) (((unsigned int)((n)<<8)| ((unsigned int)(((n)<<7)&128)|((unsigned int)a))))
 #define I_WFTOP (0x0E00)
 
@@ -171,8 +175,11 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    s->ram = ptr;
    s->modulate = 0;
    s->modulate_hi = 0;
-   // Real hardware clears 0x3E00 for 128bytes
-   // and random Waveform bytes depending on phaseRAM
+   /* Real hardware reset writes zeros through the free-running sequencer:
+      the normal register bank except the never-addressed +&30 row (112 of
+      these 128 bytes), plus random waveform bytes picked by the phase.
+      The alternate bank survives, and the amplitude store (phase RAM byte
+      3) stays random until a channel's first wrap - cleared here. */
    memset(&s->ram[I_WFTOP], 0, 128);
    memset(&s->amplitude[0], 0, 16);
 }
@@ -614,13 +621,14 @@ static void store_samples(int sl, int sr)
 {
    if (rec_started || sl || sr)
     {
-      /* Same headroom rule as the live path (music5000_to_s16): widen, then
-         saturate.  M5000_Gain=16 - the header's own example - overflowed
-         int16 here on any loud passage and inverted it. */
-      int64_t vl = ((int64_t)sl * gain * 12) / 1024;   // +/- 2666.6 so scale to fit +/- 32,768
-      int64_t vr = ((int64_t)sr * gain * 12) / 1024;
-      sl = (vl > 32767) ? 32767 : (vl < -32768) ? -32768 : (int)vl;
-      sr = (vr > 32767) ? 32767 : (vr < -32768) ? -32768 : (int)vr;
+      /* 12/1024 = 3/256 exactly.  With gain clamped to <=256 (M5000_gain)
+         and |sl| <= 8031*6*16*2, |sl*gain*3| peaks at ~1.18e9: inside
+         int32, so no widening - then saturate.  (M5000_Gain=16 used to
+         overflow int16 here on any loud passage and invert it.) */
+      int vl = (sl * gain * 3) / 256;
+      int vr = (sr * gain * 3) / 256;
+      sl = (vl > 32767) ? 32767 : (vl < -32768) ? -32768 : vl;
+      sr = (vr > 32767) ? 32767 : (vr < -32768) ? -32768 : vr;
       if ((Audio_Index+4) >= ram_max)
       {
          LOG_INFO("Music 5000 recording stopped as we have run out of JIM RAM\n");
