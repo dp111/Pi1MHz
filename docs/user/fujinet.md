@@ -41,11 +41,10 @@ free sideways RAM, or the ROM file is missing from the SD card - see
 [Helpers and ROMs](helpers-and-roms.md).
 
 To build fn-rom yourself: `make all BUILD_INTERFACE=1MHZ` (BBC B) or
-`make all BUILD_INTERFACE=1MHZ BUILD_MACHINE=MASTER` (Master 128), from a
-version that includes the 1MHz link, and copy the result over the shipped
-file. The shipped ROMs and utilities discs are built from github.com/dp111/fn-rom
-branch `pi1mhz-ship`, which also carries fixes (OSGBPB, and loading and
-saving a file whose last sector is partial) not yet in fn-rom itself.
+`make all BUILD_INTERFACE=1MHZ BUILD_MACHINE=MASTER` (Master 128), and
+copy the result over the shipped file; `make clean` when switching machine.
+The shipped ROMs and utilities discs are built from fn-rom's own master
+(github.com/markjfisher/fn-rom 28bf1ac), which has the 1MHz link.
 
 ## Disc images
 

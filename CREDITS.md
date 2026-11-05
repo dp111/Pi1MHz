@@ -139,14 +139,11 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   <https://github.com/markjfisher/fn-rom>, GPL-3.0. `firmware/Pi1MHz/fujinetB.rom`
   (BBC B) and `fujinetM.rom` (Master 128), loaded by helper 18, are its
   1MHz-bus builds (`make all BUILD_INTERFACE=1MHZ`, plus
-  `BUILD_MACHINE=MASTER` for the Master) from
-  <https://github.com/dp111/fn-rom>, branch `pi1mhz-ship`: the 1MHz link
-  on fn-rom master, with the link review, network-read clamp, scatter-send
-  length, OSGBPB, partial-sector read and save, and network-seek fixes,
-  and upstream's file-tail read and FujiBus filename-pointer fixes and DSD
-  second-side drives. `firmware/FujiNet/FN-BOOTB.ssd` and
-  `FN-BOOTM.ssd` are fn-rom's utilities discs built from the same source for
-  those two ROMs (`scripts/build_fn_boot.sh` with `BUILD_INTERFACE=1MHZ`).
+  `BUILD_MACHINE=MASTER` for the Master) of fn-rom master 28bf1ac, which
+  took in the 1MHz link and our fixes (fn-rom PR #1).
+  `firmware/FujiNet/FN-BOOTB.ssd` and `FN-BOOTM.ssd` are fn-rom's
+  utilities discs built from the same source for those two ROMs
+  (`scripts/build_fn_boot.sh` with `BUILD_INTERFACE=1MHZ`).
 
 ## Static analysis
 
