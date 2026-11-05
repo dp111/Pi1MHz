@@ -20,7 +20,7 @@
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
    and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
-   19 the serial redirector, 20 the telnet daemon, and 21-30 are left free
+   19 the serial redirector, 20 the telnet daemon, 21 VFS, and 22-30 are left free
    for future helpers,
    answering with a bare return until one is written. */
 #define HELPER_PAGES 47u
@@ -97,7 +97,7 @@ static volatile uint8_t  help_front;
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
-   "19  Serial modem    20  Telnet daemon\r\n"                           \
+   "19  Modem   20  Telnetd   21  VFS.rom\r\n"                           \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
    "*FX147,202,%d 203,1-3 out/in/restart\r\n"                          \

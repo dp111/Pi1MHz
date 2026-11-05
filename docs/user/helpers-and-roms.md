@@ -48,6 +48,7 @@ part of the standard firmware set.
 | 18 | Loads fn-rom, the FujiNet filing system: the BBC B build on a B or B+, the Master build on a Master. See [FujiNet](fujinet.md) | `/Pi1MHz/fujinetB.rom`, `/Pi1MHz/fujinetM.rom` |
 | 19 | Redirects the RS423 serial port to the Pi, where a Hayes-style modem dials out over WiFi. See [Serial redirector and modem](serial-modem.md) | - |
 | 20 | Telnet daemon: the Beeb's keyboard and screen over the network, from any telnet client (`telnetd_port` in `Pi1MHz.cfg`). See [The telnet daemon](telnetd.md) | - |
+| 21 | Loads VFS, for Domesday/VFS volumes, into sideways RAM in bank 8, 3, 2, 1 or 0 only. See [The VFS ROM](#the-vfs-rom) | `/Pi1MHz/VFS.rom` |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 
@@ -97,9 +98,11 @@ to try ROM software without hardware.
 
 ## The VFS ROM
 
-`/Pi1MHz/VFS.rom` (for Domesday/VFS volumes) is also shipped in the
-`/Pi1MHz` directory, but it is not wired to a helper number - install
-it as a normal ROM, or load it as one of the user ROMs by copying it to
-`ROM10.rom`. It is the Pi1MHz build of VFS: it shows its pointer on the
-HDMI picture and also follows a [USB mouse](usb-mouse.md) plugged into
-the Pi.
+`/Pi1MHz/VFS.rom` (for Domesday/VFS volumes) is loaded by helper 21. It
+goes only into sideways RAM in bank 8, 3, 2, 1 or 0, tried in that order:
+a bank already holding VFS first, so loading it again replaces that copy,
+then an empty one. Sideways RAM in any other bank is left alone, so on a
+Master with only its own sideways RAM (banks 4-7) the answer is "No SWR".
+It can also be installed as a normal ROM. It is the Pi1MHz build of VFS:
+it shows its pointer on the HDMI picture and also follows a
+[USB mouse](usb-mouse.md) plugged into the Pi.

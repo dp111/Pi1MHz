@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the ROM loader helpers (3-16 and 18) on a 6502 with sixteen sideways
+"""Run the ROM loader helpers (3-16, 18 and 21) on a 6502 with sixteen sideways
 banks, and check which bank each loads into.
 
 After CTRL-BREAK a ROM that an earlier load put in sideways RAM is still
@@ -346,6 +346,46 @@ def main(args):
     b15 = ram()
     r, mem, dots, depth = run(image, 18, banks_of(b15=b15), {m_name: bytes(new)}, machine=3)
     check(r == ("reset",) and mem.opened == [m_name], f"helper 18 on a Master: {mem.opened}")
+
+    # Helper 21 loads VFS only into banks 8, 3, 2, 1 and 0, searching them in
+    # that order with the same two passes, then page 0 copies and resets.
+    vfs = loader_name(image, 21)
+    check(vfs == "Pi1MHz/VFS.rom", f"helper 21 opens {vfs}")
+    files = {vfs: bytes(new)}
+    what = "helper 21 (VFS)"
+    b15, b8 = ram(), ram()
+    r, mem, dots, depth = run(image, 21, banks_of(b15=b15, b8=b8), files)
+    check(r == ("reset",) and b8[0] == new and set(mem.writes) == {8},
+          f"{what}: free RAM in 15 and 8: bank 8, 15 left alone: {r} {sorted(mem.writes)}")
+    check(mem.closed == 1 and mem.open is None, f"{what}: the file is closed once")
+    check(depth == 3 and mem.ram[0x1FD] == SAVED_F4, f"{what}: the saved ROM number on the stack once: {depth}")
+    check(not mem.irq_on_write and not mem.os_after_write, f"{what}: the copy runs with interrupts off, no OS calls")
+    for machine in (1, 3):
+        banks = {f"b{n}": ram() for n in (4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15)}
+        r, mem, dots, depth = run(image, 21, banks_of(**banks), files, machine=machine)
+        check(r == ("brk", "No SWR") and not mem.writes,
+              f"{what}, machine {machine}: free RAM only outside 0-3 and 8: {r} {sorted(mem.writes)}")
+        check(dots == 10, f"{what}: both passes tried the five banks: {dots}")
+        check(mem.bank == SAVED_F4 and mem.ram[0xF4] == SAVED_F4 and mem.closed == 1,
+              f"{what}: the ROM selected is put back and the file closed")
+    for free, want in (((8, 3), 8), ((3, 0), 3), ((2, 1), 2), ((0,), 0)):
+        banks = {f"b{n}": ram() for n in free}
+        r, mem, dots, depth = run(image, 21, banks_of(**banks), files)
+        check(r == ("reset",) and banks[f"b{want}"][0] == new and set(mem.writes) == {want},
+              f"{what}: free RAM in {free}: bank {want}: {r} {sorted(mem.writes)}")
+    b8, b2 = ram(), ram(old)
+    r, mem, dots, depth = run(image, 21, banks_of(b8=b8, b2=b2), files)
+    check(r == ("reset",) and b2[0] == new and set(mem.writes) == {2},
+          f"{what}: an earlier copy in bank 2 is replaced, free bank 8 left alone: {sorted(mem.writes)}")
+    b8, b1 = ram(other), ram()
+    r, mem, dots, depth = run(image, 21, banks_of(b8=b8, b1=b1), files)
+    check(r == ("reset",) and b1[0] == new and b8[0] == other, f"{what}: another ROM in bank 8 kept, bank 1 used: {r}")
+    b8 = ram(old)
+    r, mem, dots, depth = run(image, 21, banks_of(b15=ram(old), b8=b8), files)
+    check(r == ("reset",) and b8[0] == new and set(mem.writes) == {8},
+          f"{what}: a copy in bank 15 is not its to replace: {sorted(mem.writes)}")
+    r, mem, dots, depth = run(image, 21, banks_of(b8=ram()), {})
+    check(r == ("brk", "No ROM") and not mem.writes, f"{what}: no file: {r}")
 
     print(f"{checks} checks, {fails} failures")
     print("SWR SLOT TESTS FAILED" if fails else "SWR SLOT TESTS PASSED")

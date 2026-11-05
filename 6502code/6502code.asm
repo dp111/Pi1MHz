@@ -313,15 +313,16 @@ NEXT
 
 ENDMACRO
 
-;; The ROM loaders, helpers 3-16 and 18.  Each page opens its file and reads
+;; The ROM loaders, helpers 3-16, 18 and 21.  Each page opens its file and reads
 ;; all of it into the Pi's buffer at &F00000, then hands over to swrinstall in
 ;; page 0, which picks the bank, copies the buffer into it and resets the
 ;; machine.  The loader page only names the file; finding the bank is shared,
 ;; and can see the incoming ROM's title in the buffer: see swrinstall.
 ;; The ROM number on entry is pushed first: swrinstall restores it if there is
 ;; nowhere to load, and fileerror here if there is no file.
-;; Expanded inside the loader's own { } so the labels are its own.
-MACRO READROMFILE
+;; Expanded inside the loader's own { } so the labels are its own.  With
+;; own TRUE the loader picks the bank itself: the read ends at its romread.
+MACRO READROMFILE own
     LDY #0   : STY discaccess
     DEY      : STY discaccess+1
                STY discaccess+2
@@ -354,9 +355,13 @@ MACRO READROMFILE
     BNE fileerror ; file open error
 
 .readdone
+IF own
+    JMP romread
+ELSE
     LDY #swrinstall-&FD01           ; on to page 0
     LDA #0
     JMP pageswitch
+ENDIF
 
 .fileerror
     PLA
@@ -376,7 +381,7 @@ MACRO LOADFILETOSWR filename
 {
     LDA     &F4
     PHA
-    READROMFILE
+    READROMFILE FALSE
 
 .fopenstring
     EQUB 2, 0, 1 : EQUS filename : EQUB 0, 255
@@ -402,7 +407,7 @@ MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
     BCC fopen                       ; B, B+: keep 'B'
     LDA #'M' : STA machineletter
 .fopen
-    READROMFILE
+    READROMFILE FALSE
 
 .fopenstring
     EQUB 2, 0, 1 : EQUS prefix
@@ -490,6 +495,7 @@ ORG &FD00
     asl     pass                    ; C = it was the first pass
     bcs     passlp
 
+.*noswr                             ; also a loader's own search's end
     JSR     fclose                  ; nowhere to put it
     PLA
     sta    &f4
@@ -502,7 +508,7 @@ ORG &FD00
 ;; before it is overwritten, and the copy runs with interrupts off: nothing
 ;; may enter the half-written bank.  C says which reset, and survives the
 ;; copy and fclose (neither touches it).
-.SWRfound
+.*SWRfound                          ; the bank to load is selected (&F4, &FE30)
     LDA #0      ; get machine id
     LDX #1
     JSR OSBYTE
@@ -1068,7 +1074,7 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 21-30 : reserved for future helpers
+; Pages 22-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
@@ -1076,10 +1082,96 @@ ORG &FD00
 ; (The telnet auto-start ROM, telnetd.rom, is loaded like any other ROM: no helper.)
 ; ---------------------------------------------------------------------------
 
+; ---------------------------------------------------------------------------
+; Page 21 : VFS, only into sideways RAM in banks 8, 3, 2, 1 or 0
+;
+; The other loaders hand the bank choice to page 0 (swrinstall), which tries
+; every bank 15 to 0.  This one makes the same two passes itself over its own
+; list - a RAM bank holding a ROM with the incoming title, then an empty RAM
+; bank - and goes on to page 0's SWRfound with the bank selected, or to its
+; noswr when none will do.  Page 0 then copies and resets as for any ROM.
+; ---------------------------------------------------------------------------
 {
-    ORG &FD00
-    PAGERTS
+ORG &FD00
+    LDA     &F4
+    PHA
+    READROMFILE TRUE
 
+.romread
+.passlp
+    LDA     #vfsbanksend-vfsbanks-1
+    STA     idx
+.banklp
+    LDX     idx                     ; the last in the list first, as page 0
+    LDA     vfsbanks, X             ; goes from 15 down
+    STA     &F4
+    STA     &FE30
+    LDA     #'.'
+    JSR     OSWRCH
+    LDY     &8007                   ; is there a ROM here: a copyright string
+    LDX     #0
+.copylp
+    LDA     &8000, Y
+    CMP     copyright, X
+    BNE     noromhere
+    INY
+    INX
+    CPX     #4
+    BNE     copylp
+    BIT     pass                    ; a ROM: only the first pass looks closer
+    BPL     banknxt
+    LDY     #9                      ; its title against the incoming one
+    STY     discaccess
+    LDY     #0
+    STY     discaccess+1
+    LDA     #&F0
+    STA     discaccess+2
+.titlelp
+    LDA     discaccess+3
+    CMP     &8009, Y
+    BNE     banknxt
+    INY
+    TAX                             ; Z: the zero that ends the title
+    BNE     titlelp
+    BEQ     testram
+.noromhere
+    BIT     pass                    ; no ROM: only the second pass takes it
+    BMI     banknxt
+.testram
+    LDA     &8006
+    EOR     #&FF
+    STA     &8006
+    CMP     &8006
+    BEQ     found
+.banknxt
+    DEC     idx
+    BPL     banklp
+    ASL     pass                    ; C = it was the first pass
+    BCS     passlp
+    LDY     #noswr-&FD01
+    BNE     page0                   ; always
+.found
+    LDY     #SWRfound-&FD01
+.page0
+    LDA     #0
+    JMP     pageswitch
+
+.copyright
+    EQUB    0 : EQUS "(C)"
+.pass
+    EQUB    &80                     ; bit 7 set on the first pass
+.idx
+    EQUB    0
+.vfsbanks
+    EQUB    0, 1, 2, 3, 8
+.vfsbanksend
+.fopenstring
+    EQUB    2, 0, 1 : EQUS "Pi1MHz/VFS.rom" : EQUB 0, 255
+
+    PRINT "helper 21 spare bytes:", &FE00-9-P%
+    PAGESWITCHORG
+.pageswitch
+    PAGESWITCH
     ENDBLOCK &1500
 }
 
