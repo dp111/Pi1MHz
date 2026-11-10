@@ -833,6 +833,14 @@ void serial_redirect_telnetd_refresh(void)
       Pi1MHz_MemoryWrite((uint32_t)ser_base - SER_WS_OFF + SER_WS_TELNET, telnetd_enabled() ? 1u : 0u);
 }
 
+/* The Beeb is driven down the redirect and nothing can press SHIFT for it: hooked, and not by
+   the auto-start ROM in telnet mode (serial_redirect_shift's own test).  Paged mode would stop
+   the Beeb until somebody reached its keyboard.  FIQ or main loop: flags only. */
+bool serial_redirect_no_shift(void)
+{
+   return ser_hooked && !(ser_telnet && ser_base >= SER_WS_OFF);
+}
+
 void serial_redirect_shift(void)
 {
    if (!ser_hooked || !ser_telnet || ser_base < SER_WS_OFF)

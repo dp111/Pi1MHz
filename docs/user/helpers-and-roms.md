@@ -32,7 +32,7 @@ part of the standard firmware set.
 
 | n | What it does | ROM file used |
 |---|---|---|
-| 0 | Shows the help screen (version, build date, Pi model, temperature, this list, and the file each of helpers 10-15 would load). It prints in paged mode - hold SHIFT to go on when the screen fills - and leaves paged mode as it found it | - |
+| 0 | Shows the help screen (version, build date, Pi model, temperature, this list, and the file each of helpers 10-15 would load). It prints in paged mode - hold SHIFT to go on when the screen fills - and leaves paged mode as it found it. Over the serial redirector (helper 19, or helper 20 without the TelnetD ROM) nothing can press SHIFT, so there it prints unpaged | - |
 | 1 | Status - **not implemented yet** | - |
 | 2 | Enables the screen redirector: everything the Beeb prints also appears on the Pi's HDMI output. See [Screen and video](screen-and-video.md) | - |
 | 3 | Loads ADFS into sideways RAM | `/Pi1MHz/ADFS.rom` |

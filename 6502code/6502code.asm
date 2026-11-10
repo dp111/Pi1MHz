@@ -433,7 +433,10 @@ ENDMACRO
 ; copy the formatted screen to &FFE000 and then release the wait loop by
 ; rewriting the JMP's low byte (helpers.c).  Printed in paged mode, as it
 ; can be longer than the screen (a row for each user ROM), and paged mode
-; is put back as it was.
+; is put back as it was.  Paged mode waits for SHIFT at the keyboard, so
+; when the Beeb is driven down the serial redirect and nothing can press
+; SHIFT for it the Pi makes the VDU 14 a VDU 15 (helpers.c, HELP_PAGED_OP:
+; keep it in step with the ASSERT below).
 {
 ORG &FD00
 .waitloop
@@ -441,7 +444,8 @@ ORG &FD00
     ASSERT P% = &FD03
     LDA #117 : JSR OSBYTE       ; X = VDU status: bit 2 is paged mode
     TXA : PHA
-    LDA #14  : JSR OSWRCH       ; paged mode on
+    ASSERT P% = &FD0A
+    LDA #14  : JSR OSWRCH       ; paged mode on (or off: the Pi's choice)
     LDA #0   : STA discaccess   ; the screen, at &FFE000
     LDA #&E0 : STA discaccess+1
     LDA #&FF : STA discaccess+2
@@ -450,10 +454,10 @@ ORG &FD00
     JSR OSWRCH
     TAX                         ; set flags
     BNE stringloop
-    PLA : AND #4                ; paged mode was on: leave it on
-    BNE pagedon
-    LDA #15  : JSR OSWRCH
-.pagedon
+    PLA : AND #4 : EOR #4       ; paged mode as it was: VDU 14 if on,
+    CMP #1                      ; VDU 15 if off (C = it was off)
+    LDA #14 : ADC #0
+    JSR OSWRCH
     PAGERTS
 
   PAGESWITCHORG
@@ -2081,7 +2085,8 @@ NEXT
 ; page like the explorer's.  Run as helper 47 itself it only returns.
 {
     ORG &FD00
-    RTS
+    PAGERTS
+    ASSERT P% = &FD05
 
 ;; swrinstall: the second half of every ROM loader (see READROMFILE).  The
 ;; ROM is in the Pi's buffer at &F00000 and the ROM number from before the

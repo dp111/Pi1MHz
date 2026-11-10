@@ -52,6 +52,7 @@ fi
 "$PY" "$HERE/check_service.py" $images
 "$PY" "$HERE/check_explorer.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 "$PY" "$HERE/check_swr_slot.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
+"$PY" "$HERE/check_help_page.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 "$PY" "$HERE/check_serial_helpers.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 
 echo "WIFI ROM TESTS PASSED"
