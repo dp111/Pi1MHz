@@ -1142,6 +1142,11 @@ static FRESULT sync_fs (	/* Returns FR_OK or FR_DISK_ERR */
 						disk_write(fs->pdrv, fs->win, fs->winsect, 1);
 					}
 				}
+#if PI1MHZ_FF_EXFAT_MOUNT_CHECKS
+				else {
+					fs->winsect = (LBA_t)0 - 1;	/* The read failed: the window holds no sector */
+				}
+#endif
 			}
 #endif
 		}
@@ -1348,6 +1353,11 @@ static DWORD find_bitmap (	/* 0:Not found, 2..:Cluster block found, 0xFFFFFFFF:D
 				} else {
 					scl = val; ctr = 0;		/* Encountered a cluster in-use, restart to scan */
 				}
+#if PI1MHZ_FF_EXPAND_NO_WRAP_RUN
+				if (val == 0) {	/* Wrapped to the first cluster: a run cannot continue across the end */
+					scl = 0; ctr = 0;
+				}
+#endif
 				if (val == clst) return 0;	/* All cluster scanned? */
 			} while (bm != 0);
 			bm = 1;
@@ -3537,6 +3547,11 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 
 		if (ld_16(fs->win + BPB_FSVerEx) != 0x100) return FR_NO_FILESYSTEM;	/* Check exFAT version (must be version 1.0) */
 
+#if PI1MHZ_FF_EXFAT_MOUNT_CHECKS
+		if (fs->win[BPB_BytsPerSecEx] > 15 || fs->win[BPB_SecPerClusEx] > 15) {	/* (Shifts in range: no 1 << 32 below, and a cluster fits csize) */
+			return FR_NO_FILESYSTEM;
+		}
+#endif
 		if (1 << fs->win[BPB_BytsPerSecEx] != SS(fs)) {	/* (BPB_BytsPerSecEx must be equal to the physical sector size) */
 			return FR_NO_FILESYSTEM;
 		}
@@ -3554,6 +3569,9 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 
 		ncl = ld_32(fs->win + BPB_NumClusEx);			/* Number of clusters */
 		if (ncl < MIN_EXFAT || ncl > MAX_EXFAT) return FR_NO_FILESYSTEM;	/* (Wrong cluster count) */
+#if PI1MHZ_FF_EXFAT_MOUNT_CHECKS
+		if (fs->fsize < (ncl + 2 + SS(fs) / 4 - 1) / (SS(fs) / 4)) return FR_NO_FILESYSTEM;	/* (FAT must hold an entry for every cluster) */
+#endif
 		fs->n_fatent = ncl + 2;
 
 		/* Boundaries and Limits */
@@ -5206,8 +5224,15 @@ FRESULT f_mkdir (
 			res = (dj.fn[NSFLAG] & (NS_DOT | NS_NONAME)) ? FR_INVALID_NAME : FR_EXIST;
 		}
 		if (res == FR_NO_FILE) {				/* It is clear to create a new directory */
+#if PI1MHZ_FF_MKDIR_EXFAT_UNWIND
+			memset(&sobj, 0, sizeof sobj);		/* remove_chain() below reads the object on exFAT */
+#endif
 			sobj.fs = fs;						/* New object ID to create a new chain */
 			dcl = create_chain(&sobj, 0);		/* Allocate a cluster for the new directory */
+#if PI1MHZ_FF_MKDIR_EXFAT_UNWIND
+			sobj.sclust = dcl;					/* A one-cluster object, so an unwind frees exactly dcl */
+			sobj.objsize = (FSIZE_t)fs->csize * SS(fs);
+#endif
 			res = FR_OK;
 			if (dcl == 0) res = FR_DENIED;		/* No space to allocate a new cluster? */
 			if (dcl == 1) res = FR_INT_ERR;		/* Any insanity? */
@@ -5318,6 +5343,12 @@ FRESULT f_rename (
 				if (res == FR_OK) {					/* Is new name already in use by another object? */
 					res = (djn.obj.sclust == djo.obj.sclust && djn.dptr == djo.dptr) ? FR_NO_FILE : FR_EXIST;
 				}
+#if PI1MHZ_FF_RENAME_INTO_OWN_SUBTREE && FF_FS_RPATH
+				if (res == FR_NO_FILE && (buf[XDIR_Attr] & AM_DIR)) {	/* Moving a directory: not into its own subtree */
+					for (i = 1; i <= fs->xcwds2.depth && dscl != fs->xcwds2.tbl[i].d_scl; i++) ;	/* follow_path recorded the new parent's path */
+					if (i <= fs->xcwds2.depth) res = FR_DENIED;
+				}
+#endif
 				if (res == FR_NO_FILE) { 			/* It is a valid path and no name collision */
 					res = dir_register(&djn);		/* Register the new entry */
 					if (res == FR_OK) {
@@ -5343,6 +5374,30 @@ FRESULT f_rename (
 				if (res == FR_OK) {						/* Is new name already in use by another object? */
 					res = (djn.obj.sclust == djo.obj.sclust && djn.dptr == djo.dptr) ? FR_NO_FILE : FR_EXIST;
 				}
+#if PI1MHZ_FF_RENAME_INTO_OWN_SUBTREE
+				if (res == FR_NO_FILE && (buf[DIR_Attr] & AM_DIR) && djo.obj.sclust != djn.obj.sclust) {	/* Moving a directory: not into its own subtree */
+					DWORD scl = ld_clust(fs, buf), pcl = djn.obj.sclust, n;
+
+					for (n = fs->n_fatent; res == FR_NO_FILE && pcl != 0; n--) {	/* Follow ".." from the new parent up to the root */
+						if (pcl == scl || n == 0) {
+							res = n ? FR_DENIED : FR_INT_ERR;	/* In its own subtree, or a ".." loop */
+						} else {
+							LBA_t sect = clst2sect(fs, pcl);
+
+							if (sect == 0) {
+								res = FR_INT_ERR;
+							} else if (move_window(fs, sect) != FR_OK) {
+								res = FR_DISK_ERR;
+							} else if (fs->win[SZDIRE] != '.' || fs->win[SZDIRE + 1] != '.') {
+								res = FR_INT_ERR;	/* Not a sub-directory table */
+							} else {
+								pcl = ld_clust(fs, fs->win + SZDIRE);
+								if (fs->fs_type == FS_FAT32 && pcl == fs->dirbase) pcl = 0;	/* Some systems store the root's cluster */
+							}
+						}
+					}
+				}
+#endif
 				if (res == FR_NO_FILE) { 				/* It is a valid path and no name collision */
 					res = dir_register(&djn);			/* Register the new entry */
 					if (res == FR_OK) {
@@ -5789,6 +5844,11 @@ FRESULT f_expand (
 			} else {
 				scl = clst; ncl = 0;		/* Not a free cluster */
 			}
+#if PI1MHZ_FF_EXPAND_NO_WRAP_RUN
+			if (clst == 2) {	/* Wrapped to the first cluster: a run cannot continue across the end */
+				scl = 2; ncl = 0;
+			}
+#endif
 			if (clst == stcl) {		/* No contiguous cluster? */
 				res = FR_DENIED; break;
 			}

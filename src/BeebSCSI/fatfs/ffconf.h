@@ -317,5 +317,30 @@
 */
 
 
+/*---------------------------------------------------------------------------/
+/ Pi1MHz fixes to R0.16 (from a third-party R0.16 bug report, 2026-11).
+/ Each is a named #if in ff.c so the upstream diff stays readable; set 0 to
+/ get the stock behaviour back.
+/---------------------------------------------------------------------------*/
+
+#define PI1MHZ_FF_RENAME_INTO_OWN_SUBTREE	1
+/* f_rename() refuses (FR_DENIED) to move a directory into itself or one of
+/  its own sub-directories, which otherwise unlinks the whole tree. */
+
+#define PI1MHZ_FF_EXPAND_NO_WRAP_RUN	1
+/* f_expand() / find_bitmap() restart the free-run count when the cluster
+/  search wraps to the start of the volume, so free clusters at the end and
+/  at the start are not taken as one contiguous block. */
+
+#define PI1MHZ_FF_MKDIR_EXFAT_UNWIND	1
+/* f_mkdir() on exFAT: the new directory's cluster is freed with a valid
+/  object (start cluster and size set) when registering its entry fails. */
+
+#define PI1MHZ_FF_EXFAT_MOUNT_CHECKS	1
+/* exFAT mount: refuse a boot sector whose sector/cluster shift is out of
+/  range (no shift of 32 or more) or whose FAT is too small for its cluster
+/  count. sync_fs(): a failed boot-sector read leaves the window invalid. */
+
+
 
 /*--- End of configuration options ---*/
