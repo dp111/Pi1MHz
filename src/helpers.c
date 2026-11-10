@@ -25,14 +25,9 @@
    19 the serial redirector, 20 the telnet daemon, 21 VFS, and 22-30 are left free
    for future helpers,
    answering with a bare return until one is written.  46 is the explorer's
-   transfer page template and 47 prints the help screen. */
+   transfer page template and 47 the second half of every ROM loader
+   (swrinstall). */
 #define HELPER_PAGES 48u
-
-/* Helper 0 goes straight on to page 47, which waits in a JMP to itself at
-   &FD01 until the screen is at &FFE000; the Pi then rewrites the JMP's
-   low byte to go on to &FD04 (6502code.asm, HELP_PAGE). */
-#define HELPERS_HELP_PAGE     47u
-#define HELPERS_HELP_RELEASE  0x04u
 
 /* Helpers 19 and 20 hook the vectors into the serial stub (19 for the modem,
    20 for the telnet daemon); the LDY # at &FD06 of each carries the stub's FRED
@@ -62,7 +57,7 @@ static volatile uint32_t help_shown_us;
 _Alignas(4) static char  help_text[2][1536];
 static volatile uint16_t help_len[2];
 static volatile uint8_t  help_front;
-#define HELP_JIM (DISC_RAM_BASE + 0x00FFE000u)  /* where page 47 prints it from */
+#define HELP_JIM (DISC_RAM_BASE + 0x00FFE000u)  /* where the page-0 code prints from */
 
 /* The help screen (helper 0, and the Pi's boot splash).
 
@@ -258,7 +253,7 @@ static void helpers_bank_select(unsigned int gpio)
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
-        if (data == HELPERS_HELP_PAGE)
+        if (data==0)
         {
             /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
                goes there only now, when the Beeb has asked for it - a copy,
@@ -270,7 +265,7 @@ static void helpers_bank_select(unsigned int gpio)
             uint32_t *dst = (uint32_t *)(void *)&Pi1MHz->JIM_ram[HELP_JIM];
             for (unsigned int w = (help_len[f] + 4u) / 4u; w != 0u; w--)
                 *dst++ = *src++;
-            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+2, HELPERS_HELP_RELEASE);   /* screen in place: release the waitloop */
+            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen in place: release the waitloop */
             help_shown_us = Pi1MHz_now_us;
             help_shown_pending = true;                          /* reformat for next time, once printed */
         }
@@ -283,7 +278,7 @@ static void helpers_bank_select(unsigned int gpio)
    only while the player is idle: a mailbox exchange can block the poll loop
    (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
    starves the Beeb's SCSI handshake. */
-/* The help screen is formatted ahead of time, so the page-47 switch in FIQ
+/* The help screen is formatted ahead of time, so the page-0 switch in FIQ
    only copies it into JIM and releases the Beeb (formatting there took
    tens of microseconds, long enough for the bus post ring to overrun while
    the Beeb fetched its waitloop from JIM).  It is formatted once at init

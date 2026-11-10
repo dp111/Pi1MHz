@@ -11,7 +11,7 @@ to load into, ahead of any free bank; a free RAM bank is the next choice; any
 other ROM, and any bank that cannot be written, is left alone.  The title is
 taken from the file being loaded, so this holds for every loader.
 
-A loader is two pages: its own reads the file into the Pi's buffer, page 0
+A loader is two pages: its own reads the file into the Pi's buffer, page 47
 (swrinstall) picks the bank and copies it in.  They run in the same &FD00
 window and hand over through the page switch at the end of each, which this
 model carries out as the firmware does (a write to &FC88 shows another page).
@@ -228,7 +228,7 @@ def ram(img=None):
 def loader_name(image, page):
     """The file a loader page opens, read from its open command."""
     pg = image[page * 256:page * 256 + 256]
-    i = pg.index(b"\x02\x00\x01")
+    i = max(pg.find(b"\x02\x00\x01"), pg.find(b"\x02\x00\x41"))   # &41: a wildcard name
     return pg[i + 3:pg.index(0, i + 3)].decode()
 
 
@@ -279,7 +279,7 @@ def main(args):
         check(mem.bank == SAVED_F4 and mem.ram[0xF4] == SAVED_F4,
               f"{what}: and the ROM selected is put back")
 
-    # The rest of the cases are the shared page-0 half, so one loader will do.
+    # The rest of the cases are the shared page-47 half, so one loader will do.
     page = 16
     files = {loader_name(image, page): bytes(new)}
 

@@ -313,9 +313,12 @@ NEXT
 
 ENDMACRO
 
+;; swrinstall's page (page 47, at the end of the file).
+SWR_PAGE = 47
+
 ;; The ROM loaders, helpers 3-16, 18 and 21.  Each page opens its file and reads
 ;; all of it into the Pi's buffer at &F00000, then hands over to swrinstall in
-;; page 0, which picks the bank, copies the buffer into it and resets the
+;; page 47, which picks the bank, copies the buffer into it and resets the
 ;; machine.  The loader page only names the file; finding the bank is shared,
 ;; and can see the incoming ROM's title in the buffer: see swrinstall.
 ;; The ROM number on entry is pushed first: swrinstall restores it if there is
@@ -358,8 +361,8 @@ MACRO READROMFILE own
 IF own
     JMP romread
 ELSE
-    LDY #swrinstall-&FD01           ; on to page 0
-    LDA #0
+    LDY #swrinstall-&FD01           ; on to page 47
+    LDA #SWR_PAGE
     JMP pageswitch
 ENDIF
 
@@ -426,145 +429,32 @@ MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
 }
 ENDMACRO
 
-; The help screen's printer, an internal page like the explorer's: helper 0
-; goes straight on to it (page 0 is full).  Selecting it makes the Pi copy
-; the formatted screen to &FFE000 and then release the wait loop
-; (helpers.c, HELPERS_HELP_PAGE: it rewrites the JMP's low byte).
-HELP_PAGE  = 47
-HELP_ENTRY = 1
-
-; Page 0
-; help screen
+; Page 0: the help screen, and nothing else.  Selecting it makes the Pi
+; copy the formatted screen to &FFE000 and then release the wait loop by
+; rewriting the JMP's low byte (helpers.c).  Printed in paged mode, as it
+; can be longer than the screen (a row for each user ROM), and paged mode
+; is put back as it was.
 {
 ORG &FD00
-    GOTOPAGE HELP_PAGE, HELP_ENTRY  ; the help screen is printed by page 47
-
-;; swrinstall: the second half of every ROM loader (see READROMFILE).  The
-;; ROM is in the Pi's buffer at &F00000 and the ROM number from before the
-;; loader ran is on the stack.  Two passes over the banks, 15 down to 0:
-;;   1. a RAM bank holding a ROM with the incoming ROM's title (compared up
-;;      to the zero that ends it, so the version does not matter): loading
-;;      again after CTRL-BREAK replaces the copy the last load left, rather
-;;      than leaving two or finding no room;
-;;   2. a RAM bank holding no ROM.
-;; A bank holding any other ROM is never written, nor is one that is not RAM.
-.*swrinstall                         ; pass is &80 here: the Pi copies the
-.passlp                             ; page afresh on every select
-    LDX #15
-.romlp
-    stx     &f4
-    stx     &fe30
-    LDA     #'.'
-    JSR     OSWRCH
-    ldy     &8007                   ; is there a ROM here: a copyright string
-    ldx     #0                      ; (X is free: the bank is in &F4)
-.copylp
-    lda     &8000, Y
-    cmp     copyright, X
-    bne     noromhere
-    iny
-    inx
-    cpx     #4
-    bne     copylp
-    bit     pass                    ; a ROM: only the first pass looks closer
-    bpl     romnxt
-    ldy     #9                      ; its title against the incoming one, from
-    sty     discaccess              ; byte 9 of the buffer
-    ldy     #0
-    sty     discaccess+1
-    lda     #&F0
-    sta     discaccess+2
-.titlelp
-    lda     discaccess+3            ; auto increment register
-    cmp     &8009, Y
-    bne     romnxt
-    iny
-    tax                             ; Z: the zero that ends the title
-    bne     titlelp
-    beq     testram                 ; the same ROM: replace it if it is RAM
-.noromhere
-    bit     pass                    ; no ROM: only the second pass takes it
-    bmi     romnxt
-.testram
-    lda     &8006
-    eor     #&FF
-    sta     &8006
-    cmp     &8006
-    beq     SWRfound
-.romnxt
-    ldx     &f4
-    dex
-    bpl     romlp
-    asl     pass                    ; C = it was the first pass
-    bcs     passlp
-
-.*noswr                             ; also a loader's own search's end
-    JSR     fclose                  ; nowhere to put it
-    PLA
-    sta    &f4
-    sta    &fe30
-    BRK
-    EQUB 255: EQUS "No SWR":EQUB 0
-
-;; The bank may hold a live copy of this ROM, known to the MOS and perhaps
-;; owning vectors or interrupts, so everything that calls the OS is done
-;; before it is overwritten, and the copy runs with interrupts off: nothing
-;; may enter the half-written bank.  C says which reset, and survives the
-;; copy and fclose (neither touches it).
-.*SWRfound                          ; the bank to load is selected (&F4, &FE30)
-    LDA #0      ; get machine id
-    LDX #1
-    JSR OSBYTE
-    CPX #3      ; C clear: BEEB or B+
-    BCC copyrom
-    LDA #200    ; master
-    LDY #0
-    LDX #2
-    JSR OSBYTE
-    SEC
-.copyrom
-    SEI
-    LDY #0   : STY discaccess
-             : STY discaccess+1
-    LDA #&F0 : STA discaccess+2
-                                    ; swrpointer is &8000: the page is fresh
-    LDX #&C0-&80
-.copyswrloop
-    LDA discaccess+3
-.swrpointer
-    STA &8000,Y
-    INY
-    BNE copyswrloop
-
-    INC swrpointer+2
-    DEX
-    BNE copyswrloop;
-    JSR fclose
-    BCS tubereset   ; Master: OSBYTE 200 above
-    LDA #&7F        ; BEEB and B+
-    STA &FE4E       ; clear IER
-;; The jump through the reset vector restarts only this CPU, so the second
-;; processor's reset is pulsed first, as the BREAK key's does (and F12's, in
-;; serial_redirect.c): &A0 at &FEE0 sets P, &20 clears it.  Left running, a
-;; second processor kept the Master from taking keys until a BREAK.  Without
-;; a Tube nothing answers at &FEE0.
-.tubereset
-    LDA #&A0 : STA &FEE0
-    AND #&7F : STA &FEE0
-    JMP (&FFFC) ; Reset
-
-.fclose
-    LDY #0   : STY discaccess
-    DEY      : STY discaccess+1
-               STY discaccess+2
-    LDA #3   : STA discaccess+3
-               STY discaccess+4
-    RTS
-
-.copyright
-    EQUB 0 : EQUS "(C)"
-.pass
-    EQUB &80    ; swrinstall's pass: bit 7 set on the first
+.waitloop
+    JMP waitloop    ; the Pi rewrites the low byte when the screen is in place
+    ASSERT P% = &FD03
+    LDA #117 : JSR OSBYTE       ; X = VDU status: bit 2 is paged mode
+    TXA : PHA
+    LDA #14  : JSR OSWRCH       ; paged mode on
+    LDA #0   : STA discaccess   ; the screen, at &FFE000
+    LDA #&E0 : STA discaccess+1
+    LDA #&FF : STA discaccess+2
+.stringloop
+    LDA discaccess+3            ; auto increment register
+    JSR OSWRCH
+    TAX                         ; set flags
+    BNE stringloop
+    PLA : AND #4                ; paged mode was on: leave it on
+    BNE pagedon
+    LDA #15  : JSR OSWRCH
+.pagedon
+    PAGERTS
 
   PAGESWITCHORG
   PAGESWITCH
@@ -1088,11 +978,11 @@ ORG &FD00
 ; ---------------------------------------------------------------------------
 ; Page 21 : VFS, only into sideways RAM in banks 8, 3, 2, 1 or 0
 ;
-; The other loaders hand the bank choice to page 0 (swrinstall), which tries
+; The other loaders hand the bank choice to page 47 (swrinstall), which tries
 ; every bank 15 to 0.  This one makes the same two passes itself over its own
 ; list - a RAM bank holding a ROM with the incoming title, then an empty RAM
-; bank - and goes on to page 0's SWRfound with the bank selected, or to its
-; noswr when none will do.  Page 0 then copies and resets as for any ROM.
+; bank - and goes on to page 47's SWRfound with the bank selected, or to its
+; noswr when none will do.  Page 47 then copies and resets as for any ROM.
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1105,7 +995,7 @@ ORG &FD00
     LDA     #vfsbanksend-vfsbanks-1
     STA     idx
 .banklp
-    LDX     idx                     ; the last in the list first, as page 0
+    LDX     idx                     ; the last in the list first, as page 47
     LDA     vfsbanks, X             ; goes from 15 down
     STA     &F4
     STA     &FE30
@@ -1152,11 +1042,11 @@ ORG &FD00
     ASL     pass                    ; C = it was the first pass
     BCS     passlp
     LDY     #noswr-&FD01
-    BNE     page0                   ; always
+    BNE     swrpage                 ; always
 .found
     LDY     #SWRfound-&FD01
-.page0
-    LDA     #0
+.swrpage
+    LDA     #SWR_PAGE
     JMP     pageswitch
 
 .copyright
@@ -2187,35 +2077,142 @@ NEXT
     ENDBLOCK &2E00
 }
 
-; Page 47: the help screen, reached from helper 0.  Run as helper 47
-; itself it only returns.  Printed in paged mode, as it can be longer than
-; the screen (a row for each user ROM), and paged mode is put back as it
-; was.
+; Page 47: swrinstall, the second half of every ROM loader - an internal
+; page like the explorer's.  Run as helper 47 itself it only returns.
 {
     ORG &FD00
     RTS
-.waitloop
-    ASSERT waitloop = &FD00 + HELP_ENTRY
-    JMP waitloop    ; the Pi rewrites the low byte when the screen is in place
-    ASSERT P% = &FD04
-    LDA #117 : JSR OSBYTE       ; X = VDU status: bit 2 is paged mode
-    TXA : PHA
-    LDA #14  : JSR OSWRCH       ; paged mode on
-    LDA #0   : STA discaccess   ; the screen, at &FFE000
-    LDA #&E0 : STA discaccess+1
-    LDA #&FF : STA discaccess+2
-.stringloop
-    LDA discaccess+3            ; auto increment register
-    JSR OSWRCH
-    TAX                         ; set flags
-    BNE stringloop
-    PLA : AND #4                ; paged mode was on: leave it on
-    BNE pagedon
-    LDA #15  : JSR OSWRCH
-.pagedon
-    PAGERTS
-    PAGESWITCHORG                   ; page 0 switches here from its own
-    PAGESWITCH                      ; trailer: the rest of it runs from this page
+
+;; swrinstall: the second half of every ROM loader (see READROMFILE).  The
+;; ROM is in the Pi's buffer at &F00000 and the ROM number from before the
+;; loader ran is on the stack.  Two passes over the banks, 15 down to 0:
+;;   1. a RAM bank holding a ROM with the incoming ROM's title (compared up
+;;      to the zero that ends it, so the version does not matter): loading
+;;      again after CTRL-BREAK replaces the copy the last load left, rather
+;;      than leaving two or finding no room;
+;;   2. a RAM bank holding no ROM.
+;; A bank holding any other ROM is never written, nor is one that is not RAM.
+.*swrinstall                         ; pass is &80 here: the Pi copies the
+.passlp                             ; page afresh on every select
+    LDX #15
+.romlp
+    stx     &f4
+    stx     &fe30
+    LDA     #'.'
+    JSR     OSWRCH
+    ldy     &8007                   ; is there a ROM here: a copyright string
+    ldx     #0                      ; (X is free: the bank is in &F4)
+.copylp
+    lda     &8000, Y
+    cmp     copyright, X
+    bne     noromhere
+    iny
+    inx
+    cpx     #4
+    bne     copylp
+    bit     pass                    ; a ROM: only the first pass looks closer
+    bpl     romnxt
+    ldy     #9                      ; its title against the incoming one, from
+    sty     discaccess              ; byte 9 of the buffer
+    ldy     #0
+    sty     discaccess+1
+    lda     #&F0
+    sta     discaccess+2
+.titlelp
+    lda     discaccess+3            ; auto increment register
+    cmp     &8009, Y
+    bne     romnxt
+    iny
+    tax                             ; Z: the zero that ends the title
+    bne     titlelp
+    beq     testram                 ; the same ROM: replace it if it is RAM
+.noromhere
+    bit     pass                    ; no ROM: only the second pass takes it
+    bmi     romnxt
+.testram
+    lda     &8006
+    eor     #&FF
+    sta     &8006
+    cmp     &8006
+    beq     SWRfound
+.romnxt
+    ldx     &f4
+    dex
+    bpl     romlp
+    asl     pass                    ; C = it was the first pass
+    bcs     passlp
+
+.*noswr                             ; also a loader's own search's end
+    JSR     fclose                  ; nowhere to put it
+    PLA
+    sta    &f4
+    sta    &fe30
+    BRK
+    EQUB 255: EQUS "No SWR":EQUB 0
+
+;; The bank may hold a live copy of this ROM, known to the MOS and perhaps
+;; owning vectors or interrupts, so everything that calls the OS is done
+;; before it is overwritten, and the copy runs with interrupts off: nothing
+;; may enter the half-written bank.  C says which reset, and survives the
+;; copy and fclose (neither touches it).
+.*SWRfound                          ; the bank to load is selected (&F4, &FE30)
+    LDA #0      ; get machine id
+    LDX #1
+    JSR OSBYTE
+    CPX #3      ; C clear: BEEB or B+
+    BCC copyrom
+    LDA #200    ; master
+    LDY #0
+    LDX #2
+    JSR OSBYTE
+    SEC
+.copyrom
+    SEI
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
+                                    ; swrpointer is &8000: the page is fresh
+    LDX #&C0-&80
+.copyswrloop
+    LDA discaccess+3
+.swrpointer
+    STA &8000,Y
+    INY
+    BNE copyswrloop
+
+    INC swrpointer+2
+    DEX
+    BNE copyswrloop;
+    JSR fclose
+    BCS tubereset   ; Master: OSBYTE 200 above
+    LDA #&7F        ; BEEB and B+
+    STA &FE4E       ; clear IER
+;; The jump through the reset vector restarts only this CPU, so the second
+;; processor's reset is pulsed first, as the BREAK key's does (and F12's, in
+;; serial_redirect.c): &A0 at &FEE0 sets P, &20 clears it.  Left running, a
+;; second processor kept the Master from taking keys until a BREAK.  Without
+;; a Tube nothing answers at &FEE0.
+.tubereset
+    LDA #&A0 : STA &FEE0
+    AND #&7F : STA &FEE0
+    JMP (&FFFC) ; Reset
+
+.fclose
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
+    LDA #3   : STA discaccess+3
+               STY discaccess+4
+    RTS
+
+.copyright
+    EQUB 0 : EQUS "(C)"
+.pass
+    EQUB &80    ; swrinstall's pass: bit 7 set on the first
+
+    PRINT "page 47 (swrinstall) spare bytes:", &FE00-9-P%
+    PAGESWITCHORG
+    PAGESWITCH
     ENDBLOCK &2F00
 }
 
