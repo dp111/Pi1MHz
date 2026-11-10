@@ -28,7 +28,7 @@
 /* Not a key but a request: the client pressed ESC (a lone ESC, once it is clear
    no sequence follows) or Ctrl-C.  The Beeb's ESCAPE is a condition the keyboard
    scan raises, not a character in the buffer, so it cannot travel as a key: the
-   daemon passes it to serial_redirect_escape().  0 is free for it because NUL is
+   daemon passes it to serial_redirect_escape_key().  0 is free for it because NUL is
    never a key. */
 #define TND_KEY_ESCAPE 0u
 

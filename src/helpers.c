@@ -76,7 +76,7 @@ static volatile uint8_t  help_front;
    Arguments, in order:
      %s   git version              (GITVERSION)
      %s   Pi info string           (revision, ARM MHz)
-     %ld.%ld  SoC temperature, tenths (integer arithmetic: FIQ context)
+     %ld.%ld  SoC temperature, tenths (integer arithmetic: no float printf)
      %X   helper base address, hex (CALL &FCxx)
      %d   helper base address, dec (*FX147,n)
      %s   the user ROM lines       (helpers_user_roms: 1-6 lines, each ending CR LF)
@@ -276,12 +276,12 @@ static void helpers_bank_select(unsigned int gpio)
     }
 }
 
-/* The help screen is assembled in FIQ (a Beeb write to FRED), and the
-   mailbox is main-loop only - one static property buffer, no locking. So
-   everything the screen prints must already be cached. Refresh here, and
-   only while the player is idle: a mailbox exchange can block the poll loop
-   (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
-   starves the Beeb's SCSI handshake. */
+/* What the screen prints comes from the mailbox, which is main-loop only -
+   one static property buffer, no locking - so it is cached
+   (info_refresh_cached) and refreshed from the poll, and only while the
+   player is idle: a mailbox exchange can block the poll loop (bounded only
+   by the 3 s mailbox timeout) and stalling it mid-playback starves the
+   Beeb's SCSI handshake. */
 /* The help screen is formatted ahead of time, so the page-0 switch in FIQ
    only copies it into JIM and releases the Beeb (formatting there took
    tens of microseconds, long enough for the bus post ring to overrun while

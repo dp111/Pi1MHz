@@ -1526,6 +1526,9 @@ static void vdu_delete      (const uint8_t *buf)
 
 static void vdu_5(const uint8_t *buf) {
    (void)buf;
+   /* the copy cursor too: cursor_interrupt goes on flashing it while it is
+      enabled, over whatever is then plotted there */
+   e_enabled = 0;
    disable_cursors();
    text_at_g_cursor = 1;
 }

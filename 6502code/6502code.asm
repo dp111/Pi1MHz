@@ -40,11 +40,10 @@ OSGBPB = &FFD1
 ; command block &FFF000), the ROM loader (&F00000) and the command blocks.
 ; ---------------------------------------------------------------------------
 
-; Helper numbers 18-30 are kept for other helpers (18 FujiNet, 19 serial), so the
-; explorer's own pages start above them.  Only EXP_HUB is a helper anybody
-; runs; the rest are pages it chains through while it is running.
-EXP_FREE_FIRST = 20 ; first reserved-for-future helper page (19 is serial)
-EXP_FREE_LAST  = 30 ; last one
+; Helper numbers 18-30 are kept for other helpers (18 FujiNet, 19 serial,
+; 20 telnet, 21 VFS; 22-30 free), so the explorer's own pages start above
+; them.  Only EXP_HUB is a helper anybody runs; the rest are pages it chains
+; through while it is running.
 
 EXP_HUB   = 17      ; init
 EXP_KEY   = 31      ; key dispatch loop
@@ -278,6 +277,56 @@ MACRO PAGERTS
     JMP &FC88
 ENDMACRO
 
+;; One bank of a ROM loader's search for sideways RAM, the bank selected
+;; (&F4 and &FE30).  Two passes, told apart by bit 7 of the page's own
+;; "pass" byte (set on the first):
+;;   1. a RAM bank holding a ROM with the incoming ROM's title (the file is
+;;      in the Pi's buffer at &F00000; compared up to the zero that ends the
+;;      title, so the version does not matter);
+;;   2. a RAM bank holding no ROM.
+;; Branches to take with the bank to use, to next to try another.  The page
+;; supplies .pass and .copyright (0, "(C)").  Used by page 47 (every bank)
+;; and page 21 (VFS's own list), so the two cannot drift apart.
+MACRO SWRBANKTEST next, take
+    LDA     #'.'
+    JSR     OSWRCH
+    LDY     &8007                   ; is there a ROM here: a copyright string
+    LDX     #0                      ; (X is free: the bank is in &F4)
+.copylp
+    LDA     &8000, Y
+    CMP     copyright, X
+    BNE     noromhere
+    INY
+    INX
+    CPX     #4
+    BNE     copylp
+    BIT     pass                    ; a ROM: only the first pass looks closer
+    BPL     next
+    LDY     #9                      ; its title against the incoming one, from
+    STY     discaccess              ; byte 9 of the buffer
+    LDY     #0
+    STY     discaccess+1
+    LDA     #&F0
+    STA     discaccess+2
+.titlelp
+    LDA     discaccess+3            ; auto increment register
+    CMP     &8009, Y
+    BNE     next
+    INY
+    TAX                             ; Z: the zero that ends the title
+    BNE     titlelp
+    BEQ     testram                 ; the same ROM: replace it if it is RAM
+.noromhere
+    BIT     pass                    ; no ROM: only the second pass takes it
+    BMI     next
+.testram
+    LDA     &8006
+    EOR     #&FF
+    STA     &8006
+    CMP     &8006
+    BEQ     take
+ENDMACRO
+
 ;; entry A bank to switch too
 ;; Y pointer into back - 1
 ;; X parameter for code
@@ -460,6 +509,8 @@ ORG &FD00
     JSR OSWRCH
     PAGERTS
 
+  ; no page switches to or from this one any more; the trailer stays so
+  ; that every page a helper number can select has it
   PAGESWITCHORG
   PAGESWITCH
   ENDBLOCK &000
@@ -971,15 +1022,6 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 22-30 : reserved for future helpers
-;
-; Free slots, so a new helper can be added without moving the explorer's
-; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
-; helper page, so running one before it does anything simply returns.
-; (The telnet auto-start ROM, telnetd.rom, is loaded like any other ROM: no helper.)
-; ---------------------------------------------------------------------------
-
-; ---------------------------------------------------------------------------
 ; Page 21 : VFS, only into sideways RAM in banks 8, 3, 2, 1 or 0
 ;
 ; The other loaders hand the bank choice to page 47 (swrinstall), which tries
@@ -1003,43 +1045,7 @@ ORG &FD00
     LDA     vfsbanks, X             ; goes from 15 down
     STA     &F4
     STA     &FE30
-    LDA     #'.'
-    JSR     OSWRCH
-    LDY     &8007                   ; is there a ROM here: a copyright string
-    LDX     #0
-.copylp
-    LDA     &8000, Y
-    CMP     copyright, X
-    BNE     noromhere
-    INY
-    INX
-    CPX     #4
-    BNE     copylp
-    BIT     pass                    ; a ROM: only the first pass looks closer
-    BPL     banknxt
-    LDY     #9                      ; its title against the incoming one
-    STY     discaccess
-    LDY     #0
-    STY     discaccess+1
-    LDA     #&F0
-    STA     discaccess+2
-.titlelp
-    LDA     discaccess+3
-    CMP     &8009, Y
-    BNE     banknxt
-    INY
-    TAX                             ; Z: the zero that ends the title
-    BNE     titlelp
-    BEQ     testram
-.noromhere
-    BIT     pass                    ; no ROM: only the second pass takes it
-    BMI     banknxt
-.testram
-    LDA     &8006
-    EOR     #&FF
-    STA     &8006
-    CMP     &8006
-    BEQ     found
+    SWRBANKTEST banknxt, found
 .banknxt
     DEC     idx
     BPL     banklp
@@ -1071,6 +1077,15 @@ ORG &FD00
     PAGESWITCH
     ENDBLOCK &1500
 }
+
+; ---------------------------------------------------------------------------
+; Pages 22-30 : reserved for future helpers
+;
+; Free slots, so a new helper can be added without moving the explorer's
+; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
+; helper page, so running one before it does anything simply returns.
+; (The telnet auto-start ROM, telnetd.rom, is loaded like any other ROM: no helper.)
+; ---------------------------------------------------------------------------
 
 {
     ORG &FD00
@@ -2103,43 +2118,7 @@ NEXT
 .romlp
     stx     &f4
     stx     &fe30
-    LDA     #'.'
-    JSR     OSWRCH
-    ldy     &8007                   ; is there a ROM here: a copyright string
-    ldx     #0                      ; (X is free: the bank is in &F4)
-.copylp
-    lda     &8000, Y
-    cmp     copyright, X
-    bne     noromhere
-    iny
-    inx
-    cpx     #4
-    bne     copylp
-    bit     pass                    ; a ROM: only the first pass looks closer
-    bpl     romnxt
-    ldy     #9                      ; its title against the incoming one, from
-    sty     discaccess              ; byte 9 of the buffer
-    ldy     #0
-    sty     discaccess+1
-    lda     #&F0
-    sta     discaccess+2
-.titlelp
-    lda     discaccess+3            ; auto increment register
-    cmp     &8009, Y
-    bne     romnxt
-    iny
-    tax                             ; Z: the zero that ends the title
-    bne     titlelp
-    beq     testram                 ; the same ROM: replace it if it is RAM
-.noromhere
-    bit     pass                    ; no ROM: only the second pass takes it
-    bmi     romnxt
-.testram
-    lda     &8006
-    eor     #&FF
-    sta     &8006
-    cmp     &8006
-    beq     SWRfound
+    SWRBANKTEST romnxt, SWRfound
 .romnxt
     ldx     &f4
     dex

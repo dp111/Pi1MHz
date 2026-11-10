@@ -348,7 +348,7 @@ def main(args):
     check(r == ("reset",) and mem.opened == [m_name], f"helper 18 on a Master: {mem.opened}")
 
     # Helper 21 loads VFS only into banks 8, 3, 2, 1 and 0, searching them in
-    # that order with the same two passes, then page 0 copies and resets.
+    # that order with the same two passes, then page 47 copies and resets.
     vfs = loader_name(image, 21)
     check(vfs == "Pi1MHz/VFS.rom", f"helper 21 opens {vfs}")
     files = {vfs: bytes(new)}

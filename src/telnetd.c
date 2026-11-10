@@ -487,11 +487,7 @@ static void login_key(uint8_t k)
    }
 }
 
-/* One key from the client: a key for the Beeb, a login character, or the ESCAPE
-   request.  ESCAPE goes straight to the redirect instead of through the key
-   ring - the Beeb may be busy in a loop with its keyboard buffer full of
-   type-ahead, which is when it is wanted - and, as the Beeb's own ESCAPE does,
-   it discards what was typed ahead. */
+/* Keys given to the Beeb that it has not taken out of its buffer yet. */
 static uint32_t keys_waiting(void)
 {
    uint32_t taken = serial_redirect_beeb->key_gen + serial_redirect_beeb->key_other_gen;
@@ -513,6 +509,11 @@ static void keys_emptied(void)                   /* the Beeb's buffer emptied (E
    g_keys_base = serial_redirect_rx_count() - serial_redirect_beeb->key_gen - serial_redirect_beeb->key_other_gen;
 }
 
+/* One key from the client: a key for the Beeb, a login character, or the ESCAPE
+   request.  ESCAPE goes straight to the redirect instead of through the key
+   ring - the Beeb may be busy in a loop with its keyboard buffer full of
+   type-ahead, which is when it is wanted - and, as the Beeb's own ESCAPE does,
+   it discards what was typed ahead. */
 static void deliver_key(uint8_t k)
 {
    if (g_lit_next) {                             /* the byte after TND_KEY_LIT: any value, as it is */
@@ -664,7 +665,6 @@ static void banner_byte(uint8_t c)
       g_banner_until = Pi1MHz_now_us;              /* the language's prompt: the start-up is over */
 }
 
-/* With nobody connected, or before the login, the Beeb's output is only followed. */
 /* Diagnostics (telnetd_debug): a printable byte the Beeb printed that sent the client nothing,
    with the model's state, and the bytes followed with nobody shown them while a client is on. */
 #define SIL_RING 12u
@@ -730,6 +730,7 @@ static void o_beeb_line(void)
       o_str(cl);
 }
 
+/* With nobody connected, or before the login, the Beeb's output is only followed. */
 static void beeb_follow(uint8_t c)
 {
    tline_byte(c);
@@ -1049,6 +1050,19 @@ static void tcp_watch(uint32_t now_us)
    }
 }
 
+/* An ANSI terminal that is no longer the Beeb's screen drawn again from the model, by
+   position, in the Beeb's colours.  Nothing if the model has nothing to draw from. */
+static void o_redraw(void)
+{
+   uint8_t rb[TND_COPY_MAX];
+   size_t  rn = tnd_out_redraw(&g_out, rb);
+
+   if (rn != 0u) {
+      o_put(rb, rn);
+      o_put(rb, tnd_out_colours(&g_out, rb));
+   }
+}
+
 /* The loss probe.  On WiFi a segment is lost now and then; lwIP resends it only when its
    retransmission timer runs out, in 500 ms ticks from its round-trip estimate and doubled at
    once, so an interactive session (too little traffic for a fast retransmit) froze for 2 to 10
@@ -1331,12 +1345,7 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       g_mode_gen = g_in.mode_gen;
       if (g_stage == S_LIVE) {
          if (g_ansi) {
-            uint8_t rb[TND_COPY_MAX];
-            size_t  rn = tnd_out_redraw(&g_out, rb);
-            if (rn != 0u) {
-               o_put(rb, rn);
-               o_put(rb, tnd_out_colours(&g_out, rb));
-            }
+            o_redraw();
          } else {
             o_str("\r");
             o_beeb_line();
@@ -1349,14 +1358,8 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       the Beeb's own echo of the line then lands in its place. */
    if (g_pcb != NULL && logged_in() && g_in.line_gen != g_line_gen && o_room() >= TND_COPY_MAX + 16u) {
       g_line_gen = g_in.line_gen;
-      if (g_stage == S_LIVE && g_ansi) {
-         uint8_t rb[TND_COPY_MAX];
-         size_t  rn = tnd_out_redraw(&g_out, rb);
-         if (rn != 0u) {
-            o_put(rb, rn);
-            o_put(rb, tnd_out_colours(&g_out, rb));
-         }
-      }
+      if (g_stage == S_LIVE && g_ansi)
+         o_redraw();
    }
 
    /* Connecting: a dot now and then; done once the minimum is over and the client has said its
