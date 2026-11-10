@@ -61,14 +61,14 @@ static volatile uint8_t  help_front;
 
 /* The help screen (helper 0, and the Pi's boot splash).
 
-   One printf template, laid out for the Beeb's 40 x 25 text screen: every
-   line is 40 columns or fewer and the whole screen is 24 rows, leaving one
-   free - before the user ROMs, which take one row each when there are
-   any (up to 29 rows: helper 0 prints in paged mode).  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
-   values, so an edit that wraps a line or spills past row 25 fails there,
-   not on the Beeb.  Every substituted value fits at its widest; the one line
+   One printf template, 40 columns wide for the Beeb's text screen.  It is
+   26 rows, and each user ROM after the first adds one (32 at most), so
+   it is longer than a 25-row screen: helper 0 prints it in paged mode.
+   src/tests/helpers (which pulls the #defines out of this file) checks it
+   with worst-case values, so an edit that wraps a line fails there, not
+   on the Beeb.  Every substituted value fits at its widest; the one line
    at exactly 40 columns is the version line, where a longer git describe
-   wraps it and spends a free row.
+   wraps it.
 
    Arguments, in order:
      %s   git version              (GITVERSION)
@@ -103,14 +103,15 @@ static volatile uint8_t  help_front;
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
-   "19  Modem   20  Telnetd   21  VFS.rom\r\n"                           \
+   "19  Modem (serial redirector)\r\n"                                  \
+   "20  Telnetd\r\n"                                                    \
+   "21  VFS (bank 8,3-0)   VFS.rom\r\n"                                 \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
    "*FX147,202,%d 203,1-3 out/in/restart\r\n"                          \
    "  then 203,4/5/6 discs on SD/USB/SMB\r\n"
 
 #define HELPERS_HELP_COLUMNS 40u
-#define HELPERS_HELP_ROWS    25u
 /* The user ROM lines: none found, or one per helper 10-15 that has a file. */
 #define HELPERS_USER_ROM_NONE "10+ Your ROM (10-15)   ROM10*.rom\r\n"
 #define HELPERS_USER_ROM_LINE "%u  %.36s\r\n"

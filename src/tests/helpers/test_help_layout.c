@@ -1,6 +1,7 @@
-/* The help screen must fit the Beeb's 40 x 25 text screen with worst-case
-   values substituted, and leave room for future helpers.  This renders the
-   template exactly as helpers_screen_setup does and measures it. */
+/* The help screen's lines must fit the Beeb's 40 columns with worst-case
+   values substituted (it is printed paged, so its length is not capped).
+   This renders the template exactly as helpers_screen_setup does and
+   measures it. */
 #include <stdio.h>
 #include <string.h>
 #include "help_fmt.inc"
@@ -38,7 +39,7 @@ int main(void)
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
    ok(over == 0, "typical: every line fits 40 columns");
-   ok(rows == 24, "typical: 24 rows (1 free for future helpers)");
+   ok(rows == 26, "typical: 26 rows (printed paged)");
 
    /* Worst case: every substituted value at its widest.  The revision code
       is shown without its flag bits, so it is at most 6 hex digits, and the
@@ -51,7 +52,7 @@ int main(void)
    rows = rows_of(buf, &widest, &over);
    printf("worst:   %u rows, widest %u\n", rows, widest);
    ok(over <= 1, "worst case: only the version line may wrap");
-   ok(rows <= HELPERS_HELP_ROWS, "worst case, no user ROMs: still within 25 rows");
+   ok(rows <= 27u, "worst case, no user ROMs: 27 rows at most (the version line may wrap)");
    unsigned none_rows = rows;
 
    /* All six user ROMs, each name longer than fits: one row each, cut at
