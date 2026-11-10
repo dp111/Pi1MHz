@@ -114,27 +114,22 @@ static volatile uint8_t  help_front;
 #define HELPERS_HELP_COLUMNS 40u
 /* The user ROM lines: none found, or one per helper 10-15 that has a file. */
 #define HELPERS_USER_ROM_NONE "10+ Your ROM (10-15)   ROM10*.rom\r\n"
-#define HELPERS_USER_ROM_LINE "%u  %.36s\r\n"
+/* 35, not 36: a line that fills all 40 columns wraps the Beeb's cursor,
+   and its CR LF then leaves a blank row */
+#define HELPERS_USER_ROM_LINE "%u  %.35s\r\n"
 
 /* The file each of helpers 10-15 loads - the name after "Pi1MHz/", ""
    for none - as the loader's wildcard open chooses it
-   (fat_service_wild_resolve).  Read from the card in the poll loop, never
-   at a BBC reset or in FIQ: see helpers_poll. */
+   (fat_service_wild_leaves: one pass of the Pi1MHz folder for all six).
+   Read from the card in the poll loop, never in FIQ: see helpers_poll. */
 static char helper_user_rom[6][40];
 static bool helper_user_rom_scan;     /* read them again, when the player is idle */
 
 static void helpers_user_rom_scan(void)
 {
-   for (unsigned int i = 0u; i < 6u; i++) {
-      char pat[24], found[FF_MAX_LFN + 8];  /* "Pi1MHz/" + a long name */
-      (void)snprintf(pat, sizeof pat, "Pi1MHz/ROM%u*.rom", 10u + i);
-      helper_user_rom[i][0] = '\0';
-      if (fat_service_wild_resolve(pat, found, sizeof found)) {
-         const char *leaf = strrchr(found, '/');
-         (void)snprintf(helper_user_rom[i], sizeof helper_user_rom[i], "%.39s",
-                        leaf != NULL ? leaf + 1 : found);
-      }
-   }
+   static const char *const pats[6] = { "ROM10*.rom", "ROM11*.rom", "ROM12*.rom",
+                                        "ROM13*.rom", "ROM14*.rom", "ROM15*.rom" };
+   fat_service_wild_leaves("Pi1MHz/", pats, 6u, helper_user_rom[0], sizeof helper_user_rom[0]);
 }
 
 /* The %s of the help screen. */

@@ -183,7 +183,8 @@ static void bbc_reset(void)
    fat_service_init();
 }
 
-bool fat_service_wild_resolve(const char *name, char *out, size_t size);
+void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned int n,
+                             char *leaf, size_t size);
 
 /* Wildcard opens (mode bit 0x40), as the ROM loaders send them: helper 10
    opens "Pi1MHz/ROM10*.rom".  Each file has its own data seed, so the
@@ -197,7 +198,6 @@ static int opens(uint8_t slot, const char *name, uint8_t seed)
 }
 static void wild_tests(void)
 {
-   char out[300];
    shared_chdir("/");
    assert(f_mkdir("/Pi1MHz") == FR_OK);
    make_file("/Pi1MHz/ROM10.rom", 16384, 20);
@@ -227,12 +227,30 @@ static void wild_tests(void)
    ok(f_open_cmd(5, "Pi1MHz/ROM10*.rom", 0x41) == FR_OK &&
       fat_service_file_in_use("/Pi1MHz/rom10-A.ROM"), "recorded under the file it opened");
    f_close_cmd(5);
+   /* review 2026-11-10: the refusal came after the slot's record was dropped,
+      with the file still open and writable */
+   ok(f_open_cmd(5, "Pi1MHz/ROM14.bin", FA_READ | FA_WRITE) == FR_OK &&
+      f_open_cmd(5, "Pi1MHz/ROM1*.rom", 0x40 | FA_WRITE) == FR_INVALID_PARAMETER &&
+      fat_service_file_in_use("/Pi1MHz/ROM14.bin"),
+      "a refused wildcard open leaves the slot's open file recorded as in use");
+   f_close_cmd(5);
+   ok(!fat_service_file_in_use("/Pi1MHz/ROM14.bin"), "(and closing it releases it)");
    ok(shared_chdir("/Pi1MHz") == FR_OK && opens(5, "ROM11*.rom", 23), "relative to the current directory");
    shared_chdir("/");
    ok(slot_chdir(9, "/Pi1MHz") == FR_OK && opens(9, "ROM10*.rom", 22), "in a slot's own directory");
-   ok(fat_service_wild_resolve("Pi1MHz/ROM10*.rom", out, sizeof out) &&
-      strcmp(out, "Pi1MHz/rom10-A.ROM") == 0, "the help screen's name is the loader's choice");
-   ok(!fat_service_wild_resolve("Pi1MHz/ROM15*.rom", out, sizeof out), "...and none for an empty slot");
+   {
+      /* the help screen's six, in one pass: the loaders' own choices */
+      static const char *const pats[6] = { "ROM10*.rom", "ROM11*.rom", "ROM12*.rom",
+                                           "ROM13*.rom", "ROM14*.rom", "ROM15*.rom" };
+      char leaf[6][12];
+      fat_service_wild_leaves("Pi1MHz/", pats, 6u, leaf[0], sizeof leaf[0]);
+      ok(strcmp(leaf[0], "rom10-A.ROM") == 0, "the help screen's name is the loader's choice");
+      ok(strcmp(leaf[1], "ROM11-Elite") == 0, "a long name is cut to fit, after it is chosen");
+      ok(strcmp(leaf[2], "ROM120.rom") == 0 && leaf[3][0] == '\0' && leaf[4][0] == '\0' &&
+         leaf[5][0] == '\0', "...and none for an empty slot");
+      fat_service_wild_leaves("NoSuchDir/", pats, 6u, leaf[0], sizeof leaf[0]);
+      ok(leaf[0][0] == '\0' && leaf[2][0] == '\0', "a folder that is not there: none");
+   }
 }
 
 int main(void)

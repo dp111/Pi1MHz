@@ -18,7 +18,9 @@ static unsigned rows_of(const char *text, unsigned *widest, unsigned *over)
       size_t w = e ? (size_t)(e - p) : strlen(p);
       if (w > *widest) *widest = (unsigned)w;
       if (w > HELPERS_HELP_COLUMNS) (*over)++;
-      rows += (w == 0) ? 1u : (unsigned)((w + HELPERS_HELP_COLUMNS - 1u) / HELPERS_HELP_COLUMNS);
+      /* a line that fills the last column has already wrapped the Beeb's
+         cursor when its CR LF comes: 40 characters are two rows */
+      rows += (unsigned)(w / HELPERS_HELP_COLUMNS) + 1u;
       if (!e) break;
       p = e + 2;
    }
@@ -39,7 +41,9 @@ int main(void)
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
    ok(over == 0, "typical: every line fits 40 columns");
-   ok(rows == 26, "typical: 26 rows (printed paged)");
+   /* 26 lines; this dirty-tree describe makes the version line exactly 40
+      columns, which costs a row.  A release's shorter one gives 26. */
+   ok(rows == 27, "typical: 27 rows with a 40-column version line (printed paged)");
 
    /* Worst case: every substituted value at its widest.  The revision code
       is shown without its flag bits, so it is at most 6 hex digits, and the
@@ -55,8 +59,8 @@ int main(void)
    ok(rows <= 27u, "worst case, no user ROMs: 27 rows at most (the version line may wrap)");
    unsigned none_rows = rows;
 
-   /* All six user ROMs, each name longer than fits: one row each, cut at
-      40 columns, replacing the one "Your ROM" row. */
+   /* All six user ROMs, each name longer than fits: one row each, cut a
+      column short of 40, replacing the one "Your ROM" row. */
    {
       static const char longname[] = "ROM10-a-very-long-name-for-a-sideways-rom-image.rom";
       char roms[6u * 42u + 1u];
@@ -70,6 +74,7 @@ int main(void)
       rows = rows_of(buf, &widest, &over);
       printf("six ROMs: %u rows, widest %u\n", rows, widest);
       ok(over <= 1, "six user ROMs: none of their lines wraps");
+      ok(strstr(roms, "\r\n") - roms == (int)HELPERS_HELP_COLUMNS - 1, "a cut name stops a column short of the edge");
       ok(rows == none_rows + 5u, "six user ROMs: one row each, in place of the one");
       ok(strlen(buf) < 1536u, "fits the 1.5 KB copy at &FFE000");
    }

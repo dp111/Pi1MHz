@@ -152,9 +152,13 @@ void fat_service_init(void);
    filesystemHostPathBusy() for the SCSI LUN images. */
 bool fat_service_file_in_use(const char *host_path);
 
-/* The file a wildcard open (mode bit 0x40) of this Beeb name would open,
-   into out; false if none.  Main loop only: it reads the directory. */
-bool fat_service_wild_resolve(const char *name, char *out, size_t size);
+/* The files wildcard opens (mode bit 0x40) of n patterns in one directory
+   would open, found in one pass of it: the name pats[i] chooses goes to
+   leaf + i * size, cut to fit, "" for none (or a directory that cannot be
+   read).  dir is a Beeb name ending '/'; n is 6 at most.  Main loop only:
+   it reads the directory. */
+void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned int n,
+                             char *leaf, size_t size);
 
 /* True if the Beeb has host_path in use by any route: a started SCSI LUN
    image (filesystemHostPathBusy) or a file open through the FAT service

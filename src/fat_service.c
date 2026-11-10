@@ -1,5 +1,5 @@
 /*
-  The FAT/SD service: commands 0-20 on the services port (&FCA6).
+  The FAT/SD service: commands 0-22 on the services port (&FCA6).
   17 = readdir-ex (fixed records for the SD explorer), 18 = getcwd.
 
   Enables the Beeb to access the SDCARD.  16Mbytes of the JIM buffer is
@@ -220,8 +220,12 @@ static const char *fat_storage(const char *path, char *buf, size_t size)
 
 static const char *fat_beeb_name(const char *name, char *buf, size_t size)
 {
-   if (fat_on_share() && name[0] != '/' && !filesystemNamesVolume(name) &&
-       !filesystemPiFolder(name)) {
+   /* fat_on_share last: it settles which storage the Beeb's files are on
+      (a power-on wait for a USB drive, the share's logon), and a name in
+      the Pi's own folder - the help screen's ROM list, after every reset -
+      does not depend on that */
+   if (name[0] != '/' && !filesystemNamesVolume(name) && !filesystemPiFolder(name) &&
+       fat_on_share()) {
       char abs[DISC_MAX_PATH + 3];
       if (!fat_join(abs, sizeof abs, fat_cwd, name))
          return name;                    /* too long: fails on the card's FatFs */
@@ -243,8 +247,8 @@ static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
    answer.  Of several, the name with the '*'s taken out wins (ROM10.rom:
    what the loaders opened before), then the lowest in ASCII order, case
    ignored - directory order is only the order the files were written.
-   The help screen lists the choice through fat_service_wild_resolve, so
-   it names the file the loader will open. */
+   The help screen lists the choices through fat_service_wild_leaves, the
+   same scan, so it names the file the loader will open. */
 static char fat_wild_lower(char c)
 {
    return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
@@ -295,10 +299,76 @@ static bool fat_wild_exact(const char *pat, const char *name)
    }
 }
 
+/* One pass of a directory for n patterns: best[i] is the file pats[i]
+   chooses, "" for none.  sdir is the path FatFs (or the share) opens.
+   One pass however many patterns: the help screen asks for the six ROM
+   loaders' files at once, and a loader for its own with the same code, so
+   the two cannot disagree. */
+#define FAT_WILD_MAX 6u
+typedef char fat_wild_name_t[sizeof ((FILINFO *)0)->fname];
+
+static FRESULT fat_wild_scan(const char *sdir, const char *const *pats, unsigned int n,
+                             fat_wild_name_t *best)
+{
+   DIR d;
+   FILINFO fi;
+   bool exact[FAT_WILD_MAX] = { false };
+   FRESULT r;
+
+   for (unsigned int i = 0u; i < n; i++)
+      best[i][0] = '\0';
+   r = fsr_opendir(&d, sdir);
+   if (r != FR_OK)
+      return r;
+   while ((r = fsr_readdir(&d, &fi)) == FR_OK && fi.fname[0] != '\0') {
+      if (fi.fattrib & AM_DIR)
+         continue;
+      for (unsigned int i = 0u; i < n; i++) {
+         if (!fat_wild_match(pats[i], fi.fname))
+            continue;
+         bool ex = fat_wild_exact(pats[i], fi.fname);
+         if (best[i][0] == '\0' || (ex && !exact[i]) ||
+             (ex == exact[i] && fat_wild_cmp(fi.fname, best[i]) < 0)) {
+            strcpy(best[i], fi.fname);
+            exact[i] = ex;
+         }
+      }
+   }
+   (void)fsr_closedir(&d);
+   return r;
+}
+
+/* The directory part of a name (dlen characters, "" for the current one)
+   as the path to open, in sbuf.  storage maps a directory as the caller
+   names it to the path FatFs (or the share) opens: fat_beeb_name for a
+   Beeb name, fat_storage for a slot's absolute one. */
+static bool fat_wild_dir(const char *name, size_t dlen, char *sbuf, size_t size,
+                         const char *(*storage)(const char *, char *, size_t))
+{
+   char dir[FAT_OPEN_PATH_MAX];
+
+   if (dlen >= sizeof dir)
+      return false;
+   if (dlen == 0u) {
+      strcpy(dir, ".");
+   } else {
+      memcpy(dir, name, dlen);
+      dir[dlen] = '\0';
+   }
+   const char *sp = storage(dir, sbuf, size);
+   if (sp != sbuf) {                    /* did not fit the storage root */
+      if (strlen(sp) >= size)
+         return false;
+      strcpy(sbuf, sp);
+   }
+   size_t sl = strlen(sbuf);            /* "dir/" opens as "dir"; "/", "1:/" stay */
+   if (sl > 1u && sbuf[sl - 1u] == '/' && sbuf[sl - 2u] != ':')
+      sbuf[sl - 1u] = '\0';
+   return true;
+}
+
 /* name with its wildcard last part replaced by the file it chooses, in
-   out.  storage maps a directory as the caller names it to the path FatFs
-   (or the share) opens: fat_beeb_name for a Beeb name, fat_storage for a
-   slot's absolute one.  A '*' before the last '/' is refused. */
+   out.  storage: see fat_wild_dir.  A '*' before the last '/' is refused. */
 static FRESULT fat_wild_expand(const char *name, char *out, size_t size,
                                const char *(*storage)(const char *, char *, size_t))
 {
@@ -306,9 +376,8 @@ static FRESULT fat_wild_expand(const char *name, char *out, size_t size,
    const char *slash = strrchr(name, '/');
    const char *pat = (slash != NULL) ? slash + 1 : name;
    size_t dlen = (size_t)(pat - name);
-   DIR d;
-   FILINFO fi;
-   char dir[FAT_OPEN_PATH_MAX], sbuf[FAT_OPEN_PATH_MAX + 3], best[sizeof fi.fname];
+   char sbuf[FAT_OPEN_PATH_MAX + 3];
+   fat_wild_name_t best;
 
    if (star == NULL) {
       if (strlen(name) >= size)
@@ -316,42 +385,9 @@ static FRESULT fat_wild_expand(const char *name, char *out, size_t size,
       strcpy(out, name);
       return FR_OK;
    }
-   if (star < pat || dlen >= sizeof dir)
+   if (star < pat || !fat_wild_dir(name, dlen, sbuf, sizeof sbuf, storage))
       return FR_INVALID_NAME;
-   if (dlen == 0u) {
-      strcpy(dir, ".");
-   } else {
-      memcpy(dir, name, dlen);
-      dir[dlen] = '\0';
-   }
-   const char *sp = storage(dir, sbuf, sizeof sbuf);
-   if (sp != sbuf) {                    /* did not fit the storage root */
-      if (strlen(sp) >= sizeof sbuf)
-         return FR_INVALID_NAME;
-      strcpy(sbuf, sp);
-   }
-   size_t sl = strlen(sbuf);            /* "dir/" opens as "dir"; "/", "1:/" stay */
-   if (sl > 1u && sbuf[sl - 1u] == '/' && sbuf[sl - 2u] != ':')
-      sbuf[sl - 1u] = '\0';
-
-   FRESULT r = fsr_opendir(&d, sbuf);
-   if (r != FR_OK)
-      return r;
-   best[0] = '\0';
-   bool exact = false;
-   while ((r = fsr_readdir(&d, &fi)) == FR_OK && fi.fname[0] != '\0') {
-      if ((fi.fattrib & AM_DIR) || !fat_wild_match(pat, fi.fname))
-         continue;
-      bool ex = fat_wild_exact(pat, fi.fname);
-      if (best[0] == '\0' || (ex && !exact) ||
-          (ex == exact && fat_wild_cmp(fi.fname, best) < 0)) {
-         if (strlen(fi.fname) >= sizeof best)
-            continue;
-         strcpy(best, fi.fname);
-         exact = ex;
-      }
-   }
-   (void)fsr_closedir(&d);
+   FRESULT r = fat_wild_scan(sbuf, &pat, 1u, &best);
    if (r != FR_OK)
       return r;
    if (best[0] == '\0')
@@ -363,9 +399,20 @@ static FRESULT fat_wild_expand(const char *name, char *out, size_t size,
    return FR_OK;
 }
 
-bool fat_service_wild_resolve(const char *name, char *out, size_t size)
+void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned int n,
+                             char *leaf, size_t size)
 {
-   return fat_wild_expand(name, out, size, fat_beeb_name) == FR_OK;
+   static fat_wild_name_t best[FAT_WILD_MAX];   /* main loop only; 1.5 KB off its stack */
+   char sbuf[FAT_OPEN_PATH_MAX + 3];
+
+   if (n > FAT_WILD_MAX)
+      n = FAT_WILD_MAX;
+   if (!fat_wild_dir(dir, strlen(dir), sbuf, sizeof sbuf, fat_beeb_name) ||
+       fat_wild_scan(sbuf, pats, n, best) != FR_OK)
+      for (unsigned int i = 0u; i < n; i++)
+         best[i][0] = '\0';
+   for (unsigned int i = 0u; i < n; i++)
+      (void)snprintf(leaf + i * size, size, "%s", best[i]);
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
@@ -950,18 +997,20 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        fat_open_valid[data & 15] = false;   /* re-open replaces any record */
         BYTE mode = Pi1MHz->JIM_ram[command_pointer+2];
         bool keep = (mode & FAT_MODE_KEEP) != 0u;
         bool wild = (mode & FAT_MODE_WILD) != 0u;
         mode &= (BYTE)~(FAT_MODE_KEEP | FAT_MODE_WILD);
         /* A wildcard is for reading an existing file, and is never kept: a
-           kept file is opened again by its name after a reset. */
+           kept file is opened again by its name after a reset.  Refused
+           like a bad name above, before the slot is touched: the file open
+           in it stays open, and stays recorded as in use. */
         if (wild && (mode != FA_READ || keep))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
+        fat_open_valid[data & 15] = false;   /* re-open replaces any record */
         if (config_beeb_write_protected())
             mode = FA_READ;                  /* strip write/create bits: read-only open */
         fat_keep_mode[data & 15] = 0u;       /* a new open forgets the kept file */
