@@ -411,8 +411,13 @@ void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned 
        fat_wild_scan(sbuf, pats, n, best) != FR_OK)
       for (unsigned int i = 0u; i < n; i++)
          best[i][0] = '\0';
-   for (unsigned int i = 0u; i < n; i++)
-      (void)snprintf(leaf + i * size, size, "%s", best[i]);
+   for (unsigned int i = 0u; i < n && size != 0u; i++) {   /* cut to fit */
+      size_t len = strlen(best[i]);
+      if (len >= size)
+         len = size - 1u;
+      memcpy(leaf + i * size, best[i], len);
+      leaf[i * size + len] = '\0';
+   }
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
