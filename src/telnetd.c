@@ -607,10 +607,19 @@ static void escape_settled(uint8_t r)
 static void take_key(uint8_t k)
 {
    if (g_esc_cut) {
+      /* the byte behind TND_KEY_LIT is a character whatever its value (&F8 is not CTRL-BREAK):
+         it goes with the rest of the backlog */
+      if (g_lit_next) {
+         g_lit_next = false;
+         return;
+      }
+      if (k == TND_KEY_LIT) {
+         g_lit_next = true;
+         return;
+      }
       if (k != TND_KEY_ESCAPE && k != TND_KEY_BREAK && k != TND_KEY_SHIFTBREAK && k != TND_KEY_CTRLBREAK)
          return;
       g_esc_cut = false;
-      g_lit_next = false;
    }
    deliver_key(k);
 }
@@ -841,8 +850,12 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
       what has not been read, which is what holds the client back.  (Refusing the packet with
       ERR_MEM instead does not work: lwIP can hand over several queued segments as one chain.) */
    g_recv_us = Pi1MHz_now_us;
-   if (p->tot_len <= INBUF_SIZE - (g_in_tail - g_in_head))
-      g_in_tail = byte_ring_put_pbuf(g_inbuf, INBUF_SIZE - 1u, g_in_tail, p);
+   if (p->tot_len <= INBUF_SIZE - (g_in_tail - g_in_head)) {
+      /* g_in_head and g_in_tail count on without wrapping (their difference is what waits); the
+         ring helper takes and returns a place in the ring, so its result is not the new tail */
+      (void)byte_ring_put_pbuf(g_inbuf, INBUF_SIZE - 1u, g_in_tail & (INBUF_SIZE - 1u), p);
+      g_in_tail += p->tot_len;
+   }
    else
       g_in_drops += p->tot_len;
    pbuf_free(p);

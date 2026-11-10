@@ -141,6 +141,13 @@ static bool oem_client(const tnd_in_t *s)
    return s->ttype_got && strncmp(s->ttype, "ANSI", 4) == 0;
 }
 
+/* The lead byte nothing followed was a character by itself: Latin-1, or cp850 from an OEM
+   client.  One place, so every way it is released (the next byte, ESC, the tick) agrees. */
+static size_t lone_lead_key(const tnd_in_t *s, uint8_t *keys)
+{
+   return char_key(s, oem_client(s) ? cp850[s->u8_lead - 0x80u] : s->u8_lead, keys);
+}
+
 /* A byte that is not part of a command or an escape sequence. */
 static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
 {
@@ -160,7 +167,7 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
       }
       s->u8_need = 0u;                          /* broken: this byte read afresh */
       if (s->u8_lead != 0u) {                   /* a lone lead byte was a Latin-1 client's character (&E9) */
-         size_t n = char_key(s, oem_client(s) ? cp850[s->u8_lead - 0x80u] : s->u8_lead, keys);
+         size_t n = lone_lead_key(s, keys);
          s->u8_lead = 0u;
          return n + plain_byte(s, c, keys + n);
       }
@@ -583,7 +590,7 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
       if (c == 27u) {
          size_t n = 0u;
          if (s->u8_need != 0u && s->u8_lead != 0u)   /* a lone lead byte before it was a Latin-1 character: */
-            n = char_key(s, s->u8_lead, keys);       /* given now, so nothing is left over for the escape paths */
+            n = lone_lead_key(s, keys);              /* given now, so nothing is left over for the escape paths */
          s->u8_need = 0u;
          s->u8_lead = 0u;
          s->state = I_ESC;
@@ -620,7 +627,7 @@ size_t tnd_in_tick(tnd_in_t *s, uint32_t now_us, uint8_t keys[TND_IN_KEYS])
    }
    if (s->state == I_NORMAL && s->u8_need != 0u && s->u8_lead != 0u
        && (now_us - s->u8_us) >= TND_ESC_US) {  /* a lone lead byte nothing followed: a Latin-1 character */
-      size_t n = char_key(s, s->u8_lead, keys);
+      size_t n = lone_lead_key(s, keys);
       s->u8_need = 0u;
       s->u8_lead = 0u;
       return n;

@@ -1182,6 +1182,21 @@ static void test_review_fixes_2(void)
    tick(&in, 200000u);
    CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xE9u, "a lone &E9 reaches the Beeb without another key"); if (nkeys != 2) dump();
 
+   /* The same from an OEM (code page 850) client, however the byte is released: &E1 is sharp s
+      (&DF), and read as Latin-1 it was a-acute.  Review 2026-11-10: only the next-byte path
+      translated. */
+   tnd_in_reset(&in); in_reset(); in.lit_ok = true; strcpy(in.ttype, "ANSI"); in.ttype_got = true;
+   FEED(&in, "\xe1" "x");
+   CHECK(nkeys == 3 && keys[0] == TND_KEY_LIT && keys[1] == 0xDFu && keys[2] == 'x', "cp850 &E1 then a key: sharp s"); if (nkeys != 3) dump();
+   in_reset();
+   FEED(&in, "\xe1");
+   tick(&in, 200000u);
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xDFu, "cp850 &E1 alone, released by the tick: sharp s (&%02x)", nkeys > 1 ? keys[1] : 0u); if (nkeys != 2) dump();
+   in_reset();
+   FEED(&in, "\xe1\x1b");
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xDFu, "cp850 &E1 released by ESC: sharp s (&%02x)", nkeys > 1 ? keys[1] : 0u); if (nkeys != 2) dump();
+   tick(&in, 200000u);
+
    /* An agreed option taken back is acknowledged; a refusal of the offer is not answered. */
    tnd_in_reset(&in); in_reset();
    FEED(&in, "\xff\xfe\x01");

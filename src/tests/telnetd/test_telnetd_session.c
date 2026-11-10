@@ -110,8 +110,8 @@ volatile const ser_beeb_report_t *const serial_redirect_beeb = &rep;
 static bool    attached;
 static uint8_t beeb_out[8192];                 /* what the Beeb printed, not read yet */
 static size_t  bo_head, bo_tail;
-static uint8_t keys[8192];                     /* what the Beeb was given */
-static size_t  nkeys;
+static uint8_t keys[1u << 17];                 /* what the Beeb was given */
+static size_t  nkeys, keys_over;                /* keys_over: more than keys[] holds */
 static size_t  room = 64u;
 static unsigned n_escape, n_break, n_shift, n_drop, n_refresh;
 
@@ -140,6 +140,10 @@ size_t serial_redirect_write(const uint8_t *src, size_t len)
 {
    if (len > room)
       len = room;
+   if (len > sizeof keys - nkeys) {             /* the test counts them: it must not be what breaks */
+      keys_over += len;
+      return len;
+   }
    memcpy(keys + nkeys, src, len);
    nkeys += len;
    tr_bytes("K", 0, src, len);
@@ -551,6 +555,59 @@ int main(int argc, char **argv)
    beeb_prints("X");
    tick(31000000u);
    CHECK(s->aborted, "aborted after 30 s without progress");
+
+   step("a character above 127 in a backlog an ESCAPE cuts through is not a BREAK");
+   {
+      /* Review 2026-11-10: the byte behind TND_KEY_LIT was read as a control code while the
+         backlog was thrown away - o-slash (&F8) was CTRL-BREAK. */
+      struct tcp_pcb *b = log_in(IP(10, 0, 0, 8));
+      char           fill[1000];
+      tick(1200000u);
+      beeb_hook(7u, 0u, 0u);                      /* the ROM: bytes above 127 can be given */
+      tick(50000u);
+      unsigned b0 = n_break, e0 = n_escape;
+      room = 0u;                                  /* a Beeb reading no keys */
+      memset(fill, 'a', sizeof fill);
+      for (int i = 0; i < 5; i++) {
+         csend_n(b, fill, sizeof fill);
+         tick(5000u);
+      }
+      csend(b, "\xc3\xb8" "bbb");
+      tick(5000u);
+      csend(b, "\x1b");
+      tick(3000000u);
+      CHECK(n_break == b0, "no BREAK (%u)", n_break - b0);
+      CHECK(n_escape == e0 + 1u, "one ESCAPE (%u)", n_escape - e0);
+      room = 64u;
+      cclose(b);
+      tick(1200000u);
+   }
+
+   step("more client data than the input ring holds, over a session");
+   {
+      /* Review 2026-11-10: the ring's tail came back from the helper wrapped while the head
+         counted on, so past 65536 bytes the ring read as 4 GB full and gave stale keys for ever. */
+      struct tcp_pcb *w = connect_from(2323u, IP(10, 0, 0, 9));
+      char           chunk[500];
+      tick(20000u);
+      csend(w, "beeb\n");
+      tick(20000u);
+      csend(w, "bench43\n");
+      tick(1200000u);
+      size_t k0 = nkeys;
+      memset(chunk, 'A', sizeof chunk);
+      for (unsigned sent = 0u; sent < 70000u && keys_over == 0u; sent += (unsigned)sizeof chunk) {
+         csend_n(w, chunk, sizeof chunk);
+         tick(20000u);
+      }
+      tick(200000u);
+      size_t na = 0u;
+      for (size_t i = k0; i < nkeys; i++)
+         na += keys[i] == 'A';
+      CHECK(na == 70000u && keys_over == 0u, "70000 bytes typed, 70000 keys given (%zu, %zu over)", na, keys_over);
+      cclose(w);
+      tick(1200000u);
+   }
 
    step("status");
    {
