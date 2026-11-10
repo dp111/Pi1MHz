@@ -41,17 +41,16 @@ def hx(cmd):
             raise RuntimeError(f'harness said {line!r}')
 
 # ---------------- 6502 emulator ----------------
-# CPU selection. 'nmos' = stock BBC B / B+ 6502, for the 4.18 and 3.65
-# builds, where the model-B guard below must trip on any 65C02 opcode.
-# '65c02' enables the extra opcodes and the Master-128 Sheila scratch, for
-# the Master-only 4.21 and 4.26 builds. The default follows the default ROM
-# (4.26, so 65c02); a caller naming its own ROM gets nmos unless it says.
-# This replaces the old hard fork of this file that used to live under
-# ANFS421/pi1mhz-patch/lockstep/.
+# CPU selection. 'nmos' = stock BBC B / B+ 6502, for the 3.65 build
+# (AUNFSbeeb.rom), where the model-B guard below must trip on any 65C02
+# opcode. '65c02' enables the extra opcodes and the Master-128 Sheila
+# scratch, for the Master-only 4.26 build (AUNFSM128.rom). The default
+# follows the default ROM (4.26, so 65c02); a caller naming its own ROM
+# gets nmos unless it says.
 CPU_65C02 = os.environ.get('ECO_CPU', 'nmos' if 'ECO_ROM' in os.environ else '65c02'
                            ).lower() in ('65c02', 'c02', 'master')
 
-# 65C02-only opcodes (undefined on the NMOS 6502 in a stock BBC B). The 4.18
+# 65C02-only opcodes (undefined on the NMOS 6502 in a stock BBC B). The 3.65
 # AUNFS path must never execute one; the model-B guard in CPU.step() trips on
 # any of these unless CPU_65C02 is set.
 C02_ONLY_OPCODES = frozenset([
@@ -187,9 +186,9 @@ class CPU:
             lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
         self.instructions += 1
         op = self.rd(self.pc); pc = self.pc + 1
-        # model-B: a stock BBC B has an NMOS 6502 - no 65C02 opcodes. The 4.18
-        # AUNFS path must never fetch one (the 4.21 Master build legitimately
-        # does, but that runs under a different harness). Fail loudly if it does.
+        # model-B: a stock BBC B has an NMOS 6502 - no 65C02 opcodes. The 3.65
+        # AUNFS path must never fetch one (the 4.26 Master build legitimately
+        # does, with CPU_65C02 set). Fail loudly if it does.
         if op in C02_ONLY_OPCODES:
             self.c02_hits += 1
             if not CPU_65C02:
@@ -251,7 +250,7 @@ class CPU:
         elif o in (0x10,0x30,0x50,0x70,0x90,0xb0,0xd0,0xf0):
             br({0x10:not self.n,0x30:self.n,0x50:not self.v,0x70:self.v,
                 0x90:not self.c,0xb0:self.c,0xd0:not self.z,0xf0:self.z}[o])
-        # ---- 65C02-only (Master 128 / ANFS 4.21) ----
+        # ---- 65C02-only (Master 128 / ANFS 4.26) ----
         elif CPU_65C02 and o == 0x5a: self.push(self.y)                  # phy
         elif CPU_65C02 and o == 0x7a: self.y = self.setnz(self.pop())    # ply
         elif CPU_65C02 and o == 0xda: self.push(self.x)                  # phx
@@ -1269,7 +1268,7 @@ print('== 17: service gate (check_adlc_flag) never declines (the *HELP/*Net bug)
 # confirm it falls through to handle_vectors_claimed (&8a62) instead
 # of doing the decline RTS.
 GATE = 0x8a5a; HANDLE = 0x8a62
-# (the 4.18 addresses; a symbol file that has the labels wins)
+# (fallbacks from the dropped 4.18 port; the symbol file's labels win)
 GATE = SYM.get('check_adlc_flag', GATE); HANDLE = SYM.get('dispatch_svc_with_state', HANDLE)
 for flag in (0x00, 0x80, 0xff):          # incl. bit7 set = old failure
     cpu.mem[0x0df0] = flag               # rom_ws_pages[slot 0]

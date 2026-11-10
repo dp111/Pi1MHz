@@ -155,12 +155,14 @@ station, no fileserver, no network.
 
 The patches below are applied; the patched ROM assembles byte-exact
 outside the intended regions (verified against the disassembly's
-per-line byte comments). NOTE: the assembler source and patch scripts
-(`anfs-4.18-pi1mhz.asm`, the `ANFS418` folder, `pi1mhz-patch/basm.py`,
-`pi1mhz-patch/apply.py`) are NOT in this repo — only the assembled
-binaries are: `firmware/Pi1MHz/AUNFSbeeb.rom`, `AUNFSM128.rom`, and
-(until 2026-10-23) `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` for the
-lockstep harness, which now runs `AUNFSM128.rom`.
+per-line byte comments). NOTE: the assembler sources and patch scripts
+live in the Pi1MHzANFS repo (`nfs-3.65/` and `ANFS426/`, each with
+`pi1mhz-patch/apply.py`, `basm.py` and `build.sh`) — only the assembled
+binaries are in this repo: `firmware/Pi1MHz/AUNFSbeeb.rom` (NFS 3.65) and
+`AUNFSM128.rom` (ANFS 4.26), which the lockstep harness also runs. The
+patch plan below was written for the 4.18 port; 4.18 and 4.21 were
+dropped on 2026-10-23, and the 3.65 and 4.26 ports carry the same patches
+at their own addresses (see each port's `PORTMAP.md`).
 Changed regions: &8028-&802C (svc5 econet IRQ
 check), &8074-&80BC (init), &80BE-&80FC and &80FD-&84BA (the dead scout/
 NMI-rx handlers, now the rx pump, svc5 handler, immediate-op handler and
