@@ -2214,6 +2214,8 @@ NEXT
     LDA #15  : JSR OSWRCH
 .pagedon
     PAGERTS
+    PAGESWITCHORG                   ; page 0 switches here from its own
+    PAGESWITCH                      ; trailer: the rest of it runs from this page
     ENDBLOCK &2F00
 }
 

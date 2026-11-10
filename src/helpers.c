@@ -258,10 +258,7 @@ static void helpers_bank_select(unsigned int gpio)
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
-        /* An older 6502code.bin prints the screen from page 0 itself: its
-           &FD00 is the wait loop's JMP, released at &FD01 to &FD03. */
-        bool help_old = (data == 0u && helper_ram[0] == 0x4Cu);
-        if (data == HELPERS_HELP_PAGE || help_old)
+        if (data == HELPERS_HELP_PAGE)
         {
             /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
                goes there only now, when the Beeb has asked for it - a copy,
@@ -273,11 +270,7 @@ static void helpers_bank_select(unsigned int gpio)
             uint32_t *dst = (uint32_t *)(void *)&Pi1MHz->JIM_ram[HELP_JIM];
             for (unsigned int w = (help_len[f] + 4u) / 4u; w != 0u; w--)
                 *dst++ = *src++;
-            /* screen in place: release the waitloop */
-            if (help_old)
-                Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);
-            else
-                Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+2, HELPERS_HELP_RELEASE);
+            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+2, HELPERS_HELP_RELEASE);   /* screen in place: release the waitloop */
             help_shown_us = Pi1MHz_now_us;
             help_shown_pending = true;                          /* reformat for next time, once printed */
         }
