@@ -34,7 +34,7 @@ int main(void)
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("R"),
             "V1.30-214-gd5dcf57-dirty.93616fe3", "902120 1000MHz", 46L, 2L,
             date + 2, date + 5, date + 8, date + 11,
-            0x88u, 136, 65, 4, 2);
+            0x88u, 136, HELPERS_USER_ROM_NONE, 65, 4, 2);
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
    ok(over == 0, "typical: every line fits 40 columns");
@@ -47,12 +47,31 @@ int main(void)
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("D"),
             "V99.99-9999-gffffffff-dirty.ffffffff", "ffffff 9999MHz", 99L, 9L,
             wdate + 2, wdate + 5, wdate + 8, wdate + 11,
-            0xFFu, 255, 255, 255, 255);
+            0xFFu, 255, HELPERS_USER_ROM_NONE, 255, 255, 255);
    rows = rows_of(buf, &widest, &over);
    printf("worst:   %u rows, widest %u\n", rows, widest);
    ok(over <= 1, "worst case: only the version line may wrap");
-   ok(rows <= HELPERS_HELP_ROWS, "worst case: still within 25 rows");
-   ok(strlen(buf) < 1024u, "fits the 1 KB copy at &FFE000");
+   ok(rows <= HELPERS_HELP_ROWS, "worst case, no user ROMs: still within 25 rows");
+   unsigned none_rows = rows;
+
+   /* All six user ROMs, each name longer than fits: one row each, cut at
+      40 columns, replacing the one "Your ROM" row. */
+   {
+      static const char longname[] = "ROM10-a-very-long-name-for-a-sideways-rom-image.rom";
+      char roms[6u * 42u + 1u];
+      size_t len = 0;
+      for (unsigned i = 0; i < 6u; i++)
+         len += (size_t)snprintf(roms + len, sizeof roms - len, HELPERS_USER_ROM_LINE, 10u + i, longname);
+      snprintf(buf, sizeof buf, HELPERS_HELP_FMT("D"),
+               "V99.99-9999-gffffffff-dirty.ffffffff", "ffffff 9999MHz", 99L, 9L,
+               wdate + 2, wdate + 5, wdate + 8, wdate + 11,
+               0xFFu, 255, roms, 255, 255, 255);
+      rows = rows_of(buf, &widest, &over);
+      printf("six ROMs: %u rows, widest %u\n", rows, widest);
+      ok(over <= 1, "six user ROMs: none of their lines wraps");
+      ok(rows == none_rows + 5u, "six user ROMs: one row each, in place of the one");
+      ok(strlen(buf) < 1536u, "fits the 1.5 KB copy at &FFE000");
+   }
 
    printf("\n%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;

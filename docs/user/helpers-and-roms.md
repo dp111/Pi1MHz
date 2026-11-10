@@ -32,7 +32,7 @@ part of the standard firmware set.
 
 | n | What it does | ROM file used |
 |---|---|---|
-| 0 | Shows the help screen (version, build date, Pi model, temperature, and this list) | - |
+| 0 | Shows the help screen (version, build date, Pi model, temperature, this list, and the file each of helpers 10-15 would load). It prints in paged mode - hold SHIFT to go on when the screen fills - and leaves paged mode as it found it | - |
 | 1 | Status - **not implemented yet** | - |
 | 2 | Enables the screen redirector: everything the Beeb prints also appears on the Pi's HDMI output. See [Screen and video](screen-and-video.md) | - |
 | 3 | Loads ADFS into sideways RAM | `/Pi1MHz/ADFS.rom` |
@@ -42,7 +42,7 @@ part of the standard firmware set.
 | 7 | Loads the ATS teletext software ROM | `/Pi1MHz/ATS.rom` |
 | 8 | Loads the Econet-over-WiFi filing system for the BBC B | `/Pi1MHz/AUNFSbeeb.rom` |
 | 9 | Loads the Econet-over-WiFi filing system for the Master 128 | `/Pi1MHz/AUNFSM128.rom` |
-| 10-15 | Loads a ROM of your own into sideways RAM | `/Pi1MHz/ROM10.rom` ... `/Pi1MHz/ROM15.rom` |
+| 10-15 | Loads a ROM of your own into sideways RAM. See [Your own ROMs](#your-own-roms) | `/Pi1MHz/ROM10*.rom` ... `/Pi1MHz/ROM15*.rom` |
 | 16 | Loads the 1MHz-WiFi ROM with the UEF cassette filing system (`*JOIN`, `*WGET`, `*PING`, the RAM disc, and WiCFS) | `/Pi1MHz/1mhz-wicfs.rom` |
 | 17 | SD card explorer: browse the Pi's SD card and copy files to/from the current filing system. See [SD card explorer](sd-explorer.md) | - |
 | 18 | Loads fn-rom, the FujiNet filing system: the BBC B build on a B or B+, the Master build on a Master. See [FujiNet](fujinet.md) | `/Pi1MHz/fujinetB.rom`, `/Pi1MHz/fujinetM.rom` |
@@ -78,6 +78,19 @@ filing system half at build time because it cannot live in this tree.
 Copy any 16K sideways ROM image onto the SD card as `/Pi1MHz/ROM10.rom`
 (up to `ROM15.rom`) and load it with helper 10-15. This is an easy way
 to try ROM software without hardware.
+
+The name may carry a description after the number, so the card shows
+what each one is: helper 10 loads any `/Pi1MHz/ROM10*.rom`, such as
+`ROM10-Elite.rom`, and the help screen (helper 0) lists each helper with
+the file it would load:
+
+    10  ROM10-Elite.rom
+    12  ROM12-View3.rom
+
+If more than one file matches, plain `ROM10.rom` wins, then the first in
+alphabetical order (case is ignored). Anything may follow the number,
+so `ROM100.rom` is also helper 10's. A ROM copied to the card shows on
+the help screen from the next showing after the copy, or after a BREAK.
 
 ## Requirements and limits
 

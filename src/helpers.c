@@ -14,16 +14,25 @@
 #include "rpi/systimer.h"
 #include "videoplayer.h"
 #include "serial_redirect.h"
+#include "services.h"
+#include "BeebSCSI/fatfs/ff.h"
 
-/* One 256-byte page per helper entry point, 0..45 - the page the Beeb runs
+/* One 256-byte page per helper entry point, 0..47 - the page the Beeb runs
    when it asks for helper n.  It is exactly as many pages as 6502code.bin
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
    and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
    19 the serial redirector, 20 the telnet daemon, 21 VFS, and 22-30 are left free
    for future helpers,
-   answering with a bare return until one is written. */
-#define HELPER_PAGES 47u
+   answering with a bare return until one is written.  46 is the explorer's
+   transfer page template and 47 prints the help screen. */
+#define HELPER_PAGES 48u
+
+/* Helper 0 goes straight on to page 47, which waits in a JMP to itself at
+   &FD01 until the screen is at &FFE000; the Pi then rewrites the JMP's
+   low byte to go on to &FD04 (6502code.asm, HELP_PAGE). */
+#define HELPERS_HELP_PAGE     47u
+#define HELPERS_HELP_RELEASE  0x04u
 
 /* Helpers 19 and 20 hook the vectors into the serial stub (19 for the modem,
    20 for the telnet daemon); the LDY # at &FD06 of each carries the stub's FRED
@@ -50,16 +59,17 @@ static volatile uint32_t help_shown_us;
 /* The formatted help screen, two copies: the poll formats the one the FIQ
    is not showing, then flips help_front, so a select arriving mid-format
    copies a whole screen. */
-_Alignas(4) static char  help_text[2][1024];
+_Alignas(4) static char  help_text[2][1536];
 static volatile uint16_t help_len[2];
 static volatile uint8_t  help_front;
-#define HELP_JIM (DISC_RAM_BASE + 0x00FFE000u)  /* where the page-0 code prints from */
+#define HELP_JIM (DISC_RAM_BASE + 0x00FFE000u)  /* where page 47 prints it from */
 
 /* The help screen (helper 0, and the Pi's boot splash).
 
    One printf template, laid out for the Beeb's 40 x 25 text screen: every
    line is 40 columns or fewer and the whole screen is 24 rows, leaving one
-   free.  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
+   free - before the user ROMs, which take one row each when there are
+   any (up to 29 rows: helper 0 prints in paged mode).  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
    values, so an edit that wraps a line or spills past row 25 fails there,
    not on the Beeb.  Every substituted value fits at its widest; the one line
    at exactly 40 columns is the version line, where a longer git describe
@@ -71,6 +81,7 @@ static volatile uint8_t  help_front;
      %ld.%ld  SoC temperature, tenths (integer arithmetic: FIQ context)
      %X   helper base address, hex (CALL &FCxx)
      %d   helper base address, dec (*FX147,n)
+     %s   the user ROM lines       (helpers_user_roms: 1-6 lines, each ending CR LF)
      %d   SCSI jukebox register    (*FX147,n)
      %d   M5000 instance           (*FX147,202,n)
      %d   hard disc instance       (*FX147,202,n: SD card eject/insert/reboot)
@@ -93,7 +104,7 @@ static volatile uint8_t  help_front;
    " 7  ATS teletext       ATS.rom\r\n"                                  \
    " 8  AUNFS BBC B        AUNFSbeeb.rom\r\n"                            \
    " 9  AUNFS Master       AUNFSM128.rom\r\n"                            \
-   "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
+   "%s"                                                                  \
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
@@ -105,11 +116,52 @@ static volatile uint8_t  help_front;
 
 #define HELPERS_HELP_COLUMNS 40u
 #define HELPERS_HELP_ROWS    25u
+/* The user ROM lines: none found, or one per helper 10-15 that has a file. */
+#define HELPERS_USER_ROM_NONE "10+ Your ROM (10-15)   ROM10*.rom\r\n"
+#define HELPERS_USER_ROM_LINE "%u  %.36s\r\n"
+
+/* The file each of helpers 10-15 loads - the name after "Pi1MHz/", ""
+   for none - as the loader's wildcard open chooses it
+   (fat_service_wild_resolve).  Read from the card in the poll loop, never
+   at a BBC reset or in FIQ: see helpers_poll. */
+static char helper_user_rom[6][40];
+static bool helper_user_rom_scan;     /* read them again, when the player is idle */
+
+static void helpers_user_rom_scan(void)
+{
+   for (unsigned int i = 0u; i < 6u; i++) {
+      char pat[24], found[FF_MAX_LFN + 8];  /* "Pi1MHz/" + a long name */
+      (void)snprintf(pat, sizeof pat, "Pi1MHz/ROM%u*.rom", 10u + i);
+      helper_user_rom[i][0] = '\0';
+      if (fat_service_wild_resolve(pat, found, sizeof found)) {
+         const char *leaf = strrchr(found, '/');
+         (void)snprintf(helper_user_rom[i], sizeof helper_user_rom[i], "%.39s",
+                        leaf != NULL ? leaf + 1 : found);
+      }
+   }
+}
+
+/* The %s of the help screen. */
+static void helpers_user_roms(char *out, size_t size)
+{
+   size_t len = 0u;
+   out[0] = '\0';
+   for (unsigned int i = 0u; i < 6u; i++) {
+      if (helper_user_rom[i][0] == '\0')
+         continue;
+      int n = snprintf(out + len, size - len, HELPERS_USER_ROM_LINE, 10u + i, helper_user_rom[i]);
+      if (n < 0 || (size_t)n >= size - len)
+         break;
+      len += (size_t)n;
+   }
+   if (len == 0u)
+      (void)snprintf(out, size, "%s", HELPERS_USER_ROM_NONE);
+}
 
 
 size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 {
-        // We also hide the help screen at &FFE000 (1 KB there, ~600 B used).
+        // We also hide the help screen at &FFE000 (1.5 KB there, ~600-850 B used).
         // Hand-formatted to tenths so this doesn't need newlib's float printf
         // support (dtoa machinery, ~5 KB) -- see CMakeLists.txt, -u _printf_float.
         // Integer arithmetic on purpose: the float printf support is not
@@ -117,6 +169,8 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         // state).  Millidegrees to tenths, rounded.
         // Cannot go negative (0 on failure), so no sign handling.
         long temp_tenths = (long)((get_temp_millidegrees() + 50u) / 100u);
+        char user_roms[6u * 42u + 1u];
+        helpers_user_roms(user_roms, sizeof user_roms);
 #ifdef DEBUG
 #define HELPERS_KERNEL_LETTER "D"
 #else
@@ -128,6 +182,7 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
                          BUILD_DATE + 2, BUILD_DATE + 5, BUILD_DATE + 8, BUILD_DATE + 11,
                          (unsigned int)helper_address,
                          (int)helper_address,
+                         user_roms,
                          (int)(harddisc_emulator_get_address() + 1),
                          (int)M5000_emulator_read_instance(),
                          (int)harddisc_emulator_get_instance());
@@ -203,7 +258,10 @@ static void helpers_bank_select(unsigned int gpio)
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
-        if (data==0)
+        /* An older 6502code.bin prints the screen from page 0 itself: its
+           &FD00 is the wait loop's JMP, released at &FD01 to &FD03. */
+        bool help_old = (data == 0u && helper_ram[0] == 0x4Cu);
+        if (data == HELPERS_HELP_PAGE || help_old)
         {
             /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
                goes there only now, when the Beeb has asked for it - a copy,
@@ -215,7 +273,11 @@ static void helpers_bank_select(unsigned int gpio)
             uint32_t *dst = (uint32_t *)(void *)&Pi1MHz->JIM_ram[HELP_JIM];
             for (unsigned int w = (help_len[f] + 4u) / 4u; w != 0u; w--)
                 *dst++ = *src++;
-            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen in place: release the waitloop */
+            /* screen in place: release the waitloop */
+            if (help_old)
+                Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);
+            else
+                Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+2, HELPERS_HELP_RELEASE);
             help_shown_us = Pi1MHz_now_us;
             help_shown_pending = true;                          /* reformat for next time, once printed */
         }
@@ -228,7 +290,7 @@ static void helpers_bank_select(unsigned int gpio)
    only while the player is idle: a mailbox exchange can block the poll loop
    (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
    starves the Beeb's SCSI handshake. */
-/* The help screen is formatted ahead of time, so the page-0 switch in FIQ
+/* The help screen is formatted ahead of time, so the page-47 switch in FIQ
    only copies it into JIM and releases the Beeb (formatting there took
    tens of microseconds, long enough for the bus post ring to overrun while
    the Beeb fetched its waitloop from JIM).  It is formatted once at init
@@ -243,14 +305,24 @@ static void helpers_screen_refresh(void)
    help_front = back;
 }
 
+/* The user ROM files are read again after a BBC reset and after each
+   showing, so a ROM copied to the card turns up at the next help screen
+   after either.  Only while the player is idle: it reads the card, and
+   the player streams from it. */
 static void helpers_poll(void)
 {
    if (help_shown_pending && (Pi1MHz_now_us - help_shown_us) > 2000000u) {
       help_shown_pending = false;
+      helper_user_rom_scan = true;
       helpers_screen_refresh();
    }
    if (videoplayer_active())
       return;
+   if (helper_user_rom_scan) {
+      helper_user_rom_scan = false;
+      helpers_user_rom_scan();
+      helpers_screen_refresh();
+   }
    info_refresh_cached();
 }
 
@@ -284,6 +356,7 @@ void helpers_init( uint8_t instance , uint8_t address)
            from the poll loop. */
         info_refresh_cached();
         helpers_screen_refresh();
+        helper_user_rom_scan = true;
         Pi1MHz_Register_Poll(helpers_poll, "helpers");
 
         Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8E); // STX &FCxx

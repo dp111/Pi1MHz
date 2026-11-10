@@ -183,6 +183,58 @@ static void bbc_reset(void)
    fat_service_init();
 }
 
+bool fat_service_wild_resolve(const char *name, char *out, size_t size);
+
+/* Wildcard opens (mode bit 0x40), as the ROM loaders send them: helper 10
+   opens "Pi1MHz/ROM10*.rom".  Each file has its own data seed, so the
+   first sector read shows which file was opened. */
+static int opens(uint8_t slot, const char *name, uint8_t seed)
+{
+   int r = f_open_cmd(slot, name, 0x40 | FA_READ) == FR_OK &&
+           rw_cmd(slot, 4, 0, 512) == FR_OK && data_ok(0, 512, seed);
+   f_close_cmd(slot);
+   return r;
+}
+static void wild_tests(void)
+{
+   char out[300];
+   shared_chdir("/");
+   assert(f_mkdir("/Pi1MHz") == FR_OK);
+   make_file("/Pi1MHz/ROM10.rom", 16384, 20);
+   make_file("/Pi1MHz/ROM10-b.rom", 16384, 21);
+   make_file("/Pi1MHz/rom10-A.ROM", 16384, 22);
+   make_file("/Pi1MHz/ROM11-Elite.rom", 16384, 23);
+   make_file("/Pi1MHz/ROM120.rom", 16384, 24);
+   assert(f_mkdir("/Pi1MHz/ROM11-0dir.rom") == FR_OK);
+   make_file("/Pi1MHz/ROM14.bin", 16384, 25);
+
+   ok(opens(5, "Pi1MHz/ROM10*.rom", 20), "ROM10.rom itself wins over ROM10-a and -b");
+   ok(f_unlink("/Pi1MHz/ROM10.rom") == FR_OK, "(ROM10.rom deleted)");
+   ok(opens(5, "Pi1MHz/ROM10*.rom", 22), "then the lowest, case ignored: rom10-A.ROM");
+   ok(opens(5, "/Pi1MHz/ROM11*.rom", 23), "a directory that matches is passed over");
+   ok(opens(5, "Pi1MHz/ROM12*.rom", 24), "ROM12* matches ROM120.rom");
+   ok(opens(5, "Pi1MHz/*elite*", 23), "'*' anywhere in the last part, more than one");
+   ok(f_open_cmd(5, "Pi1MHz/ROM13*.rom", 0x41) == FR_NO_FILE, "no match: FR_NO_FILE (the loader's \"No ROM\")");
+   ok(f_open_cmd(5, "Pi1MHz/ROM14*.rom", 0x41) == FR_NO_FILE, "the extension still has to match");
+   ok(f_open_cmd(5, "Pi1MHz/ROM10*.rom", FA_READ) == FR_INVALID_NAME,
+      "without the bit a '*' is a bad name, as before");
+   ok(f_open_cmd(5, "Pi1MHz/ROM10-b.rom", 0x41) == FR_OK && rw_cmd(5, 4, 0, 512) == FR_OK &&
+      data_ok(0, 512, 21), "the bit with no '*': the name as it is");
+   f_close_cmd(5);
+   ok(f_open_cmd(5, "Pi*/ROM10-b.rom", 0x41) == FR_INVALID_NAME, "a '*' before the last '/' is refused");
+   ok(f_open_cmd(5, "Pi1MHz/ROM1*.rom", 0x40 | FA_WRITE) == FR_INVALID_PARAMETER, "not for writing");
+   ok(f_open_cmd(5, "Pi1MHz/ROM1*.rom", 0xC0 | FA_READ) == FR_INVALID_PARAMETER, "not kept");
+   ok(f_open_cmd(5, "Pi1MHz/ROM10*.rom", 0x41) == FR_OK &&
+      fat_service_file_in_use("/Pi1MHz/rom10-A.ROM"), "recorded under the file it opened");
+   f_close_cmd(5);
+   ok(shared_chdir("/Pi1MHz") == FR_OK && opens(5, "ROM11*.rom", 23), "relative to the current directory");
+   shared_chdir("/");
+   ok(slot_chdir(9, "/Pi1MHz") == FR_OK && opens(9, "ROM10*.rom", 22), "in a slot's own directory");
+   ok(fat_service_wild_resolve("Pi1MHz/ROM10*.rom", out, sizeof out) &&
+      strcmp(out, "Pi1MHz/rom10-A.ROM") == 0, "the help screen's name is the loader's choice");
+   ok(!fat_service_wild_resolve("Pi1MHz/ROM15*.rom", out, sizeof out), "...and none for an empty slot");
+}
+
 int main(void)
 {
    pi.JIM_ram = calloc(1, 32u * 1024u * 1024u);
@@ -394,6 +446,13 @@ int main(void)
          "the first file was closed first: its 100 bytes and its size are on the card");
       f_close_cmd(7);
    }
+
+   puts("== wildcard opens (open mode bit 6), exFAT ==");
+   wild_tests();
+   puts("== wildcard opens, FAT32 ==");
+   format(FM_FAT32);
+   bbc_reset();
+   wild_tests();
 
    printf("%d checks, %d failures\n", checks, fails);
    if (fails == 0) puts("FATFILES TESTS PASSED");

@@ -218,9 +218,8 @@ static const char *fat_storage(const char *path, char *buf, size_t size)
    return filesystemStoragePath(path, buf, size) ? buf : path;
 }
 
-static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
+static const char *fat_beeb_name(const char *name, char *buf, size_t size)
 {
-   const char *name = (const char *)&Pi1MHz->JIM_ram[off];
    if (fat_on_share() && name[0] != '/' && !filesystemNamesVolume(name) &&
        !filesystemPiFolder(name)) {
       char abs[DISC_MAX_PATH + 3];
@@ -230,6 +229,143 @@ static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
       return filesystemStoragePath(abs, buf, size) ? buf : name;
    }
    return fat_storage(name, buf, size);
+}
+
+static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
+{
+   return fat_beeb_name((const char *)&Pi1MHz->JIM_ram[off], buf, size);
+}
+
+/* ---- Wildcard names (open mode bit FAT_MODE_WILD) ----
+   A '*' in the last part of the name stands for any run of characters,
+   ASCII case ignored, as FAT ignores it.  The ROM loaders open
+   "Pi1MHz/ROM10*.rom", so ROM10.rom, ROM10-Elite.rom and ROM100.rom all
+   answer.  Of several, the name with the '*'s taken out wins (ROM10.rom:
+   what the loaders opened before), then the lowest in ASCII order, case
+   ignored - directory order is only the order the files were written.
+   The help screen lists the choice through fat_service_wild_resolve, so
+   it names the file the loader will open. */
+static char fat_wild_lower(char c)
+{
+   return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+}
+
+static bool fat_wild_match(const char *pat, const char *name)
+{
+   const char *star = NULL, *resume = NULL;
+   while (*name != '\0') {
+      if (*pat == '*') {
+         star = ++pat;                  /* runs of '*' are one */
+         resume = name;
+      } else if (*pat != '\0' && fat_wild_lower(*pat) == fat_wild_lower(*name)) {
+         pat++;
+         name++;
+      } else if (star != NULL) {
+         pat = star;                    /* the last '*' takes one more */
+         name = ++resume;
+      } else {
+         return false;
+      }
+   }
+   while (*pat == '*')
+      pat++;
+   return *pat == '\0';
+}
+
+static int fat_wild_cmp(const char *a, const char *b)
+{
+   while (*a != '\0' && fat_wild_lower(*a) == fat_wild_lower(*b)) {
+      a++;
+      b++;
+   }
+   return (int)(unsigned char)fat_wild_lower(*a) - (int)(unsigned char)fat_wild_lower(*b);
+}
+
+/* Is the pattern, '*'s left out, this name? */
+static bool fat_wild_exact(const char *pat, const char *name)
+{
+   for (;; pat++) {
+      if (*pat == '*')
+         continue;
+      if (fat_wild_lower(*pat) != fat_wild_lower(*name))
+         return false;
+      if (*pat == '\0')
+         return true;
+      name++;
+   }
+}
+
+/* name with its wildcard last part replaced by the file it chooses, in
+   out.  storage maps a directory as the caller names it to the path FatFs
+   (or the share) opens: fat_beeb_name for a Beeb name, fat_storage for a
+   slot's absolute one.  A '*' before the last '/' is refused. */
+static FRESULT fat_wild_expand(const char *name, char *out, size_t size,
+                               const char *(*storage)(const char *, char *, size_t))
+{
+   const char *star = strchr(name, '*');
+   const char *slash = strrchr(name, '/');
+   const char *pat = (slash != NULL) ? slash + 1 : name;
+   size_t dlen = (size_t)(pat - name);
+   DIR d;
+   FILINFO fi;
+   char dir[FAT_OPEN_PATH_MAX], sbuf[FAT_OPEN_PATH_MAX + 3], best[sizeof fi.fname];
+
+   if (star == NULL) {
+      if (strlen(name) >= size)
+         return FR_INVALID_NAME;
+      strcpy(out, name);
+      return FR_OK;
+   }
+   if (star < pat || dlen >= sizeof dir)
+      return FR_INVALID_NAME;
+   if (dlen == 0u) {
+      strcpy(dir, ".");
+   } else {
+      memcpy(dir, name, dlen);
+      dir[dlen] = '\0';
+   }
+   const char *sp = storage(dir, sbuf, sizeof sbuf);
+   if (sp != sbuf) {                    /* did not fit the storage root */
+      if (strlen(sp) >= sizeof sbuf)
+         return FR_INVALID_NAME;
+      strcpy(sbuf, sp);
+   }
+   size_t sl = strlen(sbuf);            /* "dir/" opens as "dir"; "/", "1:/" stay */
+   if (sl > 1u && sbuf[sl - 1u] == '/' && sbuf[sl - 2u] != ':')
+      sbuf[sl - 1u] = '\0';
+
+   FRESULT r = fsr_opendir(&d, sbuf);
+   if (r != FR_OK)
+      return r;
+   best[0] = '\0';
+   bool exact = false;
+   while ((r = fsr_readdir(&d, &fi)) == FR_OK && fi.fname[0] != '\0') {
+      if ((fi.fattrib & AM_DIR) || !fat_wild_match(pat, fi.fname))
+         continue;
+      bool ex = fat_wild_exact(pat, fi.fname);
+      if (best[0] == '\0' || (ex && !exact) ||
+          (ex == exact && fat_wild_cmp(fi.fname, best) < 0)) {
+         if (strlen(fi.fname) >= sizeof best)
+            continue;
+         strcpy(best, fi.fname);
+         exact = ex;
+      }
+   }
+   (void)fsr_closedir(&d);
+   if (r != FR_OK)
+      return r;
+   if (best[0] == '\0')
+      return FR_NO_FILE;
+   if (dlen + strlen(best) >= size)
+      return FR_INVALID_NAME;
+   memcpy(out, name, dlen);
+   strcpy(out + dlen, best);
+   return FR_OK;
+}
+
+bool fat_service_wild_resolve(const char *name, char *out, size_t size)
+{
+   return fat_wild_expand(name, out, size, fat_beeb_name) == FR_OK;
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
@@ -437,6 +573,8 @@ static void fat_dirent_record(uint8_t *rec, const FILINFO *info)
    boot forgets them, and so do an eject and the Beeb's own mount or
    unmount (fat_forget_kept); the boot id (command 20) changes with them. */
 #define FAT_MODE_KEEP 0x80u             /* open mode bit 7: FatFs uses 0-5 */
+#define FAT_MODE_WILD 0x40u             /* bit 6: a '*' in the name's last part
+                                           (fat_wild_expand); read only, not kept */
 static char fat_slot_dir[16][FAT_OPEN_PATH_MAX];
 static char fat_keep_path[16][FAT_OPEN_PATH_MAX];
 static BYTE fat_keep_mode[16];          /* 0 = nothing kept (FA_READ is 1) */
@@ -815,19 +953,35 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         fat_open_valid[data & 15] = false;   /* re-open replaces any record */
         BYTE mode = Pi1MHz->JIM_ram[command_pointer+2];
         bool keep = (mode & FAT_MODE_KEEP) != 0u;
-        mode &= (BYTE)~FAT_MODE_KEEP;
+        bool wild = (mode & FAT_MODE_WILD) != 0u;
+        mode &= (BYTE)~(FAT_MODE_KEEP | FAT_MODE_WILD);
+        /* A wildcard is for reading an existing file, and is never kept: a
+           kept file is opened again by its name after a reset. */
+        if (wild && (mode != FA_READ || keep))
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
         if (config_beeb_write_protected())
             mode = FA_READ;                  /* strip write/create bits: read-only open */
         fat_keep_mode[data & 15] = 0u;       /* a new open forgets the kept file */
         if (keep || fat_slot_dir[data & 15][0] != '\0') {
             /* by absolute path: the slot's own directory, a made-up 8.3
                name resolved, and the path kept to reopen after a reset */
-            char abs[FAT_OPEN_PATH_MAX];
+            char abs[FAT_OPEN_PATH_MAX], found[FAT_OPEN_PATH_MAX];
             fat_slot_close(data & 15);
             if (!fat_slot_resolve(data & 15, (char *)&Pi1MHz->JIM_ram[command_pointer+3],
                                   abs, sizeof abs)) {
                 Pi1MHz_MemoryWrite(addr, FR_INVALID_NAME);
                 break;
+            }
+            if (wild) {
+                result = fat_wild_expand(abs, found, sizeof found, fat_storage);
+                if (result != FR_OK) {
+                    Pi1MHz_MemoryWrite(addr, result);
+                    break;
+                }
+                strcpy(abs, found);
             }
             result = fsr_open(&fileObject[data & 15], fat_storage(abs, fat_path_a, sizeof fat_path_a),
                             mode);
@@ -844,12 +998,22 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         fat_slot_close(data & 15);
+        const char *name = (const char *)&Pi1MHz->JIM_ram[command_pointer+3];
+        char found[DISC_MAX_PATH + 1];
+        if (wild) {
+            result = fat_wild_expand(name, found, sizeof found, fat_beeb_name);
+            if (result != FR_OK) {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+            name = found;
+        }
         result = fsr_open( &fileObject[data & 15],
-                         fat_beeb_path(command_pointer+3, fat_path_a, sizeof fat_path_a),
+                         fat_beeb_name(name, fat_path_a, sizeof fat_path_a),
                          mode );
         if (result == FR_OK) {
             fat_file_open[data & 15] = true;
-            fat_open_record(data & 15, (char * )&Pi1MHz->JIM_ram[command_pointer+3]);
+            fat_open_record(data & 15, name);
         }
         Pi1MHz_MemoryWrite(addr, result);
         break;

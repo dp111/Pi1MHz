@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "Pi1MHz.h"   /* JIM_ram, DISC_RAM_BASE/SIZE - see the bounds helpers below */
 
@@ -150,6 +151,10 @@ void fat_service_init(void);
    for unrecordable paths) - the webserver's counterpart to
    filesystemHostPathBusy() for the SCSI LUN images. */
 bool fat_service_file_in_use(const char *host_path);
+
+/* The file a wildcard open (mode bit 0x40) of this Beeb name would open,
+   into out; false if none.  Main loop only: it reads the directory. */
+bool fat_service_wild_resolve(const char *name, char *out, size_t size);
 
 /* True if the Beeb has host_path in use by any route: a started SCSI LUN
    image (filesystemHostPathBusy) or a file open through the FAT service

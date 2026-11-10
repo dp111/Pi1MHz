@@ -378,13 +378,19 @@ ENDIF
 ENDMACRO
 
 MACRO LOADFILETOSWR filename
+    LOADFILETOSWR_MODE filename, 1
+ENDMACRO
+
+; mode &41: FA_READ with the wildcard bit (&40), for a name with a '*' in
+; its last part - the Pi opens the file it matches (docs/advanced.md).
+MACRO LOADFILETOSWR_MODE filename, mode
 {
     LDA     &F4
     PHA
     READROMFILE FALSE
 
 .fopenstring
-    EQUB 2, 0, 1 : EQUS filename : EQUB 0, 255
+    EQUB 2, 0, mode : EQUS filename : EQUB 0, 255
 
     PAGESWITCHORG
 .pageswitch
@@ -420,21 +426,18 @@ MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
 }
 ENDMACRO
 
+; The help screen's printer, an internal page like the explorer's: helper 0
+; goes straight on to it (page 0 is full).  Selecting it makes the Pi copy
+; the formatted screen to &FFE000 and then release the wait loop
+; (helpers.c, HELPERS_HELP_PAGE: it rewrites the JMP's low byte).
+HELP_PAGE  = 47
+HELP_ENTRY = 1
+
 ; Page 0
 ; help screen
 {
 ORG &FD00
-.waitloop
-    JMP waitloop    ; Arm code will rewrite this to signal help screen has been setup.
-    LDA #0   : STA discaccess ; clear byte pointer to zero.
-    LDA #&E0 : STA discaccess+1
-    LDA #&FF : STA discaccess+2
-.stringloop
-    LDA discaccess+3 ; auto increment register
-    JSR &FFEE
-    TAX ; Set flags
-    BNE stringloop
-    PAGERTS
+    GOTOPAGE HELP_PAGE, HELP_ENTRY  ; the help screen is printed by page 47
 
 ;; swrinstall: the second half of every ROM loader (see READROMFILE).  The
 ;; ROM is in the Pi's buffer at &F00000 and the ROM number from before the
@@ -778,42 +781,42 @@ ORG &FD00
 ; User ROM10
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM10.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM10*.rom", &41
     ENDBLOCK &A00
 }
 ; Page 11
 ; User ROM11
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM11.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM11*.rom", &41
     ENDBLOCK &B00
 }
 ; Page 12
 ; User ROM12
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM12.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM12*.rom", &41
     ENDBLOCK &C00
 }
 ; Page 13
 ; User ROM13
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM13.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM13*.rom", &41
     ENDBLOCK &D00
 }
 ; Page 14
 ; User ROM14
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM14.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM14*.rom", &41
     ENDBLOCK &E00
 }
 ; Page 15
 ; User ROM15
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM15.rom"
+    LOADFILETOSWR_MODE "Pi1MHz/ROM15*.rom", &41
     ENDBLOCK &F00
 }
 
@@ -2184,6 +2187,36 @@ NEXT
     ENDBLOCK &2E00
 }
 
+; Page 47: the help screen, reached from helper 0.  Run as helper 47
+; itself it only returns.  Printed in paged mode, as it can be longer than
+; the screen (a row for each user ROM), and paged mode is put back as it
+; was.
+{
+    ORG &FD00
+    RTS
+.waitloop
+    ASSERT waitloop = &FD00 + HELP_ENTRY
+    JMP waitloop    ; the Pi rewrites the low byte when the screen is in place
+    ASSERT P% = &FD04
+    LDA #117 : JSR OSBYTE       ; X = VDU status: bit 2 is paged mode
+    TXA : PHA
+    LDA #14  : JSR OSWRCH       ; paged mode on
+    LDA #0   : STA discaccess   ; the screen, at &FFE000
+    LDA #&E0 : STA discaccess+1
+    LDA #&FF : STA discaccess+2
+.stringloop
+    LDA discaccess+3            ; auto increment register
+    JSR OSWRCH
+    TAX                         ; set flags
+    BNE stringloop
+    PLA : AND #4                ; paged mode was on: leave it on
+    BNE pagedon
+    LDA #15  : JSR OSWRCH
+.pagedon
+    PAGERTS
+    ENDBLOCK &2F00
+}
+
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2F00
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &3000

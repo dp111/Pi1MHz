@@ -139,6 +139,16 @@ moves the kept name with it. A Pi restart, an eject and commands 14/15
 forget kept files and slot directories, and change command 20's boot
 id.
 
+Mode bit **0x40 (wildcard)** lets the last part of the name hold `*`s,
+each standing for any run of characters (case ignored). The file opened
+is the name with the `*`s taken out if that exists, otherwise the
+matching file first in ASCII order, case ignored; directories never
+match. No match is FR_NO_FILE; a `*` before the last `/` is
+FR_INVALID_NAME. Only for reading: with FA_WRITE, a create mode or the
+keep bit it is FR_INVALID_PARAMETER. Without the bit, a `*` is an
+invalid name, as before. The ROM loaders (helpers 10-15) open
+`Pi1MHz/ROM10*.rom` and so on with it.
+
 Once a slot has its own directory (command 22), the name is relative to
 it; otherwise to the shared current directory (command 11). An 8.3
 name that does not exist as given is looked up as one of the made-up
