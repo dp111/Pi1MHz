@@ -2735,35 +2735,43 @@ static bool route_edid(ws_conn_t *c)
    return ws_finish_text(c, 200, "OK", &b);
 }
 
-static bool route_status(ws_conn_t *c)
+/* /status, one function per section.  Each section writes its rows in the
+   order they always had; route_status runs them through status_sections[].
+   The values read once per view and shared by several sections ride in
+   status_ctx_t, read in the order route_status always read them. */
+typedef struct {
+   const wifi_config_t       *cfg;
+   const wifi_lwip_context_t *lw;
+   sdio_runtime_status_t      rs;
+} status_ctx_t;
+
+/* Firmware version and config file. */
+static void status_firmware(ws_strbuf_t *b, const status_ctx_t *ctx)
 {
-   const wifi_config_t         *cfg = wifi_get_config();
-   const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
-   sdio_runtime_status_t        rs  = sdio_runtime_get_status();
-   ws_strbuf_t                  b;
-   char                         tmp[256];   /* the Bus diag row peaks ~120 chars with 10-digit counters (the Telnetd row has its own) */
-   uint8_t                      mac[6];
+   char tmp[256];
 
-   sb_init(&b);
-   page_open(&b, "Status");
-   sb_puts(&b, "<h1>Status</h1><div class=\"card\"><table>");
-
-   table_row(&b, "Firmware", helpers_firmware_version());
+   table_row(b, "Firmware", helpers_firmware_version());
    {
       int keys;
       if (config_file_found(&keys)) {
          snprintf(tmp, sizeof tmp, "Pi1MHz.cfg: %d keys", keys);
-         table_row(&b, "Config", tmp);
+         table_row(b, "Config", tmp);
       } else {
-         table_row(&b, "Config", "Pi1MHz.cfg not found: defaults in use");
+         table_row(b, "Config", "Pi1MHz.cfg not found: defaults in use");
       }
    }
+}
 
-   table_row(&b, "SSID",
-             (cfg != NULL && cfg->ssid[0] != '\0') ? cfg->ssid : "(not set)");
-   table_row(&b, "Hostname",
-             (cfg != NULL && cfg->hostname[0] != '\0')
-                ? cfg->hostname : "(default)");
+/* WiFi association: SSID, hostname, signal, link rate. */
+static void status_wifi_link(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
+   table_row(b, "SSID",
+             (ctx->cfg != NULL && ctx->cfg->ssid[0] != '\0') ? ctx->cfg->ssid : "(not set)");
+   table_row(b, "Hostname",
+             (ctx->cfg != NULL && ctx->cfg->hostname[0] != '\0')
+                ? ctx->cfg->hostname : "(default)");
 
    /* Signal strength.  Only read RSSI when this page is viewed: the
       request is flagged here and the actual ioctl runs off the TCP
@@ -2784,36 +2792,43 @@ static bool route_status(ws_conn_t *c)
       sdio_runtime_request_rate();
       if (sdio_runtime_get_rssi(&rssi)) {
          snprintf(tmp, sizeof tmp, "%ld dBm", (long)rssi);
-         table_row(&b, "Signal (RSSI)", tmp);
+         table_row(b, "Signal (RSSI)", tmp);
       } else {
-         table_row(&b, "Signal (RSSI)", "(querying)");
+         table_row(b, "Signal (RSSI)", "(querying)");
       }
       {
          int32_t rate;
          if (sdio_runtime_get_rate(&rate) && rate > 0) {
             snprintf(tmp, sizeof tmp, "%ld.%ld Mbit/s",
                      (long)(rate / 2), (long)((rate & 1) * 5));
-            table_row(&b, "Link rate (TX)", tmp);
+            table_row(b, "Link rate (TX)", tmp);
          } else {
-            table_row(&b, "Link rate (TX)", "(querying)");
+            table_row(b, "Link rate (TX)", "(querying)");
          }
       }
    }
+}
 
-   if (lw != NULL) {
+/* IP configuration, time service, chip MAC. */
+static void status_network(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+   uint8_t mac[6];
+
+   if (ctx->lw != NULL) {
       char ip[20];
-      ws_ip_str(netif_ip4_addr(&lw->netif), ip, sizeof ip);
-      table_row(&b, "IP address", ip);
-      ws_ip_str(netif_ip4_netmask(&lw->netif), ip, sizeof ip);
-      table_row(&b, "Netmask", ip);
-      ws_ip_str(netif_ip4_gw(&lw->netif), ip, sizeof ip);
-      table_row(&b, "Gateway", ip);
+      ws_ip_str(netif_ip4_addr(&ctx->lw->netif), ip, sizeof ip);
+      table_row(b, "IP address", ip);
+      ws_ip_str(netif_ip4_netmask(&ctx->lw->netif), ip, sizeof ip);
+      table_row(b, "Netmask", ip);
+      ws_ip_str(netif_ip4_gw(&ctx->lw->netif), ip, sizeof ip);
+      table_row(b, "Gateway", ip);
       wifi_service_ntp_server_text(tmp, sizeof tmp);
-      table_row(&b, "NTP server", tmp);
+      table_row(b, "NTP server", tmp);
       wifi_service_time_zone_text(tmp, sizeof tmp);
-      table_row(&b, "Time zone", tmp);
+      table_row(b, "Time zone", tmp);
       wifi_service_time_offset_text(tmp, sizeof tmp);
-      table_row(&b, "Time shift", tmp);
+      table_row(b, "Time shift", tmp);
    }
 
    /* Show the chip's actual transmit MAC (captured at boot via the
@@ -2824,24 +2839,30 @@ static bool route_status(ws_conn_t *c)
    if (sdio_runtime_get_chip_mac(mac)) {
       snprintf(tmp, sizeof tmp, "%02X:%02X:%02X:%02X:%02X:%02X",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      table_row(&b, "MAC address", tmp);
+      table_row(b, "MAC address", tmp);
    }
+}
 
-   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.tx_frames);
-   table_row(&b, "Frames sent", tmp);
-   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rx_frames);
-   table_row(&b, "Frames received", tmp);
-   if (rs.tx_resyncs != 0u) {
-      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.tx_resyncs);
-      table_row(&b, "Transmit resyncs", tmp);
+/* Frame counters, RX gate, TX path. */
+static void status_wifi_counters(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
+   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)ctx->rs.tx_frames);
+   table_row(b, "Frames sent", tmp);
+   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)ctx->rs.rx_frames);
+   table_row(b, "Frames received", tmp);
+   if (ctx->rs.tx_resyncs != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)ctx->rs.tx_resyncs);
+      table_row(b, "Transmit resyncs", tmp);
    }
-   if (rs.rejoins != 0u) {
-      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rejoins);
-      table_row(&b, "Rejoins", tmp);
+   if (ctx->rs.rejoins != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)ctx->rs.rejoins);
+      table_row(b, "Rejoins", tmp);
    }
    if (wifi_lwip_rx_pbuf_drops() != 0u) {
       snprintf(tmp, sizeof tmp, "%lu", (unsigned long)wifi_lwip_rx_pbuf_drops());
-      table_row(&b, "Frames dropped (no pbuf)", tmp);
+      table_row(b, "Frames dropped (no pbuf)", tmp);
    }
    {
       uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
@@ -2856,7 +2877,7 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
       else
          snprintf(tmp, sizeof tmp, "%s (counts: wifi_diag=1)", armed ? "armed" : "OFF");
-      table_row(&b, "RX interrupt gate", tmp);
+      table_row(b, "RX interrupt gate", tmp);
    }
    {
       uint32_t q = 0u, stale_n = 0u, df = 0u, hm = 0u;
@@ -2867,8 +2888,17 @@ static bool route_status(ws_conn_t *c)
                        (unsigned long)q, (unsigned long)stale_n, (unsigned long)df);
       if (sdio_runtime_diag_enabled() && o > 0 && (size_t)o < sizeof tmp)
          snprintf(tmp + o, sizeof tmp - (size_t)o, " / %lu us max wait", (unsigned long)hm);
-      table_row(&b, "TX path", tmp);
+      table_row(b, "TX path", tmp);
    }
+}
+
+/* TX glom and per-pass feed diagnostics. */
+static void status_txglom(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+#if WIFI_LWIP_RX_PROFILE
+   char tmp[256];   /* the RX cost/frame row is its only user */
+#endif
+
    {
       /* TX glom row: shown when wifi_txglom is configured, or when the
          channel-3 tripwire has ever fired (which must be visible even on
@@ -2894,7 +2924,7 @@ static bool route_status(ws_conn_t *c)
             snprintf(big + o, sizeof big - (size_t)o, "fallbacks %lu / ch3 %lu%s",
                      (unsigned long)g_falls, (unsigned long)g_ch3,
                      (g_ch3 != 0u) ? " TRIPWIRE!" : "");
-         table_row(&b, "TX glom", big);
+         table_row(b, "TX glom", big);
       }
    }
    {
@@ -2917,10 +2947,10 @@ static bool route_status(ws_conn_t *c)
             snprintf(big + off, sizeof big - off,
                      " - %lu refills, %lu.%02lu frames/refill",
                      (unsigned long)refills,
-                     (unsigned long)(rs.tx_frames / refills),
-                     (unsigned long)(((uint64_t)rs.tx_frames * 100u
+                     (unsigned long)(ctx->rs.tx_frames / refills),
+                     (unsigned long)(((uint64_t)ctx->rs.tx_frames * 100u
                                       / refills) % 100u));
-         table_row(&b, "TX glom batches", big);
+         table_row(b, "TX glom batches", big);
       }
    }
    {
@@ -2938,27 +2968,27 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)th[0], (unsigned long)th[1],
                   (unsigned long)th[2], (unsigned long)th[3],
                   (unsigned long)th[4], (unsigned long)th[5]);
-         table_row(&b, "TX feed/pass (TCP)", big);
+         table_row(b, "TX feed/pass (TCP)", big);
 #ifdef DEBUG                        /* the rig exists in DEBUG builds only */
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)blh[0], (unsigned long)blh[1],
                   (unsigned long)blh[2], (unsigned long)blh[3],
                   (unsigned long)blh[4], (unsigned long)blh[5]);
-         table_row(&b, "TX feed/pass (udpblast)", big);
+         table_row(b, "TX feed/pass (udpblast)", big);
 #endif
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)oh[0], (unsigned long)oh[1],
                   (unsigned long)oh[2], (unsigned long)oh[3],
                   (unsigned long)oh[4], (unsigned long)oh[5]);
-         table_row(&b, "TX feed/pass (other)", big);
+         table_row(b, "TX feed/pass (other)", big);
          snprintf(big, sizeof big,
                   "1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)rxh[1], (unsigned long)rxh[2],
                   (unsigned long)rxh[3], (unsigned long)rxh[4],
                   (unsigned long)rxh[5]);
-         table_row(&b, "RX drained/pass", big);
+         table_row(b, "RX drained/pass", big);
       }
    }
 #if WIFI_LWIP_RX_PROFILE
@@ -2969,9 +2999,16 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "sdio %lu / lwip %lu cycles avg over %lu",
                (unsigned long)sdio_avg, (unsigned long)lwip_avg,
                (unsigned long)prof_frames);
-      table_row(&b, "RX cost/frame", tmp);
+      table_row(b, "RX cost/frame", tmp);
    }
 #endif
+}
+
+/* SDIO credit, grant, fn2 bus and mailbox diagnostics. */
+static void status_sdio_diag(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    {
       /* Credit-window instrumentation rows: only when wifi_diag=1 (the
          getter refuses while disabled, so a release /status is unchanged). */
@@ -2989,7 +3026,7 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)dh[2], (unsigned long)dh[3],
                   (unsigned long)dh[4], (unsigned long)dh[5],
                   (unsigned long)dh[6], (unsigned)dmin, (unsigned)dmax);
-         table_row(&b, "Credit depth (RX refresh)", big);
+         table_row(b, "Credit depth (RX refresh)", big);
          snprintf(big, sizeof big,
                   "<100us:%lu <500us:%lu <1ms:%lu <5ms:%lu "
                   "<20ms:%lu 20ms+:%lu max:%lu us",
@@ -2997,7 +3034,7 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)rh[2], (unsigned long)rh[3],
                   (unsigned long)rh[4], (unsigned long)rh[5],
                   (unsigned long)rmax);
-         table_row(&b, "Credit reopen latency", big);
+         table_row(b, "Credit reopen latency", big);
       }
    }
    {
@@ -3015,13 +3052,13 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)gh[0], (unsigned long)gh[1],
                   (unsigned long)gh[2], (unsigned long)gh[3],
                   (unsigned long)gh[4], (unsigned long)gh[5]);
-         table_row(&b, "RX gate service latency", big);
+         table_row(b, "RX gate service latency", big);
          snprintf(big, sizeof big,
                   "<500us:%lu <1ms:%lu <2ms:%lu <5ms:%lu <10ms:%lu 10ms+:%lu",
                   (unsigned long)gp[0], (unsigned long)gp[1],
                   (unsigned long)gp[2], (unsigned long)gp[3],
                   (unsigned long)gp[4], (unsigned long)gp[5]);
-         table_row(&b, "Grant interval", big);
+         table_row(b, "Grant interval", big);
       }
    }
    {
@@ -3029,7 +3066,7 @@ static bool route_status(ws_conn_t *c)
 
       if (dpf != 0u) {
          snprintf(tmp, sizeof tmp, "%lu", (unsigned long)dpf);
-         table_row(&b, "TX data-phase fails", tmp);
+         table_row(b, "TX data-phase fails", tmp);
       }
    }
 #ifdef DEBUG
@@ -3042,7 +3079,7 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)bl_sent, (unsigned long)bl_rem,
                   (unsigned long)(bl_us / 1000000u),
                   (unsigned long)((bl_us / 1000u) % 1000u));
-         table_row(&b, "UDP blast", tmp);
+         table_row(b, "UDP blast", tmp);
       }
    }
 #endif
@@ -3051,7 +3088,7 @@ static bool route_status(ws_conn_t *c)
       if (sdio_runtime_get_powersave_mode(&pm)) {
          snprintf(tmp, sizeof tmp, "%ld%s", (long)pm,
                   (pm == 0) ? " (off, as requested)" : " (ON - AP will buffer!)");
-         table_row(&b, "Power save (WLC_GET_PM)", tmp);
+         table_row(b, "Power save (WLC_GET_PM)", tmp);
       }
    }
    {
@@ -3069,7 +3106,7 @@ static bool route_status(ws_conn_t *c)
                      (unsigned long)((uint64_t)fb_us * 100u / span_us),
                      (unsigned long)fb_us, (unsigned long)(span_us / 1000u),
                      (unsigned long)fb_ops, (unsigned long)(fb_bytes / 1024u));
-            table_row(&b, "fn2 data bus", tmp);
+            table_row(b, "fn2 data bus", tmp);
          }
       }
    }
@@ -3082,7 +3119,7 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)sh[0], (unsigned long)sh[1],
                   (unsigned long)sh[2], (unsigned long)sh[3],
                   (unsigned long)sh[4], (unsigned long)sh[5]);
-         table_row(&b, "Credit grant -> spend", tmp);
+         table_row(b, "Credit grant -> spend", tmp);
       }
    }
    {
@@ -3096,9 +3133,16 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)mb_services, (unsigned long)mb_int_or,
                   (unsigned long)mb_ints, (unsigned long)mb_or,
                   (unsigned long)mb_last, (unsigned long)mb_fc);
-         table_row(&b, "Mailbox (HMB_DATA)", tmp);
+         table_row(b, "Mailbox (HMB_DATA)", tmp);
       }
    }
+}
+
+/* 802.11n/AMPDU, test iovar, delta stats, link-loss detect. */
+static void status_chip_iovars(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    {
       int32_t  fw_wsize = -1, fw_ampdu = -1, fw_nmode = -1;
       uint32_t set_wsize = 0u;
@@ -3111,7 +3155,7 @@ static bool route_status(ws_conn_t *c)
          ws_iovar_text(amp, sizeof amp, fw_ampdu);
          ws_iovar_text(nm, sizeof nm, fw_nmode);
          snprintf(tmp, sizeof tmp, "ampdu %s, nmode %s", amp, nm);
-         table_row(&b, "802.11n state", tmp);
+         table_row(b, "802.11n state", tmp);
          if (set_wsize != 0u)
             snprintf(tmp, sizeof tmp,
                      "firmware ba_wsize %s, join sets %lu",
@@ -3119,7 +3163,7 @@ static bool route_status(ws_conn_t *c)
          else
             snprintf(tmp, sizeof tmp,
                      "firmware ba_wsize %s, join sets none (wifi_ampdu=0)", ws);
-         table_row(&b, "AMPDU limits", tmp);
+         table_row(b, "AMPDU limits", tmp);
       }
       {  /* wifi_test_iovars slot 0, read back out of the chip: the only
             proof a SET landed rather than being silently ignored. */
@@ -3132,7 +3176,7 @@ static bool route_status(ws_conn_t *c)
                snprintf(tmp, sizeof tmp, "%s: REFUSED by firmware", iv_name);
             else
                snprintf(tmp, sizeof tmp, "%s reads back %ld", iv_name, (long)iv_val);
-            table_row(&b, "Test iovar", tmp);
+            table_row(b, "Test iovar", tmp);
          }
       }
       {  /* delta_stats, sampled on demand: separates "the medium is busy"
@@ -3151,11 +3195,18 @@ static bool route_status(ws_conn_t *c)
                         (unsigned long)txfail, (unsigned long)glitch);
             else
                snprintf(tmp, sizeof tmp, "no answer (interval armed?)");
-            table_row(&b, "Delta stats", tmp);
+            table_row(b, "Delta stats", tmp);
          }
       }
    }
-   table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
+   table_row(b, "Link-loss detect", ctx->rs.link_flag_trusted ? "armed" : "not armed");
+}
+
+/* H264 decoder, planes, display mode, video player, F-code. */
+static void status_video(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    if (h264dec_running()) {
       bool     out_en = false, reconf = false;
       uint32_t nreg = 0, narm = 0;
@@ -3172,7 +3223,7 @@ static bool route_status(ws_conn_t *c)
                (unsigned long)nreg, (unsigned long)narm,
                (unsigned long)in_free, (unsigned)H264DEC_INPUT_BUFFERS,
                eos ? " eos-owed" : "");
-      table_row(&b, "H264 decoder", tmp);
+      table_row(b, "H264 decoder", tmp);
    }
    /* Always shown: with the decoder not running these are the only view of
       why a lazy bring-up refused (and of the last F-code the Beeb sent). */
@@ -3210,8 +3261,8 @@ static bool route_status(ws_conn_t *c)
             snprintf(planes + o, sizeof planes - o, " @ %lu.%02lu Hz",
                      (unsigned long)(mhz / 1000u), (unsigned long)((mhz % 1000u) / 10u));
       }
-      table_row(&b, "Planes", planes);
-      table_row(&b, "Display mode", display_mode_report());
+      table_row(b, "Planes", planes);
+      table_row(b, "Display mode", display_mode_report());
 
       /* VP5 strips: the rectangle they were built around, against plane 1's
          live geometry above - a disagreement means a MODE change moved the
@@ -3223,10 +3274,17 @@ static bool route_status(ws_conn_t *c)
                (unsigned long)g[0], (unsigned long)g[1],
                (unsigned long)g[2], (unsigned long)g[3],
                (unsigned long)g[4], (unsigned long)g[5]);
-      table_row(&b, "VP5 strips", tmp);
+      table_row(b, "VP5 strips", tmp);
    }
-   table_row(&b, "Video player", videoplayer_status());
-   table_row(&b, "F-code", fcodeLastExchange());
+   table_row(b, "Video player", videoplayer_status());
+   table_row(b, "F-code", fcodeLastExchange());
+}
+
+/* Audio. */
+static void status_audio(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
 #ifdef DEBUG
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
@@ -3240,183 +3298,240 @@ static bool route_status(ws_conn_t *c)
             (unsigned long)audio_blocks_played(),
             (unsigned long)audio_underruns(), audio_sink_name());
 #endif
-   table_row(&b, "Audio", tmp);
+   table_row(b, "Audio", tmp);
+}
+
+/* Serial redirect and modem. */
+static void status_serial(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    serial_redirect_status(tmp, sizeof tmp);
-   table_row(&b, "Serial", tmp);
+   table_row(b, "Serial", tmp);
 #ifdef DEBUG
    {
       static char sl[6200];
       serial_redirect_log(sl, sizeof sl);
-      table_row(&b, "Serial log", sl);
+      table_row(b, "Serial log", sl);
    }
 #endif
    modem_status(tmp, sizeof tmp);
-   table_row(&b, "Modem", tmp);
-   table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive"
+   table_row(b, "Modem", tmp);
+}
+
+/* Beeb storage and SMB share. */
+static void status_storage(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
+   table_row(b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive"
                                : filesystemStorageOnSmb() ? "SMB share" : "SD card");
    if (smb_client_configured()) {
       smb_client_status(tmp, sizeof tmp);
-      table_row(&b, "SMB share", tmp);
+      table_row(b, "SMB share", tmp);
    }
+}
+
+/* Telnetd. */
+static void status_telnetd(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+
    {
       static char tl[1024];                     /* with telnetd_debug=1 the row runs well past tmp's 256 */
       telnetd_status(tl, sizeof tl);
-      table_row(&b, "Telnetd", tl);
+      table_row(b, "Telnetd", tl);
    }
    if (telnetd_debug()) {                      /* telnetd_debug=1 in Pi1MHz.cfg */
       char tt[192];
       telnetd_tcp_status(tt, sizeof tt);
-      table_row(&b, "Telnetd TCP", tt);
+      table_row(b, "Telnetd TCP", tt);
    }
+}
+
+/* USB. */
+static void status_usb(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    if (usb_is_host()) {
       char m[64];
       usb_mouse_status(m, sizeof m);
       snprintf(tmp, sizeof tmp, "host, mouse %s", m);
-      table_row(&b, "USB", tmp);
+      table_row(b, "USB", tmp);
       usb_storage_status(tmp, sizeof tmp);
-      table_row(&b, "USB drive", tmp);
+      table_row(b, "USB drive", tmp);
    } else {
-      table_row(&b, "USB", "device (MTP)");
+      table_row(b, "USB", "device (MTP)");
    }
+}
+
+/* HDMI audio. */
+static void status_hdmi_audio(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    snprintf(tmp, sizeof tmp, "mai %08lx hsm %lu pix %lu",
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
             (unsigned long)hdmi_audio_pixel_hz());
-   table_row(&b, "HDMI audio", tmp);
+   table_row(b, "HDMI audio", tmp);
+}
+
+/* SCSI and bus diagnostics. */
+static void status_scsi_bus(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];   /* the Bus diag row peaks ~120 chars with 10-digit counters (the Telnetd row has its own) */
+
 #ifdef DEBUG
    {
       snprintf(tmp, sizeof tmp, "%lu ACK timeouts, audio service max %lu us, ACK wait max %lu us",
                (unsigned long)hd_ack_timeouts, (unsigned long)hd_service_max_us,
                (unsigned long)hd_ack_wait_max_us);
-      table_row(&b, "SCSI", tmp);
+      table_row(b, "SCSI", tmp);
    }
 #endif
-   {
 #ifdef DEBUG
-      /* SCSI bus diagnostics: event counters, engine state, last CDB. */
-      snprintf(tmp, sizeof tmp,
-               "sel %lu wr %lu rd %lu st %u fl %06lx cdb %02x%02x%02x%02x%02x%02x n%lu x%lu",
-               (unsigned long)hd_ev_sel, (unsigned long)hd_ev_writes, (unsigned long)hd_ev_reads,
-               (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
-               scsiDiagCdb[0], scsiDiagCdb[1], scsiDiagCdb[2], scsiDiagCdb[3], scsiDiagCdb[4], scsiDiagCdb[5],
-               (unsigned long)scsiDiagCmdCount, (unsigned long)scsiDiagXfer);
-      table_row(&b, "Bus diag", tmp);
+   /* SCSI bus diagnostics: event counters, engine state, last CDB. */
+   snprintf(tmp, sizeof tmp,
+            "sel %lu wr %lu rd %lu st %u fl %06lx cdb %02x%02x%02x%02x%02x%02x n%lu x%lu",
+            (unsigned long)hd_ev_sel, (unsigned long)hd_ev_writes, (unsigned long)hd_ev_reads,
+            (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
+            scsiDiagCdb[0], scsiDiagCdb[1], scsiDiagCdb[2], scsiDiagCdb[3], scsiDiagCdb[4], scsiDiagCdb[5],
+            (unsigned long)scsiDiagCmdCount, (unsigned long)scsiDiagXfer);
+   table_row(b, "Bus diag", tmp);
 #else
-      /* Release: just the live engine state and adapter flags - reading them
-         costs nothing, and during a wedge this row is the only witness to
-         which side of the handshake dropped the completion. */
-      snprintf(tmp, sizeof tmp, "st %u fl %06lx nirq %08lx ovr %lu",
-               (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
-               (unsigned long)Pi1MHz_nIRQ_diag(), (unsigned long)Pi1MHz_fiq_overruns);
-      table_row(&b, "Bus diag", tmp);
+   /* Release: just the live engine state and adapter flags - reading them
+      costs nothing, and during a wedge this row is the only witness to
+      which side of the handshake dropped the completion. */
+   snprintf(tmp, sizeof tmp, "st %u fl %06lx nirq %08lx ovr %lu",
+            (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
+            (unsigned long)Pi1MHz_nIRQ_diag(), (unsigned long)Pi1MHz_fiq_overruns);
+   table_row(b, "Bus diag", tmp);
 #endif
+}
 
-      {
-         /* BREAK forensics (Pi1MHz_break, stamped once per Beeb reset in the
-            nRST IRQ, the poll loop's re-init, the first helper select and the
-            first VDU byte): read on demand.  missed = resets the IRQ saw but
-            the poll loop never re-initialised for; held = nRST low time as the
-            poll loop saw it; helper/vdu are from the nRST edge, "-" = not yet. */
-         volatile const Pi1MHz_break_t *bk = &Pi1MHz_break;
-         char row[256];             /* longer than tmp: eleven fields */
-         if (bk->edges == 0u) {
-            snprintf(row, sizeof row, "no reset seen since boot");
-         } else {
-            /* Every interval is "stamp - last nRST edge"; a stamp from before
-               that edge (a bouncing key, or nothing since it yet) prints "-". */
-            char is[16], hd[16], hs[16], vs[16], os[16];
-            uint32_t missed = (bk->edges > bk->inits) ? bk->edges - bk->inits : 0u;
-            #define SINCE_RST(buf, stamp, valid) do { \
-               int32_t d_ = (int32_t)((stamp) - bk->rst_us); \
-               if (!(valid) || d_ < 0) snprintf(buf, sizeof buf, "-"); \
-               else if (d_ < 1000) snprintf(buf, sizeof buf, "%ld us", (long)d_); \
-               else snprintf(buf, sizeof buf, "%lu.%lu ms", (unsigned long)(d_ / 1000), (unsigned long)((d_ % 1000) / 100)); } while (0)
-            SINCE_RST(is, bk->init_start_us, true);
-            SINCE_RST(hd, bk->release_us, true);
-            SINCE_RST(hs, bk->helper_us, !bk->helper_pending);
-            SINCE_RST(vs, bk->vdu_us, !bk->vdu_pending);
-            SINCE_RST(os, Pi1MHz_fiq_ovr_first_us, Pi1MHz_fiq_ovr_first_us != 0u);
-            #undef SINCE_RST
-            snprintf(row, sizeof row,
-                     "edges %lu inits %lu missed %lu | rst->init %s, init %lu us, held %s, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, worst rst->init %lu us, margin %ld ms",
-                     (unsigned long)bk->edges, (unsigned long)bk->inits, (unsigned long)missed,
-                     is,
-                     (unsigned long)(bk->init_end_us - bk->init_start_us),
-                     hd, hs, vs,
-                     (unsigned long)(Pi1MHz_fiq_overruns - bk->ovr_at_rst), os,
-                     (unsigned long)bk->init_max_us,
-                     (unsigned long)bk->rst_start_max_us,
-                     (long)((bk->margin_min_us == INT32_MAX) ? 0 : bk->margin_min_us / 1000));
-         }
-         table_row(&b, "BREAK", row);
-#ifdef DEBUG
-         {
-            /* The ring as it stands: each slot's 5-bit tag (slot in the low 3
-               bits, lap in the top 2) and the consumer's tag C.  A producer
-               that restarted with the consumer shows the lap-3 fill with a
-               run of lap-0 entries; anything else is out of step. */
-            unsigned int cpsr = _disable_interrupts_cspr();   /* only the mode switch needs FIQ off */
-            uint32_t ctag = _fiq_get_consumer();
-            _restore_cpsr(cpsr);
-            uint32_t t[Pi1MHz_POST_SLOTS];
-            for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)     /* single-word reads: no exclusion */
-               t[s] = Pi1MHz_post_ring[s] >> 27;
-            snprintf(row, sizeof row, "tags %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx  C %02lx (slot %lu lap %lu)",
-                     (unsigned long)t[0], (unsigned long)t[1], (unsigned long)t[2], (unsigned long)t[3],
-                     (unsigned long)t[4], (unsigned long)t[5], (unsigned long)t[6], (unsigned long)t[7],
-                     (unsigned long)(ctag >> 27), (unsigned long)((ctag >> 27) & 7u), (unsigned long)(ctag >> 30));
-            table_row(&b, "Ring", row);
-         }
-#endif
+/* BREAK forensics. */
+static void status_break(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+
+   {
+      /* BREAK forensics (Pi1MHz_break, stamped once per Beeb reset in the
+         nRST IRQ, the poll loop's re-init, the first helper select and the
+         first VDU byte): read on demand.  missed = resets the IRQ saw but
+         the poll loop never re-initialised for; held = nRST low time as the
+         poll loop saw it; helper/vdu are from the nRST edge, "-" = not yet. */
+      volatile const Pi1MHz_break_t *bk = &Pi1MHz_break;
+      char row[256];             /* longer than tmp: eleven fields */
+      if (bk->edges == 0u) {
+         snprintf(row, sizeof row, "no reset seen since boot");
+      } else {
+         /* Every interval is "stamp - last nRST edge"; a stamp from before
+            that edge (a bouncing key, or nothing since it yet) prints "-". */
+         char is[16], hd[16], hs[16], vs[16], os[16];
+         uint32_t missed = (bk->edges > bk->inits) ? bk->edges - bk->inits : 0u;
+         #define SINCE_RST(buf, stamp, valid) do { \
+            int32_t d_ = (int32_t)((stamp) - bk->rst_us); \
+            if (!(valid) || d_ < 0) snprintf(buf, sizeof buf, "-"); \
+            else if (d_ < 1000) snprintf(buf, sizeof buf, "%ld us", (long)d_); \
+            else snprintf(buf, sizeof buf, "%lu.%lu ms", (unsigned long)(d_ / 1000), (unsigned long)((d_ % 1000) / 100)); } while (0)
+         SINCE_RST(is, bk->init_start_us, true);
+         SINCE_RST(hd, bk->release_us, true);
+         SINCE_RST(hs, bk->helper_us, !bk->helper_pending);
+         SINCE_RST(vs, bk->vdu_us, !bk->vdu_pending);
+         SINCE_RST(os, Pi1MHz_fiq_ovr_first_us, Pi1MHz_fiq_ovr_first_us != 0u);
+         #undef SINCE_RST
+         snprintf(row, sizeof row,
+                  "edges %lu inits %lu missed %lu | rst->init %s, init %lu us, held %s, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, worst rst->init %lu us, margin %ld ms",
+                  (unsigned long)bk->edges, (unsigned long)bk->inits, (unsigned long)missed,
+                  is,
+                  (unsigned long)(bk->init_end_us - bk->init_start_us),
+                  hd, hs, vs,
+                  (unsigned long)(Pi1MHz_fiq_overruns - bk->ovr_at_rst), os,
+                  (unsigned long)bk->init_max_us,
+                  (unsigned long)bk->rst_start_max_us,
+                  (long)((bk->margin_min_us == INT32_MAX) ? 0 : bk->margin_min_us / 1000));
       }
-
+      table_row(b, "BREAK", row);
+#ifdef DEBUG
       {
-         /* Lockup forensics: where the previous boot attempt died (only shown
-            when it did die short of the main loop), and the last CPU fault
-            since power-on, persisted across the post-exception reboot. */
-         boot_stage_t prev = RPI_BootStagePrevious();
-         uint32_t det = RPI_BootDetailPrevious();
-         if (prev != 0u && prev != BOOT_STAGE_RUNNING) {
-            if (det != 0u && det < 256u)
-               snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u in init %lu (%s)",
-                        (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING,
-                        (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
-            else
-               snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u",
-                        (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING);
-            table_row(&b, "Boot", tmp);
-         } else if (prev == BOOT_STAGE_RUNNING && det != 0u && det != 0xFDu) {
-            /* The previous session ended by reset while running. Decode where
-               it was: poll callback (det>=256), the RST re-init pass entry
-               (0xFE = in config_load), or an init during that pass. 0xFD is
-               the deliberate-/reboot marker - silent. */
-            if (det >= 256u)
-               snprintf(tmp, sizeof tmp, "previous session died in poll callback %lu",
-                        (unsigned long)((det >> 8) - 1u));
-            else if (det == 0xFEu)
-               snprintf(tmp, sizeof tmp, "previous session died in RST re-init (config load)");
-            else
-               snprintf(tmp, sizeof tmp, "previous session died in RST re-init at init %lu (%s)",
-                        (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
-            table_row(&b, "Boot", tmp);
-         }
-         {
-            unsigned int rr = RPI_ResetReason();
-            snprintf(tmp, sizeof tmp, "%03x%s", rr, (rr & 0x20u) ? " (watchdog)" : "");
-            table_row(&b, "Reset reason", tmp);
-         }
-         if (RPI_MailboxSilent())
-            table_row(&b, "VideoCore", "not answering (property calls skipped)");
-         const volatile unsigned int *cr = RPI_LastCrash();
-         if (cr) {
-            snprintf(tmp, sizeof tmp,
-                     "%c at pc %08lx spsr %08lx dfar %08lx dfsr %08lx stage %lu count %lu",
-                     (char)cr[1], (unsigned long)cr[2], (unsigned long)cr[3],
-                     (unsigned long)cr[4], (unsigned long)cr[5],
-                     (unsigned long)cr[6], (unsigned long)cr[7]);
-            table_row(&b, "Last fault", tmp);
-         }
+         /* The ring as it stands: each slot's 5-bit tag (slot in the low 3
+            bits, lap in the top 2) and the consumer's tag C.  A producer
+            that restarted with the consumer shows the lap-3 fill with a
+            run of lap-0 entries; anything else is out of step. */
+         unsigned int cpsr = _disable_interrupts_cspr();   /* only the mode switch needs FIQ off */
+         uint32_t ctag = _fiq_get_consumer();
+         _restore_cpsr(cpsr);
+         uint32_t t[Pi1MHz_POST_SLOTS];
+         for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)     /* single-word reads: no exclusion */
+            t[s] = Pi1MHz_post_ring[s] >> 27;
+         snprintf(row, sizeof row, "tags %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx  C %02lx (slot %lu lap %lu)",
+                  (unsigned long)t[0], (unsigned long)t[1], (unsigned long)t[2], (unsigned long)t[3],
+                  (unsigned long)t[4], (unsigned long)t[5], (unsigned long)t[6], (unsigned long)t[7],
+                  (unsigned long)(ctag >> 27), (unsigned long)((ctag >> 27) & 7u), (unsigned long)(ctag >> 30));
+         table_row(b, "Ring", row);
+      }
+#endif
+   }
+}
+
+/* Lockup forensics: previous boot, reset reason, last fault. */
+static void status_boot_forensics(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
+   {
+      /* Lockup forensics: where the previous boot attempt died (only shown
+         when it did die short of the main loop), and the last CPU fault
+         since power-on, persisted across the post-exception reboot. */
+      boot_stage_t prev = RPI_BootStagePrevious();
+      uint32_t det = RPI_BootDetailPrevious();
+      if (prev != 0u && prev != BOOT_STAGE_RUNNING) {
+         if (det != 0u && det < 256u)
+            snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u in init %lu (%s)",
+                     (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING,
+                     (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
+         else
+            snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u",
+                     (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING);
+         table_row(b, "Boot", tmp);
+      } else if (prev == BOOT_STAGE_RUNNING && det != 0u && det != 0xFDu) {
+         /* The previous session ended by reset while running. Decode where
+            it was: poll callback (det>=256), the RST re-init pass entry
+            (0xFE = in config_load), or an init during that pass. 0xFD is
+            the deliberate-/reboot marker - silent. */
+         if (det >= 256u)
+            snprintf(tmp, sizeof tmp, "previous session died in poll callback %lu",
+                     (unsigned long)((det >> 8) - 1u));
+         else if (det == 0xFEu)
+            snprintf(tmp, sizeof tmp, "previous session died in RST re-init (config load)");
+         else
+            snprintf(tmp, sizeof tmp, "previous session died in RST re-init at init %lu (%s)",
+                     (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
+         table_row(b, "Boot", tmp);
+      }
+      {
+         unsigned int rr = RPI_ResetReason();
+         snprintf(tmp, sizeof tmp, "%03x%s", rr, (rr & 0x20u) ? " (watchdog)" : "");
+         table_row(b, "Reset reason", tmp);
+      }
+      if (RPI_MailboxSilent())
+         table_row(b, "VideoCore", "not answering (property calls skipped)");
+      const volatile unsigned int *cr = RPI_LastCrash();
+      if (cr) {
+         snprintf(tmp, sizeof tmp,
+                  "%c at pc %08lx spsr %08lx dfar %08lx dfsr %08lx stage %lu count %lu",
+                  (char)cr[1], (unsigned long)cr[2], (unsigned long)cr[3],
+                  (unsigned long)cr[4], (unsigned long)cr[5],
+                  (unsigned long)cr[6], (unsigned long)cr[7]);
+         table_row(b, "Last fault", tmp);
       }
    }
+}
+
+/* Main loop rate (and DEBUG poll/SD timing). */
+static void status_main_loop(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    {
       /* Main-loop passes a second since the last /status read: how much time the pollers'
          idle paths take (fewer passes = more spent each pass).  Read it twice, the Pi idle. */
@@ -3431,7 +3546,7 @@ static bool route_status(ws_conn_t *c)
          snprintf(tmp, sizeof tmp, "read again for the rate");
       last_passes = passes;
       last_us = now;
-      table_row(&b, "Main loop", tmp);
+      table_row(b, "Main loop", tmp);
    }
 #ifdef DEBUG
    {
@@ -3453,7 +3568,7 @@ static bool route_status(ws_conn_t *c)
                o = sizeof row - 1u;
          }
       }
-      table_row(&b, "Poll max us", row);
+      table_row(b, "Poll max us", row);
    }
    {
       /* KB/s without a 64-bit constant: bytes/ms = ~KB/s within 2.4% */
@@ -3462,8 +3577,15 @@ static bool route_status(ws_conn_t *c)
                (unsigned long)(sd_pio_bytes / 1024u), (unsigned long)ms,
                ms ? (unsigned long)(sd_pio_bytes / 1024u * 1000u / ms) : 0ul);
    }
-   table_row(&b, "SD data", tmp);
+   table_row(b, "SD data", tmp);
 #endif
+}
+
+/* Boot timing. */
+static void status_boot_time(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    {
       /* Boot timing, stamped during init and read on demand.  Pre-kernel is
          the free-running system timer's value on entry to kernel_main: the
@@ -3483,7 +3605,7 @@ static bool route_status(ws_conn_t *c)
       else
          snprintf(tmp, sizeof tmp, "pre-kernel %lu ms, kernel->poll %lu ms",
                   pre, init);
-      table_row(&b, "Boot time", tmp);
+      table_row(b, "Boot time", tmp);
    }
    {
       /* Every emulator whose init took a millisecond or more, worst first -
@@ -3507,8 +3629,15 @@ static bool route_status(ws_conn_t *c)
                                (unsigned long)(Pi1MHz_boot_init_us[order[i]] / 1000u));
       if (cnt == 0u)
          snprintf(tmp, sizeof tmp, "(none over 1 ms)");
-      table_row(&b, "Boot init ms", tmp);
+      table_row(b, "Boot init ms", tmp);
    }
+}
+
+/* Chip packet counts. */
+static void status_chip_pktcnts(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    {
       /* The chip's own view of the air.  rx_good is what it actually received;
          compare its movement with "Frames received" above to tell a frame that
@@ -3521,23 +3650,77 @@ static bool route_status(ws_conn_t *c)
          snprintf(tmp, sizeof tmp, "rx %lu good / %lu bad, tx %lu good / %lu bad",
                   (unsigned long)pk[0], (unsigned long)pk[1],
                   (unsigned long)pk[2], (unsigned long)pk[3]);
-         table_row(&b, "Chip packet counts", tmp);
+         table_row(b, "Chip packet counts", tmp);
       }
    }
+}
+
+/* HTTP port and SD card free space. */
+static void status_http_sd(ws_strbuf_t *b, const status_ctx_t *ctx)
+{
+   char tmp[256];
+
    snprintf(tmp, sizeof tmp, "%u",
-            (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
-   table_row(&b, "HTTP port", tmp);
+            (unsigned int)((ctx->cfg != NULL) ? ctx->cfg->http_port : 80u));
+   table_row(b, "HTTP port", tmp);
 
    if (ws_sd_free_request()) {   /* /status shows it: refresh in background */
       snprintf(tmp, sizeof tmp, "%lu MB free",
                (unsigned long)g_ws_sd_free_mb);
-      table_row(&b, "SD card", tmp);
+      table_row(b, "SD card", tmp);
    } else {
       /* webserver_poll refreshes the cache in the background; in the
          narrow window before the first refresh has run, just say so
          rather than stalling the TCP callback on f_getfree. */
-      table_row(&b, "SD card", "(querying)");
+      table_row(b, "SD card", "(querying)");
    }
+}
+
+typedef struct {
+   const char *name;
+   void (*fn)(ws_strbuf_t *b, const status_ctx_t *ctx);
+} status_section_t;
+
+/* In page order: the host scripts that grep /status depend on it. */
+static const status_section_t status_sections[] = {
+   { "firmware", status_firmware },
+   { "wifi_link", status_wifi_link },
+   { "network", status_network },
+   { "wifi_counters", status_wifi_counters },
+   { "txglom", status_txglom },
+   { "sdio_diag", status_sdio_diag },
+   { "chip_iovars", status_chip_iovars },
+   { "video", status_video },
+   { "audio", status_audio },
+   { "serial", status_serial },
+   { "storage", status_storage },
+   { "telnetd", status_telnetd },
+   { "usb", status_usb },
+   { "hdmi_audio", status_hdmi_audio },
+   { "scsi_bus", status_scsi_bus },
+   { "break", status_break },
+   { "boot_forensics", status_boot_forensics },
+   { "main_loop", status_main_loop },
+   { "boot_time", status_boot_time },
+   { "chip_pktcnts", status_chip_pktcnts },
+   { "http_sd", status_http_sd },
+};
+
+static bool route_status(ws_conn_t *c)
+{
+   status_ctx_t s;
+   ws_strbuf_t  b;
+
+   s.cfg = wifi_get_config();
+   s.lw  = wifi_lwip_get_context();
+   s.rs  = sdio_runtime_get_status();
+
+   sb_init(&b);
+   page_open(&b, "Status");
+   sb_puts(&b, "<h1>Status</h1><div class=\"card\"><table>");
+
+   for (size_t i = 0; i < sizeof status_sections / sizeof status_sections[0]; i++)
+      status_sections[i].fn(&b, &s);
 
    sb_puts(&b, "</table></div>");
    sb_puts(&b, "<p><a href=\"/files/\">Browse files &rarr;</a> &middot; "
