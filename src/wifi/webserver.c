@@ -53,6 +53,9 @@
 #include "../usb.h"
 #include "../usb_mouse.h"
 #include "../usb_storage.h"
+#include "../ramprobe_api.h"          /* /bbc: the RAM probe */
+#include "../ramprobe.h"              /* /probe: its page, which says how to turn it on when it's off */
+#include "probe_page.h"
 #include "../smb/smb_client.h"
 #include "../lib/textparse.h"
 #include "../config.h"                /* Config row on /status */
@@ -147,7 +150,9 @@ typedef enum {
    CONN_DAV_COPY,          /* copying SD->SD one chunk per tick         */
    CONN_SEND_MEM,          /* sending an in-memory response             */
    CONN_SEND_FILE,         /* sending a header then streaming a file    */
-   CONN_SEND_FB            /* sending a header then streaming the framebuffer */
+   CONN_SEND_FB,           /* sending a header then streaming the framebuffer */
+   CONN_RECV_BBC,          /* gathering a /bbc/poke body into dl_buf */
+   CONN_BBC_WAIT           /* a /bbc POST with wait=1: answered when the probe is done */
 } conn_state_t;
 
 typedef enum {
@@ -345,6 +350,10 @@ typedef struct {
       drain_remaining, survives conn_reset_for_next_request. */
    bool     pp_capture;
    size_t   pp_buf_len;                  /* bytes of the body held in dl_buf */
+   /* POST /bbc/poke with its bytes as the body (CONN_RECV_BBC): gathered in dl_buf, then
+      handed to ramprobe_api_body with the query kept here. */
+   uint32_t bbc_need, bbc_have;
+   char     bbc_query[256];
    char     pp_path[WS_PATH_MAX];        /* target whose mtime we will stamp */
 
    /* PUT bodies arrive one ~1460-byte TCP segment at a time.  Writing
@@ -546,6 +555,14 @@ static bool ws_propfind_cache_lookup(const char *path, FILINFO *out)
    from conn_close / ws_err so a torn-down connection mid-copy doesn't
    leave a dangling reference. */
 static ws_conn_t      *g_ws_active_copy;
+/* The one /bbc request held for wait=1 (CONN_BBC_WAIT), answered from webserver_poll; let go
+   when its connection goes, whichever way. */
+static ws_conn_t      *g_ws_bbc_wait;
+static void ws_bbc_wait_release(const ws_conn_t *c)
+{
+   if (g_ws_bbc_wait == c)
+      g_ws_bbc_wait = NULL;
+}
 
 /* Live connections - lwIP holds them, this only lists them - so an SD card
    eject can tear down the ones with files open while the card is still
@@ -1970,6 +1987,7 @@ static void kn_discard(ws_conn_t *c)
    connection become a chain-boot. */
 static void conn_release_resources(ws_conn_t *c)
 {
+   ws_bbc_wait_release(c);
    if (c->dl_open) {
       f_close(&c->dl_file);
       c->dl_open = false;
@@ -2334,6 +2352,8 @@ static bool ws_body_unread(const ws_conn_t *c)
                                 : c->dav_remaining != 0u;
    case CONN_RECV_UPLOAD:
       return c->up_state != UP_EPILOGUE;
+   case CONN_RECV_BBC:
+      return c->bbc_have < c->bbc_need;
    default:
       return false;
    }
@@ -2591,6 +2611,7 @@ static bool route_home(ws_conn_t *c)
       "<p><a href=\"/status\">Network status &rarr;</a></p>"
       "<p><a href=\"/aun\">AUN status &rarr;</a></p>"
       "<p><a href=\"/reboot\">Reboot the Pi &rarr;</a></p>"
+      "<p><a href=\"/probe\">Probe: remote debug and control &rarr;</a></p>"
       "</div>");
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
@@ -3863,6 +3884,98 @@ static bool route_audio_wav(ws_conn_t *c)
    sb_write(&r, (const char *)pcm, pcm_bytes);
    free(pcm);
    return ws_install_response(c, &r, CONN_SEND_MEM);
+}
+
+/* ------------------------------------------------------------------ */
+/* /bbc                                                                */
+/* ------------------------------------------------------------------ */
+
+/* The answer to a /bbc request, or with wait=1 on a POST that started something, nothing yet:
+   webserver_poll sends GET /bbc's status once the probe is done, so the client needn't poll.
+   One request is held at a time; another is answered at once, as without wait. */
+static bool bbc_answer(ws_conn_t *c, bool post, const char *q, int status, char *text)
+{
+   ws_strbuf_t b;
+   if (status == 0) {
+      free(text);
+      return ws_error(c, 404, "Not Found", "No such page.");
+   }
+   if (g_ws_bbc_wait == NULL && ramprobe_api_hold(post, q, status)) {
+      free(text);
+      c->state = CONN_BBC_WAIT;
+      c->poll_count = 0;
+      g_ws_bbc_wait = c;
+      return true;
+   }
+   sb_init(&b);
+   sb_puts(&b, text);
+   free(text);
+   return ws_finish_typed(c, status, status == 200 ? "OK" : "Error", "application/json", &b);
+}
+
+/* A /bbc/poke body, all in: poke it. */
+static bool bbc_body_done(ws_conn_t *c)
+{
+   char *text = malloc(RAMPROBE_API_OUT);
+   if (text == NULL)
+      return ws_oom(c);
+   int status = ramprobe_api_body("/bbc/poke", c->bbc_query, c->dl_buf, c->bbc_need, text, RAMPROBE_API_OUT);
+   return bbc_answer(c, true, c->bbc_query, status, text);
+}
+
+/* /bbc and /bbc/... - the RAM probe (ramprobe_api.c).  POST /bbc/poke may carry its bytes as
+   the body (Content-Length, raw) instead of hex= in the URL, whose length caps it near 200. */
+static bool route_bbc(ws_conn_t *c, bool post, const char *path, const char *query, int body_at)
+{
+   const char *q = query != NULL ? query + 1 : NULL;
+   char cl_hdr[24];
+   if (post && strcmp(path, "/bbc/poke") == 0 && (q == NULL || strstr(q, "hex=") == NULL)
+       && ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length", cl_hdr, sizeof cl_hdr)) {
+      char *end;
+      unsigned long cl = strtoul(cl_hdr, &end, 10);
+      if (*end == '\0' && cl > 0u) {
+         _Static_assert(RAMPROBE_API_BODY_MAX <= WS_FILE_CHUNK, "a poke body is gathered in dl_buf");
+         if (cl > RAMPROBE_API_BODY_MAX)
+            return ws_error(c, 413, "Payload Too Large", "A poke's body is 32 KB at most.");
+         size_t already = ((size_t)body_at < c->reqhdr_len) ? (c->reqhdr_len - (size_t)body_at) : 0u;
+         size_t take = already < cl ? already : (size_t)cl;
+         memcpy(c->dl_buf, c->reqhdr + body_at, take);
+         /* Kept while the body arrives; refused rather than cut short if it won't fit, since a
+            truncated query could lose or change its last parameter (addr=, rung=). */
+         if (strlen(q != NULL ? q : "") >= sizeof c->bbc_query)
+            return ws_error(c, 414, "URI Too Long", "A body poke's query is 255 characters at most.");
+         c->bbc_have = (uint32_t)take;
+         c->bbc_need = (uint32_t)cl;
+         strlcpy(c->bbc_query, q != NULL ? q : "", sizeof c->bbc_query);
+         if (take < cl) {
+            c->state = CONN_RECV_BBC;
+            return true;
+         }
+         return bbc_body_done(c);
+      }
+   }
+   char *text = malloc(RAMPROBE_API_OUT);
+   if (text == NULL)
+      return ws_oom(c);
+   int status = ramprobe_api(post, path, q, text, RAMPROBE_API_OUT);
+   return bbc_answer(c, post, q, status, text);
+}
+
+/* /probe - the RAM probe for a person (probe_page.c). */
+static bool route_probe(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+
+   sb_init(&b);
+   page_open(&b, "Probe");
+   if (ramprobe_state() == RP_OFF) {
+      sb_puts(&b, probe_page_off);
+   } else {
+      for (const char *const *part = probe_page_body; *part != NULL; part++)
+         sb_puts(&b, *part);
+   }
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
 }
 
 /* ------------------------------------------------------------------ */
@@ -7414,6 +7527,10 @@ static bool process_request(ws_conn_t *c, int body_at)
 #endif
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);
+      if (strcmp(rawpath, "/bbc") == 0 || ws_prefix("/bbc/", rawpath))
+         return route_bbc(c, false, rawpath, query, body_at);
+      if (strcmp(rawpath, "/probe") == 0)
+         return route_probe(c);
       if (strcmp(rawpath, "/framebuffer") == 0)
          return route_framebuffer(c);
       if (strcmp(rawpath, "/framebuffer.bmp") == 0)
@@ -7435,6 +7552,8 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (ws_method_is(method, "POST")) {
       if (strcmp(rawpath, "/reboot") == 0)
          return route_reboot_do(c);
+      if (ws_prefix("/bbc/", rawpath))
+         return route_bbc(c, true, rawpath, query, body_at);
       if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))
          return route_upload(c, rawpath, body_at);
       return ws_error(c, 404, "Not Found", "No such page.");
@@ -7506,6 +7625,15 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
          } else {
             return true;          /* wait for more header data */
          }
+      } else if (c->state == CONN_RECV_BBC) {
+         size_t rem  = len - pos;
+         size_t need = c->bbc_need - c->bbc_have;
+         size_t take = (rem < need) ? rem : need;
+         memcpy(c->dl_buf + c->bbc_have, data + pos, take);
+         c->bbc_have += (uint32_t)take;
+         pos += take;
+         if (c->bbc_have == c->bbc_need && !bbc_body_done(c))
+            return false;
       } else if (c->state == CONN_RECV_UPLOAD) {
          if (!upload_consume(c, data + pos, len - pos))
             return false;
@@ -7821,6 +7949,23 @@ static void webserver_refresh_sd_free(void)
 void webserver_poll(void)
 {
    chainboot_poll();      /* a kernel.now PUT's restart, once its reply is out */
+
+   /* A /bbc request held for wait=1: its answer, once the probe is done. */
+   if (g_ws_bbc_wait != NULL && ramprobe_api_done()) {
+      ws_conn_t *c = g_ws_bbc_wait;
+      char *text = malloc(RAMPROBE_API_OUT);
+      g_ws_bbc_wait = NULL;
+      if (text == NULL) {
+         (void)ws_oom(c);
+      } else {
+         ws_strbuf_t b;
+         int status = ramprobe_api_status(text, RAMPROBE_API_OUT);
+         sb_init(&b);
+         sb_puts(&b, text);
+         free(text);
+         (void)ws_finish_typed(c, status, "OK", "application/json", &b);
+      }
+   }
 
    /* As the Beeb's HD_CARD_REBOOT does: every subsystem closes what it holds
       and the volume is dismounted first, or an unsynced FAT-service file, an

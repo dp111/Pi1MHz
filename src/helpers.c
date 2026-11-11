@@ -22,7 +22,8 @@
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
    and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
-   19 the serial redirector, 20 the telnet daemon, 21 VFS, and 22-30 are left free
+   19 the serial redirector, 20 the telnet daemon, 21 VFS, 22 and 23 the RAM probe
+   (ramprobe.c), and 24-30 are left free
    for future helpers,
    answering with a bare return until one is written.  46 is the explorer's
    transfer page template and 47 the second half of every ROM loader
@@ -49,6 +50,7 @@
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
 static uint8_t helper_address;
+static volatile int helper_window = -1;     /* the helper page in the window, or -1 */
 static volatile bool     help_shown_pending;   /* a help screen was shown: reformat it later */
 static volatile uint32_t help_shown_us;
 /* The formatted help screen, two copies: the poll formats the one the FIQ
@@ -229,6 +231,7 @@ static void helpers_bank_select(unsigned int gpio)
       Pi1MHz->page_ram_addr = DISC_RAM_BASE + HELPER_XFER_OFFSET;
       Pi1MHz_MemoryWrite_FIQ(addr+4, 0x4c);
       ram_emulator_page_restore();       /* shows JIM RAM: writes reach it */
+      helper_window = -1;
       return;
    }
 
@@ -243,6 +246,7 @@ static void helpers_bank_select(unsigned int gpio)
         Pi1MHz_MemoryWrite_FIQ(addr+4, 0x60);
         // old page data
         ram_emulator_page_restore();
+        helper_window = -1;
     }
     else
     {
@@ -254,6 +258,7 @@ static void helpers_bank_select(unsigned int gpio)
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
+        helper_window = data;
         if (data==0)
         {
             /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
@@ -315,12 +320,27 @@ static void helpers_poll(void)
    info_refresh_cached();
 }
 
+int helpers_window_page(void) { return helper_window; }
+
+const uint8_t *helpers_page(uint8_t page)
+{
+   return page < HELPER_PAGES ? &helper_ram[(size_t)page << 8] : NULL;
+}
+
+int helpers_page_number(uint8_t page)
+{
+   if (page >= HELPER_PAGES)
+      return -1;
+   return helper_ram[((size_t)page << 8) + 255u];
+}
+
 void helpers_init( uint8_t instance , uint8_t address)
 {
    uint8_t *helper = &helper_ram[0];
    helper_address = address;
    help_shown_pending = false;      /* the screen is formatted again below */
    helper_xfer_active = false;      /* a BREAK mid-transfer: nothing to restore */
+   helper_window = -1;
    if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
       return;
    /* 0x60 = RTS.  filesystemReadFile clamps to the file's length and leaves

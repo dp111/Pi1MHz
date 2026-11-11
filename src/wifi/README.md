@@ -25,7 +25,8 @@ fully independent (see `src/rpi/sdcard.c` for the storage side).
 wifi/
   wifi.{c,h}          state machine, boot stages, single-slot poll dispatcher
   wifi_lwip.{c,h}     lwIP netif glue, TX/RX path, DHCP / static config
-  webserver.{c,h}     HTTP/1.1 file browser, /status, /reboot, /framebuffer
+  webserver.{c,h}     HTTP/1.1 file browser, /status, /reboot, /framebuffer, /probe
+                      (the /probe page is probe_page.c; /bbc is ../ramprobe_api.c)
                       + class-1 WebDAV (PROPFIND/PUT/DELETE/MKCOL/MOVE/COPY/
                       LOCK/UNLOCK) and RFC-2617 digest auth
   md5.{c,h}           compact public-domain MD5 (digest auth)
@@ -180,6 +181,8 @@ wifi_ssid=PiNet wifi_password=secret123 wifi_ip=192.168.1.40 wifi_netmask=255.25
 - `/reboot`          — confirm + POST → defer ~1.5 s → `reboot_now()`.
 - `/aun`             — AUN/Econet engine state and packet counters.
 - `/bench.bin`       — RAM-sourced large download for throughput testing.
+- `/probe`, `/bbc`   — the RAM probe: a page (`probe_page.c`) and a JSON API
+                       (`ramprobe_api.c`).  See [docs/dev/ramprobe.md](../../docs/dev/ramprobe.md).
 
 The HTTP layer is one request per connection (`Connection: close`),
 built directly on the lwIP raw-TCP API. URL paths are percent-decoded
@@ -192,7 +195,7 @@ The webserver is also a class-1 WebDAV server (RFC 4918) with LOCK /
 UNLOCK stubs for Windows Explorer compatibility.  The WebDAV root is
 the URL root (`/`) — the SD card is the served collection.  The
 management pages (`/`, `/status`, `/files/...`, `/framebuffer`,
-`/framebuffer.bmp`, `/reboot`) keep their normal HTTP routes; every
+`/framebuffer.bmp`, `/reboot`, `/probe`, `/bbc...`) keep their normal HTTP routes; every
 other URL is interpreted as an SD path by the WebDAV verbs and by the
 GET fallback (so `http://Pi1MHz/folder/file.txt` downloads from the SD
 card whether you're using a browser or a mounted WebDAV drive).
@@ -324,4 +327,6 @@ else on the Pi1MHz keeps running.
   part of the management UI.
 
 ## See also
+
+- [docs/dev/ramprobe.md](../../docs/dev/ramprobe.md): the RAM probe and its HTTP API.
 

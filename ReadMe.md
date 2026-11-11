@@ -16,6 +16,9 @@ becomes, all at once:
 - **WiFi** (on WiFi-equipped Pis) - a built-in web interface and WebDAV
   mount for the SD card
 - **Econet over WiFi** (AUN) and **Teletext** (from an internet stream)
+- **Remote debug and control** (on WiFi-equipped Pis) - the
+  [RAM probe](docs/dev/ramprobe.md): stop the BBC and read, write and call its
+  memory over HTTP, with no ROM
 - **USB mouse** for the VFS pointer, or **USB file access** (MTP, with
   `usb_mode=device`) - the Pi appears as a portable device. Not on a
   3B+, whose port is [always a host](docs/user/usb-file-access.md)
@@ -60,6 +63,7 @@ guide.
   helper calling convention, `kernel.now`/`reboot.now`).
 - **[WiFi / webserver internals](src/wifi/README.md)** - per-board WiFi
   firmware mapping and the webserver/WebDAV implementation.
+- **[The RAM probe](docs/dev/ramprobe.md)** - design, HTTP API, limits and tests.
 - **[Credits](CREDITS.md)** - third-party sources, licences and
   contributors.
 

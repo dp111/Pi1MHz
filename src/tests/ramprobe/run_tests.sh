@@ -1,0 +1,82 @@
+#!/bin/sh -e
+# The RAM probe (ramprobe.c) on the real services port (services_emulator.c) and a cycle-stepped
+# BBC: kc-beeb, a Master 128 with Acorn's ROMs, from a checkout of rp2350-bbc-micro.
+#   KC_BEEB    its src/cores/kc-beeb    (default: ~/rp2350-bbc-micro-os/src/cores/kc-beeb)
+#   KC_ROMS    its roms/mos3.20
+# Skipped, not failed, without them: they aren't in this repository.  ASan and UBSan.
+#
+#   run_tests.sh           the end-to-end test, then tools/bbcprobe.py over HTTP to bbcsim
+#   run_tests.sh PORT      just serve bbcsim on 127.0.0.1:PORT, to try a client against it
+#   RAMPROBE_QUICK=1       the short end-to-end run
+set -e
+HERE=$(cd "$(dirname "$0")" && pwd)
+SRC=${SRC_DIR:-$HERE/../..}
+
+# The probe's 6502 code is helpers 22 and 23 in 6502code.asm; the tests run the committed
+# firmware/Pi1MHz/6502code.bin.  With beebasm about (on PATH, or BEEBASM), check that bin is what
+# the source assembles to, so an edit to one can't drift from the other.
+CODE_BIN="$SRC/../firmware/Pi1MHz/6502code.bin"
+export RAMPROBE_6502CODE="$CODE_BIN"
+GEN=$(mktemp -d)
+trap 'rm -rf "$GEN"' EXIT
+BEEBASM=${BEEBASM:-$(command -v beebasm || true)}
+if [ -n "$BEEBASM" ]; then
+   echo "== 6502code.bin is up to date with 6502code.asm =="
+   mkdir -p "$GEN/firmware/Pi1MHz" "$GEN/6502code"
+   cp "$SRC/../6502code/6502code.asm" "$GEN/6502code/"
+   (cd "$GEN/6502code" && "$BEEBASM" -i 6502code.asm >/dev/null)
+   if ! cmp -s "$GEN/firmware/Pi1MHz/6502code.bin" "$CODE_BIN"; then
+      echo "6502code.bin is stale: run 6502code/build.sh" >&2
+      exit 1
+   fi
+else
+   echo "== no beebasm: not checking 6502code.bin against 6502code.asm =="
+fi
+
+KC_BEEB=${KC_BEEB:-$HOME/rp2350-bbc-micro-os/src/cores/kc-beeb}
+KC_ROMS=${KC_ROMS:-$(dirname "$(dirname "$(dirname "$KC_BEEB")")")/roms/mos3.20}
+if [ ! -f "$KC_BEEB/machine.c" ] || [ ! -f "$KC_ROMS/mos.rom" ]; then
+   echo "== ramprobe: skipped, no kc-beeb at $KC_BEEB =="
+   exit 0
+fi
+B=$(mktemp -d)
+trap 'rm -rf "$B" "$GEN"' EXIT
+mkdir "$B/kc"
+cp "$KC_BEEB"/* "$B/kc/"
+# kc-beeb has nothing on FRED and JIM: give them to the test's board.
+python3 -I - "$B/kc/machine.c" <<'E'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+def rep(a, b):
+    global s
+    assert s.count(a) == 1, a
+    s = s.replace(a, b)
+rep("    (void)m;\n    (void)addr;\n    return 0xff;", "    return board_read(m, addr);")
+rep("INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)",
+    "extern uint32_t board_now;\nuint8_t board_read(struct machine *m, uint16_t addr);\n"
+    "void board_write(struct machine *m, uint16_t addr, uint8_t val);\n"
+    "INLINE uint8_t fred_jim_read(struct machine *m, uint16_t addr)")
+rep("IO_AFTER_TICK();  // FRED, JIM: 1 MHz, nothing listening",
+    "board_now = cyc; board_write(m, addr, val); IO_AFTER_TICK();  // FRED, JIM: the board")
+rep("v = fred_jim_read(m, addr);", "board_now = cyc; v = fred_jim_read(m, addr);")
+# and the Pi's nIRQ, ORed with the VIAs'
+rep("INLINE uint8_t machine_irq_level(const struct machine *m)\n{\n    return m->sysvia.irq | m->usrvia.irq;",
+    "extern uint8_t board_irq;\nINLINE uint8_t machine_irq_level(const struct machine *m)\n{\n    return m->sysvia.irq | m->usrvia.irq | board_irq;")
+open(p, 'w').write(s)
+E
+cp "$SRC"/services_emulator.c "$SRC"/services.h "$SRC"/ramprobe.c "$SRC"/ramprobe.h "$SRC"/ramprobe_api.c "$SRC"/ramprobe_api.h "$B/"
+cp -r "$HERE"/stubs/* "$B/"
+cp "$HERE"/board.h "$HERE"/test_ramprobe.c "$HERE"/bbcsim.c "$B/"
+printf '#include <stddef.h>\n#include <stdint.h>\nint helpers_page_number(uint8_t page);\nint helpers_window_page(void);\nconst uint8_t *helpers_page(uint8_t page);\n' > "$B/helpers.h"
+CC="gcc -std=gnu2x -g -D_GNU_SOURCE -fsanitize=address,undefined -fno-sanitize-recover=all -w -I$B -I$B/kc"
+OBJS="$B/services_emulator.c $B/ramprobe.c $B/ramprobe_api.c"
+$CC -O2 -o "$B/bbcsim" "$B/bbcsim.c" $OBJS
+if [ -n "$1" ]; then
+   exec "$B/bbcsim" "$KC_ROMS" "$1"
+fi
+echo "== ramprobe =="
+$CC -O1 -o "$B/t" "$B/test_ramprobe.c" $OBJS
+"$B/t" "$KC_ROMS"
+echo "== bbcprobe.py over HTTP, to bbcsim =="
+python3 -I "$HERE/test_bbcprobe.py" "$B/bbcsim" "$KC_ROMS" "$SRC/../tools/bbcprobe.py"
