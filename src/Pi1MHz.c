@@ -1027,8 +1027,8 @@ static void poll_prof_report(void)
    LOG_INFO("POLL PROFILE over %lu passes, %u callbacks\n",
             (unsigned long)poll_prof_passes, (unsigned int)Pi1MHz_polls_max);
    for (unsigned int i = 0; i < Pi1MHz_polls_max; i++)
-      LOG_INFO("  idx %2u @%08lx: %6lu cycles/pass\n", i,
-               (unsigned long)(uintptr_t)Pi1MHz_poll_table[i],
+      LOG_INFO("  idx %2u %-24s: %6lu cycles/pass\n", i,
+               Pi1MHz_poll_name(i),
                (unsigned long)(poll_prof_cycles[i] / poll_prof_passes));
    LOG_INFO("  loop overhead: %6lu cycles/pass\n",
             (unsigned long)(poll_prof_overhead / poll_prof_passes));
@@ -1180,43 +1180,31 @@ _Noreturn void kernel_main(void)
          Strongly-Ordered peripheral load the core waits on, and each poll's
          "after" timestamp is the next poll's "before", so carrying it over
          halves the round trips across the whole loop. */
+      /* One loop for every build: the profiler times the same callbacks
+         in the same order as a normal pass, and a release build compiles
+         to the bare loop. */
 #if POLL_PROFILE
-      {
-         uint32_t pass_start = poll_prof_ccnt();
-         uint32_t mark = pass_start;
-
-         for (size_t i = 0, n = Pi1MHz_polls_max; i < n; i++) {
-            uint32_t after;
-            Pi1MHz_poll_table[i]();
-            after = poll_prof_ccnt();
-            poll_prof_cycles[i] += after - mark;
-            mark = after;
-         }
-         poll_prof_overhead += poll_prof_ccnt() - mark;
-
-         if (++poll_prof_passes >= POLL_PROFILE_PASSES) {
-            poll_prof_report();
-            poll_prof_passes = 0u;
-            poll_prof_overhead = 0u;
-            for (unsigned int i = 0; i < POLL_SLOTS; i++)
-               poll_prof_cycles[i] = 0u;
-         }
-      }
-#else
-#ifdef DEBUG
+      uint32_t mark = poll_prof_ccnt();
+#elif defined(DEBUG)
       uint32_t before_ticks = poll_ticks();
 #endif
       for (size_t i=0 , n=Pi1MHz_polls_max ; i<n; i++ )
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
-#ifdef DEBUG
+#if !POLL_PROFILE && defined(DEBUG)
             /* The one marker release cannot afford: this is per poll callback
                per pass, i.e. the hot loop.  Boot-time markers stay in. */
             RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* a runtime hang names the callback */
 #endif
             poll_fn();
-#ifdef DEBUG
+#if POLL_PROFILE
+            {
+               uint32_t after = poll_prof_ccnt();
+               poll_prof_cycles[i] += after - mark;
+               mark = after;
+            }
+#elif defined(DEBUG)
             {
                uint32_t after_ticks = poll_ticks();
                uint32_t duration_ticks = after_ticks - before_ticks;
@@ -1231,6 +1219,16 @@ _Noreturn void kernel_main(void)
                }
             }
 #endif
+      }
+#if POLL_PROFILE
+      poll_prof_overhead += poll_prof_ccnt() - mark;
+
+      if (++poll_prof_passes >= POLL_PROFILE_PASSES) {
+         poll_prof_report();
+         poll_prof_passes = 0u;
+         poll_prof_overhead = 0u;
+         for (unsigned int i = 0; i < POLL_SLOTS; i++)
+            poll_prof_cycles[i] = 0u;
       }
 #endif
 
