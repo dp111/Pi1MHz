@@ -267,8 +267,9 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
              device when it is not. */
 static bool s_usb_host;
 bool BP_usb_host_polled;            /* usb/broadcom/interrupts.h: the USB IRQ stays off */
-static bool s_usb_initialised;     /* usb_init has posted the power-up */
+static bool s_usb_initialised;     /* usb_init has run */
 static bool s_usb_started;         /* usb_boot_task has started the stack */
+static bool s_usb_power_posted;    /* this init pass has posted the power-up */
 
 bool usb_is_host(void)
 {
@@ -344,6 +345,14 @@ static void usb_task(void) {
  */
 static void usb_boot_task(void)
 {
+  /* Wanted before usb_power_post has run: storage=usb deciding where the
+     Beeb's files are from inside an init (usb_service, from the wait for a
+     flash drive).  Post it now - starting the stack on a domain nobody has
+     powered is the dead port described above - and wait as that wait does. */
+  if (!s_usb_power_posted) {
+     usb_power_post();
+     return;
+  }
   if (!RPI_PropertyReplyWaiting())
      return;                       /* still powering - try again next pass */
 
@@ -404,6 +413,7 @@ void usb_init(uint8_t instance , uint8_t address) {
      the poll loop - see there. */
   Pi1MHz_Register_Poll(usb_boot_task, "usb-boot");
   s_usb_initialised = true;
+  s_usb_power_posted = false;      /* posted afresh each init pass, as before */
   filesystemRegisterEject(mtp_fs_eject, mtp_fs_inserted);
 }
 
@@ -417,7 +427,8 @@ void usb_init(uint8_t instance , uint8_t address) {
    refresh and the WiFi start each look before they ask. */
 void usb_power_post(void)
 {
-  if (!s_usb_initialised)
-     return;                       /* usb is disabled in the config */
+  if (!s_usb_initialised || s_usb_power_posted)
+     return;                       /* usb is disabled in the config, or it was wanted early */
+  s_usb_power_posted = true;
   RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 }
