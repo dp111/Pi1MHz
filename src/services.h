@@ -35,6 +35,14 @@
 #define SERVICE_CMD_FUJI_LAST   119u  /* 114 = FujiBus exchange; the rest reserved */
 /* 120..255 unallocated */
 
+/* ---- fixed regions of the services area ----------------------------------
+   Offsets from DISC_RAM_BASE that a module uses at a fixed place, so the next one can see
+   what's taken.  Add yours.
+     &E00000-&E100FF  the RAM probe's report (&100) and peek/poke data (64 KB), ramprobe.c:
+                      only once its install line has been typed on the BBC */
+#define SERVICES_RAMPROBE_FIRST 0xE00000u
+#define SERVICES_RAMPROBE_LAST  0xE100FFu
+
 /* ---- untrusted-input bounds checks -------------------------------------
    Every service takes an offset and a length from the Beeb, so this is one
    predicate with one definition rather than the five near-copies these

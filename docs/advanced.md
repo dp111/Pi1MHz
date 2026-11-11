@@ -12,6 +12,9 @@ All base addresses below are the defaults and can be relocated in
 `Pi1MHz.cfg` (see the [configuration reference](user/configuration.md)) -
 **except** the framebuffer (`&FCA0`) and the services port (`&FCA6`),
 which are hard-wired into the built-in 6502 helper code and must stay put.
+The RAM probe (helpers 22 and 23) runs its hooks from FRED at `&FC6F-&FC86`,
+`&FC8F-&FC9F` and `&FCB0-&FCB6` (keep other devices off them while it's on), and uses
+the services port at JIM `&E00000`; see [the RAM probe](dev/ramprobe.md).
 
 ## JIM expansion RAM
 

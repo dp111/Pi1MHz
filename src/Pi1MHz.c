@@ -124,6 +124,7 @@ _Static_assert(sizeof(Pi1MHzvc_asm) <= LOWMEM_VPU_PROGRAM_SIZE,
 #include "services.h"
 #include "net_service.h"
 #include "fujibus_service.h"
+#include "ramprobe.h"
 #include "helpers.h"
 #include "mouseredirect.h"
 #include "serial_redirect.h"
@@ -188,6 +189,10 @@ static emulator_list emulator[] = {
       and shows the hard disc and M5000 settings); the table index is the
       instance number, so moving an entry renumbers those after it. */
    {"Helpers",helpers_init, 0x88, 1 },
+   /* The RAM probe: typing its install line on the BBC turns it on.  Its 6502 code is helpers 22
+      and 23, in 6502code.bin, and its hooks run from FRED: &FC6F-&FC86, &FC8F-&FC9F and
+      &FCB0-&FCB6.  See ramprobe.h and docs/dev/ramprobe.md. */
+   {"ramprobe",ramprobe_init, 0x00, 1 },
    /* Last, so its poll callback re-arms the watchdog only after every other
       emulator has had its turn - a poll that stops responding still trips it. */
    {"Watchdog",watchdog_init, 0x00, 1 }

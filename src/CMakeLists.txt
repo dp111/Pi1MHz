@@ -422,6 +422,8 @@ set(services_emulator_files
    net_service.h
    net_tnfs.c
    fujibus_service.c
+   ramprobe.c
+   ramprobe_api.c
    fujinet/fujibus.c
    fujinet/fn_appstore.c
    fujinet/fn_disk.c
@@ -509,6 +511,8 @@ set(wifi_files
    wifi/wifi_lwip.h
    wifi/webserver.c
    wifi/webserver.h
+   wifi/probe_page.c
+   wifi/probe_page.h
    wifi/netname.c
    wifi/netname.h
 )

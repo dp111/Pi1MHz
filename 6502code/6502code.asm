@@ -478,6 +478,104 @@ MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
 }
 ENDMACRO
 
+; ---------------------------------------------------------------------------
+; The RAM probe's code outside the agent's page (see docs/dev/ramprobe.md).
+;
+; It runs from FRED, the Pi's own &FC00 page, as the serial redirector's stub does: the BBC's
+; RAM holds nothing of it but a JMP at &0D00 for the NMI.  FRED never changes when the &FD00
+; window does, so the way into the agent's page and the way out can run from there, and nothing
+; the BBC does (a disc access, a game's workspace, *TAPE, a printer) can overwrite it.  The Pi
+; writes these bytes into FRED itself at every reset, from its copy in page 23; the BBC writes
+; only the old vectors' values (into the hooks' JMPs, which the Pi lets it change).
+;
+; Assembled at their FRED addresses before page 0, copied to scratch, and cleared; page 23
+; carries them, and the Pi copies them from there.  These numbers are the C side's too, in
+; src/ramprobe.h; the ASSERTs at the end of page 22 check them.
+; ---------------------------------------------------------------------------
+RP_AGENT_PAGE    = 22
+RP_INSTALL_PAGE  = 23        ; the line typed: X%=23:CALL &FC88
+RP_REPORT_HI     = &E0       ; the report at services &E00000 (services.h records it)
+RP_HALTED_AT     = 7
+RP_CALL_AT       = 8
+RP_INSTALLED_AT  = 13
+RP_INSTALLED     = &5A
+RP_KEY_AT        = 14        ; the install's word on *KEY10: not 0, and the Pi sets it
+RP_EVNTV         = &0220
+RP_IRQ2V         = &0206
+RP_NMI           = &0D00     ; where the 6502's NMI goes (the OS's vector, fixed)
+RP_SCRATCH       = &3000     ; above the saved image
+RP_IDLE          = &4C       ; a hook's first byte: JMP, straight on to the old vector...
+RP_WANTED        = &2C       ; ...or BIT, skipping that address, on into the way in: the Pi
+                             ; changes this one byte to ask, so there's no flag to test
+
+; The ladder: three ways into the same code, each with an interrupt frame on the stack.
+;   rung 0  the vsync event: EVNTV, when the Pi has changed rp_event's first byte to BIT.
+;           Ordinary programs; no NMI.
+;   rung 1  the Pi's nIRQ: the OS finds no source of its own and calls IRQ2V, rp_irq2, whose
+;           first byte the Pi has changed.  Programs with events off, or EVNTV taken.
+;   rung 2  the Pi's NMI: &0D00, a JMP to rp_in.  Anything, even with interrupts off.
+; The client picks the rung; the Pi tries only that one.
+
+; Block A, &FC6F-&FC86: between the copy cursor (&FC45-&FC6E) and the helpers (&FC88).
+ORG &FC6F
+.rp_fred_a
+.rp_irq2                 ; rung 1: IRQ2V, the frame on the stack and A at &FC
+    JMP 0                ; RP_IDLE: the old IRQ2V, which the install writes here
+    LDA &FC              ; the interrupted A, as the OS left it
+.rp_in                   ; the way in, for every rung: A on the stack, the agent takes the rest
+    PHA
+    LDA #RP_AGENT_PAGE
+    STA &FC88            ; ask for the agent's page...
+.rp_ready
+    CMP &FDFF            ; ...and wait until the Pi has served it, however long that took
+    BNE rp_ready
+    JMP &FD00
+.rp_evback               ; rung 0 comes back here, to give the event to the old EVNTV
+    LDA #4
+.rp_evold
+    JMP (rp_event+1)
+.rp_fred_a_end
+ASSERT rp_fred_a_end <= &FC88
+
+; Block B, &FC8F-&FC9F: after the helpers' entry (&FC88-&FC8E).
+ORG &FC8F
+.rp_fred_b
+.rp_event                ; rung 0: EVNTV, A the event
+    JMP 0                ; RP_IDLE: the old EVNTV, which the install writes here
+    CMP #4
+    BNE rp_evold
+    LDA #HI(rp_evback)   ; a frame to come back to: evback, P
+    PHA
+    LDA #LO(rp_evback)
+    PHA
+    PHP
+    JMP rp_in
+.rp_fred_b_end
+ASSERT rp_fred_b_end <= &FCA0
+
+; Block C, &FCB0-&FCB6: between the mouse (&FCAC-&FCAF) and the serial block (&FCB7).
+ORG &FCB0
+.rp_fred_c
+.*rp_exit                ; the agent leaves with A the page to show (&FF: the program's own JIM
+    STA &FC88            ; page), Y put back, and X and A on the stack above the frame
+    PLA
+    TAX
+    PLA
+    RTI
+.rp_fred_c_end
+ASSERT rp_fred_c_end <= &FCB7
+
+RP_FRED_A_LEN = rp_fred_a_end - rp_fred_a
+RP_FRED_B_LEN = rp_fred_b_end - rp_fred_b
+RP_FRED_C_LEN = rp_fred_c_end - rp_fred_c
+RP_FRED_LEN = RP_FRED_A_LEN + RP_FRED_B_LEN + RP_FRED_C_LEN
+COPYBLOCK rp_fred_a, rp_fred_a_end, RP_SCRATCH
+COPYBLOCK rp_fred_b, rp_fred_b_end, RP_SCRATCH + RP_FRED_A_LEN
+COPYBLOCK rp_fred_c, rp_fred_c_end, RP_SCRATCH + RP_FRED_A_LEN + RP_FRED_B_LEN
+CLEAR rp_fred_a, rp_fred_a_end
+CLEAR rp_fred_b, rp_fred_b_end
+CLEAR rp_fred_c, rp_fred_c_end
+
 ; Page 0: the help screen, and nothing else.  Selecting it makes the Pi
 ; copy the formatted screen to &FFE000 and then release the wait loop by
 ; rewriting the JMP's low byte (helpers.c).  It can be longer than the
@@ -1105,27 +1203,225 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 22-30 : reserved for future helpers
+; Page 22 : the RAM probe's agent, running from the Pi's memory while the BBC is stopped.
+; &FD00-&FD9F its code, &FDA0-&FDEF code the Pi writes for each call, &FDF0 the command
+; (1 continue, 2 call), &FDF1 a sequence number, &FDF3-&FDF5 A, X and Y for the call, &FDFF
+; the signature rp_in waits for.  A command is acted on when &FDF1 changes, so there's no
+; clearing to race with.  It keeps what it saves on the stack, under the frame, with no RAM of
+; its own: with S as reported (the frame at S+1 to S+3), A is at S, X at S-1, Y at S-2, and the
+; program's services port pointer below them.  The Pi, which knows S, changes them there for a
+; continue with new registers.  It waits and runs the Pi's code here, on the bus: the RAM
+; copies of 75ed244e (for a cassette relay click heard by microphone, with no mechanism known)
+; are undone, to be tried again on a real Model B.
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    TXA                  ; X and Y on the stack, under A (rp_in's)
+    PHA
+    TYA
+    PHA
+    LDA &FCA8            ; the program's services port pointer, for afterwards
+    PHA
+    LDA &FCA7
+    PHA
+    LDA &FCA6
+    PHA
+    LDA #0
+    JSR port
+    TSX                  ; the report: Y, X, A, P, PC low, PC high, as they are on the stack...
+    LDY #6
+.report
+    LDA &0104,X
+    STA &FCA9
+    INX
+    DEY
+    BNE report
+    TXA                  ; ...then S, with the frame on the stack
+    STA &FCA9
+    LDA #1
+    STA &FCA9            ; +HALTED_AT: halted
+                         ; Y = 0: no command seen yet (the Pi's sequence numbers aren't 0)
+.wait
+    CPY &FDF1            ; until a new sequence number, a new command (the Pi writes it last)
+    BEQ wait
+    LDY &FDF1
+    LDA &FDF0
+    CMP #1
+    BNE call
+    LDA #RP_HALTED_AT
+    JSR port
+    LDA #0
+    STA &FCA9            ; not halted
+    PLA                  ; the program's pointer back
+    STA &FCA6
+    PLA
+    STA &FCA7
+    PLA
+    STA &FCA8
+    PLA                  ; Y back
+    TAY
+    LDA #&FF             ; and its own JIM page: out through rp_exit, in FRED
+    JMP rp_exit
+.call
+    LDA &FDF3
+    LDX &FDF4
+    LDY &FDF5
+.*rp_calljsr
+    JSR &FDA0            ; the Pi's code
+    PHP
+    PHA
+    LDA #RP_CALL_AT
+    JSR port
+    PLA
+    STA &FCA9            ; A, X, Y, P
+    STX &FCA9
+    STY &FCA9
+    PLA
+    STA &FCA9
+    LDY &FDF1
+    STY &FCA9            ; the sequence number, last: the Pi waits for it
+    JMP wait
+.port
+    STA &FCA6            ; the services port at the report, plus A
+    LDA #0
+    STA &FCA7
+    LDA #RP_REPORT_HI
+    STA &FCA8
+    RTS
+    ASSERT P% <= &FDA0
+    PRINT "helper 22 (probe agent) spare bytes:", &FDA0-P%
+    SKIPTO &FDFF
+    EQUB RP_AGENT_PAGE
+    ENDBLOCK &1600
+}
+; What the Pi writes, checked against src/ramprobe.h (a change here wants one there).
+ASSERT rp_calljsr + 1 - &FD00 = &61        ; RP_AGENT_JSR
+ASSERT rp_irq2 = &FC6F                   ; RP_FRED_A, RP_HOOK_IRQ2
+ASSERT rp_event = &FC8F                  ; RP_FRED_B, RP_HOOK_EVENT
+ASSERT rp_fred_c = &FCB0                 ; RP_FRED_C
+ASSERT RP_FRED_A_LEN = 24                ; RP_FRED_A_LEN
+ASSERT RP_FRED_B_LEN = 17                ; RP_FRED_B_LEN
+ASSERT RP_FRED_C_LEN = 7                 ; RP_FRED_C_LEN
+
+; ---------------------------------------------------------------------------
+; Page 23 : the RAM probe's install, typed once after switching on: X%=23:CALL &FC88.
+; It points EVNTV and IRQ2V at the hooks in FRED, writing what they pointed at into the hooks'
+; JMPs, unless they point at the hooks already (the line typed twice), and puts the JMP for the
+; NMI at &0D00.  It tells the Pi, turns the vsync event on (rung 0), and says so.  The Pi then
+; makes Break type the line again: once this page is left, it stops the BBC and puts
+; "*KEY10 X%=23:CALL &FC88|M" and Return in the keyboard buffer, so every soft Break puts it all
+; back by itself.  Y%=1 (CALL passes its low byte in Y, which &FC88 leaves alone) keeps the
+; BBC's own *KEY10: X%=23:Y%=1:CALL &FC88.  Its OS calls are safe: this is the foreground,
+; called from BASIC, never from a stop.  It uses &70-&73, BASIC's zero page for CALLs.
+; The FRED code itself is here too, at the end, for the Pi to copy (rp_fred).
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    TYA                  ; Y%, for later
+    PHA
+    SEI
+    LDX #3
+.setup
+    LDA olds,X           ; &70-&73: where each hook keeps its old vector
+    STA &70,X
+    DEX
+    BPL setup
+    LDX #2
+.nmi
+    LDA nmijmp,X         ; the NMI's JMP at &0D00
+    STA RP_NMI,X
+    DEX
+    BPL nmi
+    LDX #2               ; IRQ2V (X=2), then EVNTV (X=0)
+.vec
+    LDY voff,X
+    LDA &0200,Y
+    CMP hooklo,X
+    BNE vset
+    LDA &0201,Y
+    CMP #&FC
+    BEQ vnext            ; already the hook: keep the old value it has
+.vset
+    LDA &0200,Y          ; the old value into the hook's JMP, in FRED
+    STA (&70,X)
+    INC &70,X
+    LDA &0201,Y
+    STA (&70,X)
+    LDA hooklo,X
+    STA &0200,Y
+    LDA #&FC
+    STA &0201,Y
+.vnext
+    DEX
+    DEX
+    BPL vec
+    CLI
+    LDA #RP_INSTALLED_AT ; tell the Pi
+    STA &FCA6
+    LDA #0
+    STA &FCA7
+    LDA #RP_REPORT_HI
+    STA &FCA8
+    LDA #RP_INSTALLED
+    STA &FCA9
+    PLA                  ; +KEY_AT: Y% EOR 1, so 0 for Y%=1, which leaves *KEY10 as it is;
+    EOR #1               ; anything else, and the Pi types the *KEY10 line once this page
+    STA &FCA9            ; is left
+    PHA
+    LDA #14              ; the vsync event on: OSBYTE 14,4
+    LDX #4
+    JSR OSBYTE
+    LDX #0
+    JSR say              ; "Pi1MHz probe on"
+    LDX #cr-msgs
+    PLA
+    BNE last
+    LDX #keptmsg-msgs
+.last
+    JSR say
+    LDX #&FF
+    JMP &FC88
+.say
+    LDA msgs,X
+    BEQ said
+    JSR &FFE3
+    INX
+    BNE say
+.said
+    RTS
+.msgs
+    EQUS "Pi1MHz probe on", 0
+.keptmsg
+    EQUS " (KEY10 kept)"
+.cr
+    EQUB 13, 0
+.voff                    ; each vector's place in page 2 and its hook, for X = 0 and 2
+    EQUB LO(RP_EVNTV)
+hooklo = voff + 1
+    EQUB LO(rp_event), LO(RP_IRQ2V), LO(rp_irq2)
+.olds                    ; (&70,X): X=0 the EVNTV hook's JMP operand, X=2 the IRQ2V hook's
+    EQUW rp_event+1, rp_irq2+1
+.nmijmp
+    JMP rp_in            ; for &0D00
+    PRINT "helper 23 (probe install) spare bytes:", &FDFF-RP_FRED_LEN-P%
+    SKIPTO &FDFF-RP_FRED_LEN
+.*rp_fred                ; the FRED code, blocks A, B and C, for the Pi to copy
+    SKIP RP_FRED_LEN
+    EQUB RP_INSTALL_PAGE
+    COPYBLOCK RP_SCRATCH, RP_SCRATCH + RP_FRED_LEN, rp_fred
+    ENDBLOCK &1700
+}
+CLEAR RP_SCRATCH, RP_SCRATCH + &100
+ASSERT rp_fred - &FD00 = &CF             ; RP_FRED_IN_PAGE
+
+; ---------------------------------------------------------------------------
+; Pages 24-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
 ; helper page, so running one before it does anything simply returns.
 ; (The telnet auto-start ROM, telnetd.rom, is loaded like any other ROM: no helper.)
 ; ---------------------------------------------------------------------------
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1600
-}
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1700
-}
 
 {
     ORG &FD00

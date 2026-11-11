@@ -220,6 +220,7 @@ See [The web interface](web-interface.md).
 | `webdav_password` | (none) | The matching password. |
 | `webdav_realm` | `Pi1MHz` | The name shown in the login prompt. Rarely needs changing. |
 | `webdav_utc_offset_minutes` | `0` | Your timezone as minutes east of UTC (e.g. `60` for BST, `-300` for US Eastern). Used so file dates shown over WebDAV come out in local time. |
+| `ramprobe_addr` | on | `-1` turns the RAM probe off: no poll, and no `/bbc` routes.  On, it does nothing to the BBC until its install line is typed there.  Its code runs from FRED at `&FC6F-&FC86`, `&FC8F-&FC9F` and `&FCB0-&FCB6`: keep other devices off those. See [the RAM probe](../dev/ramprobe.md). |
 
 ## Telnet daemon settings
 

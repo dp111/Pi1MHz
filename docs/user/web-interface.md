@@ -21,6 +21,7 @@ system's light/dark theme preference automatically.
 | `/fcodes` | Diagnostic: the most recent F-code exchanges between the Beeb and the emulated LaserDisc player, oldest first. Says "F-code logging is off" unless `fcode_log=1` is set (see [configuration](configuration.md#advanced-and-diagnostic-keys)) |
 | `/vdulog` | Diagnostic: the VDU commands the screen redirector has consumed, as text, oldest first. Needs `vdu_log=1` |
 | `/audio.wav` | Diagnostic: the most recent 16384 frames of audio the Pi has produced, as a WAV file; answers 503 when no audio source is active |
+| `/probe`, `/bbc` | The RAM probe: remote debug and control of the BBC (a page, and a JSON API). **Opens the BBC to remote code execution over your WiFi.** See [the RAM probe](../dev/ramprobe.md) |
 | `/bench.bin` | A dummy large download for testing your network speed to the Pi |
 
 There are further pages for developers chasing a fault; they are listed in

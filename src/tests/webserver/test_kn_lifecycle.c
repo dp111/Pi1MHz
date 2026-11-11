@@ -89,6 +89,7 @@ static int upload_discard_calls, copy_discard_calls, slot_release_calls, live_re
 static void upload_discard_temp(ws_conn_t *c) { (void)c; upload_discard_calls++; }
 static void copy_discard_temp(ws_conn_t *c) { (void)c; copy_discard_calls++; }
 static void ws_copy_slot_release(const ws_conn_t *c) { (void)c; slot_release_calls++; }
+static void ws_bbc_wait_release(const ws_conn_t *c) { (void)c; }
 static void ws_live_remove(const ws_conn_t *c) { (void)c; live_remove_calls++; }
 static bool wifi_debug_enabled(void) { return false; }
 static void wifi_debug_printf(const char *f, ...) { (void)f; }
