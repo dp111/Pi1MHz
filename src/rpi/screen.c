@@ -130,7 +130,7 @@ typedef struct {
 static hvs_t* const RPI_hvs = (hvs_t*) (PERIPHERAL_BASE + 0x400000);
 static volatile uint32_t* context_memory = (volatile uint32_t*) (PERIPHERAL_BASE+ 0x402000);
 
-static hdmi_t* const RPI_hdmi = (hdmi_t*) (PERIPHERAL_BASE + 0x902000);
+static hdmi_t* const RPI_hdmi = (hdmi_t*) HDMI_BASE;
 
 
 //YUV plane ( YV12 format)
@@ -1041,7 +1041,7 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     LOG_DEBUG("plane %"PRIu32" (420)\n", planeno);
-    buffer |= 0xC0000000;
+    buffer |= GPU_BUS_ALIAS_DIRECT;
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
@@ -1171,7 +1171,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
 }
 
 /* Retarget an existing YUV plane at a new frame - the video player's
-   page flip. Pass PHYSICAL addresses (the 0xC0000000 alias is added
+   page flip. Pass PHYSICAL addresses (GPU_BUS_ALIAS_DIRECT is added
    here). Takes effect at the next HVS frame fetch; call around vsync
    (screen_check_vsync) for tear-free flips. */
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr )
@@ -1182,10 +1182,10 @@ void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_
         video_ptr_set = true;
     }
     // re-apply the source crop baked in at plane creation (and any alignment)
-    yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | 0xC0000000;
+    yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | GPU_BUS_ALIAS_DIRECT;
     /* Cr-first slot order - see the ctrl comment in screen_create_YUV420 */
-    yuv->cb_ptr = (cr + yuv_ptr_offset[planeno][1]) | 0xC0000000;
-    yuv->cr_ptr = (cb + yuv_ptr_offset[planeno][2]) | 0xC0000000;
+    yuv->cb_ptr = (cr + yuv_ptr_offset[planeno][1]) | GPU_BUS_ALIAS_DIRECT;
+    yuv->cr_ptr = (cb + yuv_ptr_offset[planeno][2]) | GPU_BUS_ALIAS_DIRECT;
 }
 
 // returns plane pointer
@@ -1234,7 +1234,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
                source line down the screen. */
             uint32_t ssz  = ((height << 16) + width)
                           | SCALER_POS2_ALPHA_PREMULT;
-            uint32_t pal  = 0xC0000000 + PALETTE_BASE;     // 8 bit palette
+            uint32_t pal  = GPU_BUS_ALIAS_DIRECT + PALETTE_BASE;     // 8 bit palette
             rgb->ctrl = ctrl;
             rgb->pos = pos;
             rgb->scale = (scaled_height << 16) + scaled_width;
@@ -1672,7 +1672,7 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
     rgb->scale = (h << 16) + w;
     rgb->src_size = ssz;
     /* keyed bank (2), and its highlight twin (6) while VP5 is on */
-    uint32_t pal = 0xC0000000u
+    uint32_t pal = GPU_BUS_ALIAS_DIRECT
                  | ((((screen_highlight ? 6u : 2u))*0x400u) + PALETTE_BASE);
     plane_shadow[planeno] = (plane_shadow_t){ ctrl, pos, ssz, pal,
                                               (h << 16) + w };
@@ -1890,7 +1890,7 @@ void screen_set_highlight( bool on )
         if (!(bank & 2u))
             continue;                      /* not keyed: highlight is moot */
         bank = (bank & 3u) | (on ? 4u : 0u);
-        plane_shadow[pl].palette = 0xc0000000u | ((bank*0x400u) + PALETTE_BASE);
+        plane_shadow[pl].palette = GPU_BUS_ALIAS_DIRECT | ((bank*0x400u) + PALETTE_BASE);
         plane_mark(pl, PL_DIRTY_PALETTE);
     }
     _restore_cpsr(cpsr);
@@ -1942,7 +1942,7 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
         /* the keyed family has a highlight twin; no other family does */
         if (fam == 2u && screen_highlight)
             fam = 6u;
-        s->palette = ( 0xc0000000 ) | ((((fam | flash) & 7u)*0x400) + PALETTE_BASE);
+        s->palette = GPU_BUS_ALIAS_DIRECT | ((((fam | flash) & 7u)*0x400) + PALETTE_BASE);
         _restore_cpsr(cpsr);
         plane_mark(planeno, PL_DIRTY_PALETTE);
     }

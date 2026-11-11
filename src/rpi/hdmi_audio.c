@@ -13,7 +13,6 @@
 /* Registers (BCM2835..2837)                                          */
 /* ------------------------------------------------------------------ */
 
-#define HDMI_BASE   (PERIPHERAL_BASE + 0x902000u)   /* HDMI core */
 #define HD_BASE     (PERIPHERAL_BASE + 0x808000u)   /* "HD" (MAI, CSC) */
 #define CM_BASE     (PERIPHERAL_BASE + 0x101000u)   /* clock manager */
 

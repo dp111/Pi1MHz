@@ -42,15 +42,6 @@
 #include "systimer.h"
 #include "sd_commands.h"
 
-#define TIMEOUT_WAIT(stop_if_true, usec)     \
-{ uint32_t time= usec;\
-   do {                    \
-      if (stop_if_true) \
-         break;\
-      RPI_WaitMicroSeconds(1);\
-   } while ( time--); \
-}
-
 //#define DEBUG_SD
 #define RESET_CONTROLLER
 

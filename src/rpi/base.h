@@ -55,6 +55,13 @@
     #define GPU_BASE     0x40000000UL
 #endif
 
+/* The VideoCore's 0xC bus alias of SDRAM (direct, no VC L2), on every
+   architecture - not GPU_BASE, which is the 0x4 alias on ARMv6.  The HVS
+   is handed frame buffers and palettes through it. */
+#define GPU_BUS_ALIAS_DIRECT    0xC0000000u
+
+#define HDMI_BASE   (PERIPHERAL_BASE + 0x902000UL)   /* HDMI core */
+
 #include <stdint.h>
 
 typedef volatile uint8_t rpi_reg_byte_rw_t;

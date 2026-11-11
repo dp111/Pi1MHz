@@ -27,11 +27,13 @@
 static uint8_t HD_ADDR;
 static uint8_t IRQ_NUM;
 static bool hd_initialised;        /* IRQ_NUM is this emulator's instance */
-volatile bool HD_ACK;
-volatile uint8_t HD_DATA;
+/* Bus latches: the FIQ callbacks set them, the main loop (hostadapter*)
+   reads and clears them; nRST and init clear all three flags. */
+static volatile bool HD_ACK;          /* FIQ sets on data taken, main loop clears on REQ */
+static volatile uint8_t HD_DATA;      /* FIQ writes (data/SEL), main loop reads */
 
-volatile bool HD_SEL;
-volatile bool HD_IRQ_ENABLE;
+static volatile bool HD_SEL;          /* FIQ sets on nSEL, main loop clears on BSY */
+static volatile bool HD_IRQ_ENABLE;   /* FIQ writes (IRQ register), main loop reads */
 
 #define CLEAR     0
 #define ACTIVE    1
