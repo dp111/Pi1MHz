@@ -21,8 +21,10 @@ see [cmdline.txt settings](#cmdlinetxt-settings) at the end.
   line and may contain spaces.
 - `#` starts a comment, either a whole line or after a value. This means
   a value **cannot contain a `#`** - everything from the first `#` is
-  cut off. Watch out for it in passwords (`wifi_password`,
-  `webdav_password`).
+  cut off (the parser stops the value at the first `#` anywhere on the
+  line and trims the spaces before it). Watch out for it in passwords
+  (`wifi_password`, `webdav_password`, `telnetd_password`,
+  `smb_password`): a password containing `#` is silently truncated.
 - Keys are not case-sensitive.
 - On/off switches are on when the value starts with `1`, `y` or `t`
   (`net_enable=1`, `net_enable=yes`); anything else, or a key with no
@@ -176,7 +178,7 @@ set.
 | Key | Default | Meaning |
 |---|---|---|
 | `wifi_ssid` | (none) | Name of the network to join. **Required** for any WiFi function. (`SSID` is accepted as an older alias.) |
-| `wifi_password` | (none) | WPA2 passphrase, 8-63 characters. (Alias: `SSIDpassword`.) |
+| `wifi_password` | (none) | WPA2 passphrase, 8-63 characters. It cannot contain `#`, which starts a comment and cuts the password short. (Alias: `SSIDpassword`.) |
 | `wifi_hostname` | `Pi1MHz` | Network name, one label (not a full domain name). Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS), and is shown at the top left of the web interface. |
 | `wifi_country` | `GB` | Two-letter ISO country code for radio regulations, e.g. `US`, `DE`. Set it to where the machine actually is. |
 | `wifi_ip` | `dhcp` | `dhcp` to get an address from your router (the default), or a literal address such as `192.168.1.40` for a fixed one. |
@@ -189,8 +191,10 @@ set.
 | `wifi_http_port` | `80` | TCP port for the built-in web server. |
 | `wifi_debug` | off | `1` prints verbose WiFi logging on the serial port. Only does anything on a debug build of the firmware - release builds print nothing. |
 
-There are also several `wifi_sdio_*` keys and `wifi_emulator`. These
-are hardware-diagnostic switches for developers; leave them unset.
+The `wifi_sdio_*`, `wifi_ampdu*`, `wifi_txglom`, `wifi_diag`,
+`wifi_test_iovars` and `wifi_emulator` keys are diagnostic or tuning
+switches; they are in [Advanced and diagnostic keys](#advanced-and-diagnostic-keys)
+below. Leave them unset unless you are chasing a fault.
 
 ## Network and FujiNet settings
 
@@ -225,7 +229,7 @@ See [The telnet daemon](telnetd.md).
 |---|---|---|
 | `telnetd_port` | (off) | TCP port the daemon listens on (`23` is telnet): setting it turns TelnetD on. Absent or `0`, or `Telnetd_addr=-1`, turns it off, and then the auto-start ROM does not touch the Beeb. Helper 20 on the Beeb connects it. |
 | `telnetd_user` | (none) | The telnet login's user name (up to 64 characters). Telnet's own, never the web interface's. |
-| `telnetd_password` | (none) | The telnet login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without `telnetd_user` and a `telnetd_password` line every connection is refused, unless `telnetd_login=0`. |
+| `telnetd_password` | (none) | The telnet login's password (up to 64 characters). It cannot contain `#`, which starts a comment and cuts the password short. It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without `telnetd_user` and a `telnetd_password` line every connection is refused, unless `telnetd_login=0`. |
 | `telnetd_login` | `1` | `0`: no login at all, the daemon is open to the network. |
 | `telnetd_raw_port` | (none) | A second port for teletype mode: no telnet, the Beeb's bytes as they are both ways (PuTTY's Raw connection, `nc`). A telnet client on the main port gets the same by asking for BINARY (`telnet -8`). |
 | `telnetd_ansi` | `1` | `0` sends the Beeb's output as it is, with no ANSI translation. |
@@ -234,6 +238,28 @@ See [The telnet daemon](telnetd.md).
 | `telnetd_copycursor` | `1` | `0` does not mark the copy cursor in the terminal. |
 | `telnetd_tek` | `1` | Draw the Beeb's graphics in xterm's Tektronix window when the terminal says it is xterm; `0`: never. |
 | `telnetd_debug` | `0` | `1` shows TelnetD's diagnostics on the status page (keys waiting, the screen MODE it follows and why it last changed, the TCP state) and the Telnetd TCP row. |
+
+## Advanced and diagnostic keys
+
+None of these is needed for normal use; they exist for chasing faults and
+for bench tests. The on/off switches follow the usual rule (on when the
+value starts with `1`, `y` or `t`).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `fcode_log` | off | `1` keeps the most recent 320 F-code exchanges (about 16 KB of RAM, allocated at the first F-code) for the `/fcodes` page of the [web interface](web-interface.md). Read once, so reboot after changing it. |
+| `vdu_log` | off | `1` keeps the last 4096 VDU commands the screen redirector consumed (64 KB of RAM) for the `/vdulog` page. |
+| `wifi_diag` | off | `1` adds WiFi link histograms (credit window depth and reopen latency) to `/status`. They cost a little per received frame. |
+| `wifi_txglom` | `0` (off) | A number: the limit for batching several transmitted WiFi frames into one SDIO transfer. `0` is off. Larger values are clamped to the driver's compile-time ceiling. |
+| `wifi_ampdu` | off | `1` sends the older, smaller aggregation limits (`ampdu_ba_wsize=8`, `ampdu_mpdu=4`, `ampdu_rx_factor=0`) when joining. Unset leaves the WiFi chip's own limits, which measured faster; set `1` only if your access point dislikes that. |
+| `wifi_ampdu_rts` | (unset) | `0` or `1` sets RTS/CTS protection around each aggregated frame. Unset leaves the chip's default (on). |
+| `wifi_test_iovars` | (none) | Up to 4 comma-separated `name=value` WiFi chip settings sent at start-up, for bench tests. An entry with no `=value` is read back instead of written. Values may be hex (`0x...`). |
+| `wifi_emulator` | off | `1` lets WiFi start-up carry on when the chip's firmware never comes ready. For test rigs with no real chip. |
+| `wifi_sdio_probe` | off | `1` enables extra SDIO probing. |
+| `wifi_sdio_tx_probe` | off | `1` enables SDIO transmit probing. |
+| `wifi_sdio_tx_probe_command` | `version` | Which command the transmit probe sends: `version`, `magic`, `up`, `infra`, `auth`, `ssid`, `wpa_auth`, `wsec`, `pmk` or `join`. An unknown value is `version`. |
+| `wifi_sdio_rx_sweep_limit` | `16` | Frames the transmit probe's receive sweep decodes. Read only by a special probe build of the firmware; no effect on a normal one. |
+| `wifi_sdio_host` | (none) | Accepted but ignored: a value only adds a notice to the WiFi status. |
 
 ## Econet (AUN) settings
 

@@ -17,6 +17,10 @@ system's light/dark theme preference automatically.
 | `/framebuffer.bmp` | The same snapshot as a plain BMP image you can save |
 | `/reboot` | Reboot the Pi (asks for confirmation first). The BBC does not need to be switched off, but anything using Pi1MHz will pause while it restarts |
 | `/aun` | Diagnostic counters for [Econet over WiFi](econet-aun.md) |
+| `/edid` | Diagnostic: the monitor's EDID as read at boot, 16 bytes a line, with the Display mode verdict first. Useful when the picture is the wrong size or shape |
+| `/fcodes` | Diagnostic: the most recent F-code exchanges between the Beeb and the emulated LaserDisc player, oldest first. Says "F-code logging is off" unless `fcode_log=1` is set (see [configuration](configuration.md#advanced-and-diagnostic-keys)) |
+| `/vdulog` | Diagnostic: the VDU commands the screen redirector has consumed, as text, oldest first. Needs `vdu_log=1` |
+| `/audio.wav` | Diagnostic: the most recent 16384 frames of audio the Pi has produced, as a WAV file; answers 503 when no audio source is active |
 | `/bench.bin` | A dummy large download for testing your network speed to the Pi |
 
 There are further pages for developers chasing a fault; they are listed in

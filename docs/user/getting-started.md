@@ -37,7 +37,18 @@ Zero 2 W or 3B+) and a 2.4GHz WPA2 network.
    kernel7.img         (used by Pi Zero 2 W / Pi 3)
    kernel7a7.img       (used by Pi 2 - see config.txt's [pi2] section)
    Pi1MHz/             (ROMs, configuration, WiFi firmware)
+   FujiNet/            (FN-BOOTB.ssd and FN-BOOTM.ssd, fn-rom's utilities discs)
+   cacert.pem          (CA certificates, for https:// from FujiNet)
+   LICENCE.broadcom.txt  (the Broadcom licence for the boot files)
    ```
+
+   `/Pi1MHz/` holds the ROMs (`*.rom`), `6502code.bin`, `disc.html` (the
+   disc viewer), the `wifi/` firmware files and the two configuration
+   files `Pi1MHz.cfg` and `defscsi.cfg` (the template for new hard disc
+   drive descriptors - see [SCSI drive descriptors](scsi-cfg.md)).
+   `/cacert.pem` is needed only for `https://` - see
+   [FujiNet](fujinet.md#https). `/FujiNet/` is the folder `fujinet_boot`
+   normally points into (see [FujiNet](fujinet.md#the-utilities-disc)).
 
    The right kernel for your Pi model is picked automatically - leave
    both on the card.
@@ -53,6 +64,23 @@ Zero 2 W or 3B+) and a 2.4GHz WPA2 network.
    WiFi and other options. Every line in the shipped file is a
    commented-out example. See the
    [configuration reference](configuration.md).
+
+## Upgrading
+
+Copying a new release over the card **overwrites `/Pi1MHz/Pi1MHz.cfg`
+and `/Pi1MHz/defscsi.cfg`** with the shipped versions, losing your
+settings. Before you copy:
+
+1. Keep a copy of your own `/Pi1MHz/Pi1MHz.cfg` and
+   `/Pi1MHz/defscsi.cfg` somewhere off the card.
+2. Copy the new release over the card.
+3. Put your settings back. Re-apply them to the new `Pi1MHz.cfg` rather
+   than pasting the old file over it if you want the new release's
+   commented examples; check the [configuration reference](configuration.md)
+   for keys that have changed.
+
+Your disc images (`/BeebSCSI*`, `/BeebVFS*`) are separate folders that the
+release does not contain, so copying over them leaves them alone.
 
 ## Connect the hardware
 
