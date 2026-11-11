@@ -55,6 +55,8 @@
 #include "../usb_storage.h"
 #include "../smb/smb_client.h"
 #include "../lib/textparse.h"
+#include "../config.h"                /* Config row on /status */
+#include "../helpers.h"               /* Firmware row on /status */
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -2745,6 +2747,17 @@ static bool route_status(ws_conn_t *c)
    sb_init(&b);
    page_open(&b, "Status");
    sb_puts(&b, "<h1>Status</h1><div class=\"card\"><table>");
+
+   table_row(&b, "Firmware", helpers_firmware_version());
+   {
+      int keys;
+      if (config_file_found(&keys)) {
+         snprintf(tmp, sizeof tmp, "Pi1MHz.cfg: %d keys", keys);
+         table_row(&b, "Config", tmp);
+      } else {
+         table_row(&b, "Config", "Pi1MHz.cfg not found: defaults in use");
+      }
+   }
 
    table_row(&b, "SSID",
              (cfg != NULL && cfg->ssid[0] != '\0') ? cfg->ssid : "(not set)");

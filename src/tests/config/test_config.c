@@ -4,14 +4,52 @@
 #include <string.h>
 #include <stdint.h>
 #include <assert.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "config.h"
 
-/* config_load() references filesystemReadFile; stub it (unused here). */
+/* config_load()'s file read: NULL = the file is missing. */
+static const char *stub_file;
 uint32_t filesystemReadFile(const char *f, uint8_t **a, unsigned int m)
-{ (void)f; (void)a; (void)m; return 0; }
+{
+   (void)f; (void)m;
+   if (stub_file == NULL)
+      return 0;
+   size_t n = strlen(stub_file);
+   *a = malloc(n);
+   memcpy(*a, stub_file, n);
+   return (uint32_t)n;
+}
+
+/* config_load() latches, so each load runs in its own child process. */
+static void load_case(const char *file, bool want_found, int want_keys)
+{
+   pid_t pid = fork();
+   assert(pid >= 0);
+   if (pid == 0) {
+      int keys = -1;
+      assert(!config_file_found(&keys) && keys == 0);    /* before any load */
+      stub_file = file;
+      config_load("/Pi1MHz/Pi1MHz.cfg");
+      assert(config_file_found(&keys) == want_found);
+      assert(keys == want_keys);
+      config_load("/Pi1MHz/Pi1MHz.cfg");                 /* a second call changes nothing */
+      assert(config_file_found(&keys) == want_found && keys == want_keys);
+      _exit(0);
+   }
+   int st;
+   assert(waitpid(pid, &st, 0) == pid);
+   assert(WIFEXITED(st) && WEXITSTATUS(st) == 0);
+}
 
 int main(void)
 {
+   load_case(NULL, false, 0);                                  /* missing      */
+   load_case("", false, 0);                                    /* empty        */
+   load_case("# only a comment\n", true, 0);
+   load_case("a=1\n# c\nb\n  indented=x\nc = 3 # t\n", true, 3);
+
    static char cfg[] =
       "# Pi1MHz configuration\n"
       "teletext_server1=80.229.142.86:19761\n"

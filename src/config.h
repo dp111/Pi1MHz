@@ -39,6 +39,11 @@
  * error simply leaves the store empty. */
 void config_load(const char *filename);
 
+/* What config_load found, for /status: true if the file was read (a missing,
+ * unreadable or empty file reads as not found), and *keys = the number of
+ * keys in the store. */
+bool config_file_found(int *keys);
+
 /* Look up a key (case-insensitive). Returns the value string (which may
  * be empty for a bare flag) or NULL if the key is not present. The
  * returned pointer is owned by the store and stays valid. */

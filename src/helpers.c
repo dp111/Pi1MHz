@@ -186,6 +186,11 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         return (size_t)n;
 }
 
+const char *helpers_firmware_version(void)
+{
+   return GITVERSION " " BUILD_DATE " " HELPERS_KERNEL_LETTER;
+}
+
 /* Transfer page state: touched in helpers_bank_select (FIQ), and cleared by
    helpers_init on a BBC reset - the JIM page it saved belongs to a session
    the reset has ended (rampage_emulator_init resets page_ram_addr itself). */

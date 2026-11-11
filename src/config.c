@@ -22,6 +22,7 @@ static config_entry_t config_entries[CONFIG_MAX_KEYS];
 static int            config_count;
 static char          *config_buf;     /* retained NUL-terminated image */
 static bool           config_loaded;
+static bool           config_found;   /* config_load read the file   */
 
 
 void config_parse(char *buf, size_t len)
@@ -124,6 +125,7 @@ void config_load(const char *filename)
       free(raw);
       return;
    }
+   config_found = true;
 
    config_buf = malloc((size_t)n + 1u);
    if (config_buf == NULL) {
@@ -136,6 +138,12 @@ void config_load(const char *filename)
 
    config_parse(config_buf, (size_t)n);
    LOG_DEBUG("CONFIG: %s parsed, %d key(s)\n", filename, config_count);
+}
+
+bool config_file_found(int *keys)
+{
+   *keys = config_count;
+   return config_found;
 }
 
 bool config_get_flag(const char *key, bool dflt)
