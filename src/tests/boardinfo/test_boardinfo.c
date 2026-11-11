@@ -65,6 +65,13 @@ rpi_mailbox_property_t *RPI_PropertyGetWordLong(rpi_mailbox_tag_t tag, uint32_t 
 {
    return vc(tag, data, 1);
 }
+/* A request posted and not yet answered (usb_init's USB power-on). */
+static bool mailbox_busy;
+bool RPI_PropertyReplyWaiting(void);
+bool RPI_PropertyReplyWaiting(void)
+{
+   return !mailbox_busy;
+}
 rpi_mailbox_property_t *RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
 {
    (void)tag;
@@ -131,8 +138,15 @@ static void boot_queries_use_the_full_bound(void)
    CHECK(asked_arm_memory[1] == 1u && asked_arm_memory[0] == 0u,
          "ARM memory asked with the query bound (%u) not the full bound (%u)",
          asked_arm_memory[0], asked_arm_memory[1]);
+   /* While a posted request is still out, nothing is asked: the answer
+      would be waited for behind it (524 ms in helpers_init, 2026-11-11). */
+   mailbox_busy = true;
+   CHECK(!info_refresh_cached() && asked_temperature[0] + asked_temperature[1] == 0u,
+         "the mailbox was used while a posted request was still out (%u asks)",
+         asked_temperature[0] + asked_temperature[1]);
+   mailbox_busy = false;
    /* The runtime read stays on the short bound: the BREAK budget. */
-   info_refresh_cached();
+   CHECK(info_refresh_cached(), "nothing cached with the mailbox free");
    CHECK(asked_temperature[0] == 1u && asked_temperature[1] == 0u,
          "temperature asked with the full bound (%u) - a runtime path slowed",
          asked_temperature[1]);

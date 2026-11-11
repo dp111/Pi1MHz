@@ -803,6 +803,8 @@ static void init_emulator(void) {
       it from fb_emulator_init showed a zero helper address (CALL &FC0). */
    fb_show_splash_screen();
 
+   usb_power_post();    /* last: nothing after this may wait on the mailbox */
+
    RPI_BootStage(BOOT_STAGE_EMULATORS);
 }
 

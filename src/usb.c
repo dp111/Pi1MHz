@@ -400,10 +400,24 @@ void usb_init(uint8_t instance , uint8_t address) {
      here with the full bound, while boot can afford the wait.  First, while
      the property buffer is free. */
   board_revision_prime();
-  /* Posted, not waited for - see usb_boot_task. */
-  RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
-
+  /* The power-on itself is posted by usb_power_post, last thing before
+     the poll loop - see there. */
   Pi1MHz_Register_Poll(usb_boot_task, "usb-boot");
   s_usb_initialised = true;
   filesystemRegisterEject(mtp_fs_eject, mtp_fs_inserted);
+}
+
+/* Post the USB power-on: posted, not waited for - see usb_boot_task.  Called
+   once every init has run, not from usb_init: the mailbox has one buffer,
+   and whoever uses it next waits for this reply, about half a second from a
+   cold boot.  Posted from usb_init, that was the next init to ask the
+   VideoCore anything (helpers_init's temperature read: 524 ms on a Zero 2 W,
+   2026-11-11; with that deferred, the splash screen's framebuffer).  Posted
+   here the wait falls in the poll loop, where usb_boot_task, the info
+   refresh and the WiFi start each look before they ask. */
+void usb_power_post(void)
+{
+  if (!s_usb_initialised)
+     return;                       /* usb is disabled in the config */
+  RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 }

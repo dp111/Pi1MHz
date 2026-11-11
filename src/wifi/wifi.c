@@ -8,6 +8,7 @@
 
 #include "../Pi1MHz.h"
 #include "../rpi/info.h"
+#include "../rpi/mailbox.h"
 #include "../rpi/rpi.h"
 #include "../config.h"
 #include "../telnetd.h"
@@ -745,6 +746,12 @@ void wifi_boot(void)
 
    switch (g_wifi_boot_stage) {
       case WIFI_BOOT_STAGE_START_SDIO:
+         /* The chip's power-up goes through the mailbox, which waits for
+            any request still out: usb_init's posted USB power-on takes
+            the VideoCore about half a second from cold, and this would
+            spend it stalled in the poll loop.  Start when it is free. */
+         if (!RPI_PropertyReplyWaiting())
+            return;
          wifi_debug_log("starting SDIO runtime");
          sdio_runtime_set_diag(g_wifi_config.diag_enabled);
          sdio_runtime_set_txglom(g_wifi_config.txglom);

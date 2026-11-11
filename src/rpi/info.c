@@ -118,13 +118,18 @@ uint32_t get_temp_millidegrees(void) {
    for exactly this: deadlines measured in milliseconds or longer have no
    business paying 47 cycles for a timer read of their own. Declining costs
    a compare. */
-void info_refresh_cached(void) {
+bool info_refresh_cached(void) {
    static uint32_t last_us;
    static bool primed;
    uint32_t now = Pi1MHz_now_us;
 
    if (primed && (now - last_us) < 1000000u)
-      return;
+      return true;
+   /* A posted request is still out (usb_init's USB power-on takes the
+      VideoCore about half a second from cold): asking now would wait for
+      its reply.  Not this pass. */
+   if (!RPI_PropertyReplyWaiting())
+      return primed;
    last_us = now;
    primed = true;
 
@@ -135,6 +140,7 @@ void info_refresh_cached(void) {
       (revision + two clock rates) - and helpers.c is its only caller, in
       FIQ. Priming it here means FIQ never reaches that path. */
    (void)get_info_string();
+   return true;
 }
 
 float get_temp(void) {
