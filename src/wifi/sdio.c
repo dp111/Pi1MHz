@@ -2622,7 +2622,8 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
           PicoWi waits after the AMPDU block, so the radio was not
           ready when WLC_SET_SSID fired.
       Pi1MHz-specific extras kept on top of PicoWi: MPC_OFF /
-      POWERSAVE_OFF / ROAM_OFF (keep the radio awake and stationary)
+      POWERSAVE_OFF (keep the radio awake) / ROAM_OFF (the roam_off
+      iovar, sent as 0: roaming stays on - see the command's payload)
       and the three-form event_msgs setup (this driver's equivalent
       of PicoWi's events_enable()). */
 
@@ -2724,7 +2725,7 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;           /* WLC_SET_AUTH = 0 (again) */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MFP;            /* mfp = capable for WPA2, none otherwise */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH;       /* WLC_SET_WPA_AUTH */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF;       /* roam_off = 1 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF;       /* roam_off = 0 */
    /* Radio-only startup still needs the complete CLM/country, WLC_UP and
       event-mask sequence above so *LAP can discover access points.  Skip
       only the final association commands when no profile is configured. */
@@ -3694,7 +3695,14 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bus:rxglom", 1u);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
-         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "roam_off", 1u);
+         /* Roaming on (roam_off = 0).  The join is by SSID, so on a mesh
+            the chip takes whichever node it finds first; with roaming
+            off it then stayed on a far node at -73 dBm, a third of the
+            speed, until the next boot.  Left on, it moved to the -45 dBm
+            node within 20 s to 2 min each time (Zero 2 W, 2026-11-11).
+            Sent explicitly, at the place the 1 was, so the join sequence
+            and its timing are what they were. */
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "roam_off", 0u);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "mpc", 0u);
