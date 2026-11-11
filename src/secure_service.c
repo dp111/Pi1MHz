@@ -47,7 +47,7 @@ _Static_assert(NTS_SEC_SFTP_CLOSE == SERVICE_CMD_SECURE_LAST,
 #ifdef SERVICE_DEBUG_MARKS
 static void secure_debug_mark(uint8_t stage)
 {
-   uint32_t p = (DISC_RAM_BASE | 0xFF0000u | (0xF0u << 8)) + 0xFFu;
+   uint32_t p = SERVICE_CMD_BLOCK(0xF0u) + 0xFFu;
    Pi1MHz->JIM_ram[p] = stage;
 }
 #else

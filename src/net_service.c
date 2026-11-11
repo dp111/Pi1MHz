@@ -22,6 +22,7 @@
 #include "Pi1MHz.h"
 #include "ram_emulator.h"          /* DISC_RAM_BASE, DISC_RAM_SIZE, JIM_ram */
 #include "services.h"
+#include "services_latch.h"
 #include "scripts/gitversion.h"
 #include "net_service.h"
 #include "net_tnfs.h"
@@ -151,10 +152,7 @@ static bool     net_enabled;        /* net_enable=1 in Pi1MHz.cfg           */
 static bool     net_irq_armed;      /* nIRQ opt-in (NET_CMD_IRQ); see below  */
 
 /* One-slot command mailbox latched in FIQ, drained by the poll. */
-static volatile bool     net_pending;
-static volatile uint32_t net_pending_cp;
-static volatile uint32_t net_pending_addr;
-static volatile uint8_t  net_pending_data;
+static service_latch_t   net_latch;
 static volatile bool     net_reset_pending;
 
 /* ---- little-endian JIM accessors (byte-wise: fields are not all aligned) - */
@@ -2300,7 +2298,7 @@ net_util_state_t net_time_poll(uint32_t *ntp_seconds)
 #ifdef NET_DEBUG_MARKS
 static void net_debug_mark(uint8_t stage)
 {
-   uint32_t p = (DISC_RAM_BASE | 0xFF0000u | (0xF0u << 8)) + 0xFFu;
+   uint32_t p = SERVICE_CMD_BLOCK(0xF0u) + 0xFFu;
    Pi1MHz->JIM_ram[p] = stage;
 }
 #else
@@ -2313,10 +2311,7 @@ static void net_service_command(uint32_t command_pointer, uint32_t addr,
    /* FIQ context: latch only.  Publish NET_BUSY (bit 7) so a Beeb that reads
       the result register before the poll runs spins rather than seeing a
       stale value; the poll overwrites it with the real result. */
-   net_pending_cp   = command_pointer;
-   net_pending_addr = addr;
-   net_pending_data = data;
-   net_pending      = true;
+   service_latch_post(&net_latch, command_pointer, addr, data);
    Pi1MHz_MemoryWrite(addr, NET_BUSY);
    net_debug_mark(1u);
 }
@@ -2339,7 +2334,7 @@ static void net_service_poll(void)
       net_irq_armed = false;         /* a reset removes any Beeb IRQ handler */
       net_reset_pending = false;
       net_debug_mark(4u);
-      /* Deliberately do NOT clear net_pending here.  A command the FIQ latches
+      /* Deliberately do NOT clear net_latch here.  A command the FIQ latches
          *during* this teardown loop would otherwise be dropped, stranding the
          NET_BUSY byte the FIQ wrote to the result register forever - the Beeb
          spins on bit 7 and never re-issues, so only a reflash recovers.  Let it
@@ -2347,11 +2342,10 @@ static void net_service_poll(void)
          returns a clean bit-7-clear result and BUSY always clears. */
    }
 
-   if (net_pending) {
-      uint32_t cp   = net_pending_cp;
-      uint32_t addr = net_pending_addr;
-      uint8_t  data = net_pending_data;
-      net_pending = false;
+   if (service_latch_pending(&net_latch)) {
+      uint32_t cp, addr;
+      uint8_t  data;
+      service_latch_take(&net_latch, &cp, &addr, &data);
       net_debug_mark(5u);
       Pi1MHz_MemoryWrite(addr, net_dispatch(cp, data));
       net_debug_mark(6u);
@@ -2462,7 +2456,7 @@ void net_service_init(uint8_t instance, uint8_t address)
 #endif
 
    /* Defer all pcb teardown to the first poll (see net_service_poll).  Do NOT
-      clear net_pending here either: a command latched around a BBC-reset
+      clear net_latch here either: a command latched around a BBC-reset
       re-init must be dispatched (against the freshly-reset, all-FREE handles),
       never dropped - dropping strands NET_BUSY in the result register.  It is
       already 0 on the first-ever boot (BSS, before the service is registered). */

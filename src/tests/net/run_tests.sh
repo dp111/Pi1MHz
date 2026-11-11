@@ -10,7 +10,7 @@ SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
-cp "$SRC"/net_service.c "$SRC"/net_service.h "$SRC"/net_dns.h "$SRC"/net_dns.c "$SRC"/services.h "$B/"
+cp "$SRC"/net_service.c "$SRC"/net_service.h "$SRC"/net_dns.h "$SRC"/net_dns.c "$SRC"/services.h "$SRC"/services_latch.h "$B/"
 mkdir -p "$B/wifi"
 cp "$SRC"/wifi/lwip_util.c "$SRC"/wifi/lwip_util.h "$B/wifi/"
 cp "$SRC"/net_tnfs.c "$SRC"/net_tnfs.h "$SRC"/net_telnet.c "$SRC"/net_telnet.h "$B/"

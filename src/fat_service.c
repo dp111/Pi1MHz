@@ -16,6 +16,7 @@
 #include "M5000_emulator.h"		/* M5000_recording_path_busy */
 #include "fujibus_service.h"		/* fujibus_service_path_busy */
 #include "services.h"
+#include "services_latch.h"
 #include "config.h"				/* Beeb_write_protect */
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
@@ -1545,10 +1546,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
    The ring then drops the writes that follow, and the loader hung on its
    next command.  The Beeb already polls bit 7 of the command register, so
    deferring the work changes nothing on its side. */
-static volatile bool     fat_pending;
-static volatile uint32_t fat_pending_cp;
-static volatile uint32_t fat_pending_addr;
-static volatile uint8_t  fat_pending_data;
+static service_latch_t fat_latch;
 
 static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
 {
@@ -1556,21 +1554,17 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
       the poll writes the real result; every Beeb client sends a command
       byte with bit 7 set, so this is the byte it wrote back with the bit
       forced for safety. */
-   fat_pending_cp   = command_pointer;
-   fat_pending_addr = addr;
-   fat_pending_data = data;
-   fat_pending      = true;
+   service_latch_post(&fat_latch, command_pointer, addr, data);
    Pi1MHz_MemoryWrite(addr, (uint8_t)(data | 0x80u));
 }
 
 static void fat_service_poll(void)
 {
-   if (!fat_pending)
+   if (!service_latch_pending(&fat_latch))
       return;
-   uint32_t cp   = fat_pending_cp;
-   uint32_t addr = fat_pending_addr;
-   uint8_t  data = fat_pending_data;
-   fat_pending = false;
+   uint32_t cp, addr;
+   uint8_t  data;
+   service_latch_take(&fat_latch, &cp, &addr, &data);
    fat_service_execute(cp, addr, data);
 }
 
@@ -1619,7 +1613,7 @@ void fat_service_init(void)
    fat_close_all();
    (void)services_register(SERVICE_CMD_FAT_FIRST, SERVICE_CMD_FAT_LAST,
                            fat_service_command);
-   /* fat_pending is deliberately not cleared here: a command latched around
+   /* fat_latch is deliberately not cleared here: a command latched around
       the reset is still answered by the poll (against the now-closed
       handles), so the busy bit the FIQ wrote can never be stranded. */
    Pi1MHz_Register_Poll(fat_service_poll, "fatsvc");

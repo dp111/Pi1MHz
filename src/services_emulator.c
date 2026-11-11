@@ -168,7 +168,7 @@ static void services_emulator_command(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data); // return existing command
 
    // command pointer is always page aligned
-   uint32_t command_pointer = (uint32_t) (DISC_RAM_BASE | 0xFF0000U | (uint32_t) (data<<8));
+   uint32_t command_pointer = SERVICE_CMD_BLOCK(data);
    uint8_t command = Pi1MHz->JIM_ram[command_pointer];
 
    for (unsigned int i = 0; i < s_service_count; i++) {

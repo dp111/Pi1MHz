@@ -105,6 +105,13 @@ _Static_assert(SERVICE_CMD_SECURE_LAST  < SERVICE_CMD_FUJI_FIRST,    "secure ove
    costs no poll slot, which is why a service with per-boot setup work (a
    profile read, a socket table) prefers it. */
 
+/* JIM offset of the command block a write of `page` (&F0-&FF) to the
+   command register names: the top 64 KB of the service RAM, so &F0 is
+   DISC_RAM_BASE + 0xFFF000 and &FF is DISC_RAM_BASE + 0xFFFF00.  The
+   dispatcher passes this to every handler as command_pointer. */
+#define SERVICE_CMD_BLOCK(page) \
+   (DISC_RAM_BASE | 0xFF0000u | ((uint32_t)(page) << 8))
+
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop
    (the AUN service is the pattern).  command_pointer is the absolute JIM
