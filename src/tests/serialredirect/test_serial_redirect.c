@@ -130,14 +130,12 @@ int main(int argc, char **argv)
    serial_redirect_init(3, B);
    CHECK(serial_redirect_address() == B, "the stub is at &FCCC");
    CHECK(!nirq && !gate_open(), "nothing asserted before it is hooked");
-   CHECK(!serial_redirect_no_shift(), "not hooked: SHIFT is the Beeb's own keyboard's, paged mode is fine");
 
    step("hook: column 5, row 3, MODE 7");
    bus_write(OFF_CONTROL, 0x85);
    bus_write(OFF_CONTROL, 0xE3);
    bus_write(OFF_CONTROL, 0x17);
    CHECK(serial_redirect_telnet_attached(), "telnet mode");
-   CHECK(serial_redirect_no_shift(), "helper 20 without the ROM: nothing answers for SHIFT, do not page");
    CHECK(serial_redirect_beeb->mode == 7 && serial_redirect_beeb->col == 5 && serial_redirect_beeb->row == 3,
          "the report: MODE 7 at 5,3");
    CHECK(stub(OFF_INBUF) == 0, "bytes go into the keyboard buffer");
@@ -252,7 +250,7 @@ int main(int argc, char **argv)
    step("the ROM reports the reset");
    bus_write(OFF_CONTROL, 0x26);
    CHECK(serial_redirect_beeb->rom, "REMV claimed: rom");
-   CHECK(serial_redirect_telnet_attached() && !serial_redirect_no_shift(), "with the ROM, Page Down is SHIFT: paged mode is fine");
+   CHECK(serial_redirect_telnet_attached(), "still telnet mode");
    CHECK(stub(OFF_EXIT) == 0x40 && jsr_insv(), "the stub as it was");
    bus_write(OFF_CONTROL, 0x20);
    CHECK(!serial_redirect_beeb->rom, "REMV not claimed");
@@ -411,7 +409,6 @@ int main(int argc, char **argv)
    step("modem mode, then unhooked");
    bus_write(OFF_CONTROL, 0x01);
    CHECK(!serial_redirect_telnet_attached() && stub(OFF_INBUF) == 1, "helper 19: RS423 input buffer");
-   CHECK(serial_redirect_no_shift(), "helper 19: no SHIFT down a serial line");
    bus_write(OFF_CONTROL, 0x00);
    serial_redirect_write((const uint8_t *)"z", 1);
    tick(30000);

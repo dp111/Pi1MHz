@@ -480,12 +480,15 @@ ENDMACRO
 
 ; Page 0: the help screen, and nothing else.  Selecting it makes the Pi
 ; copy the formatted screen to &FFE000 and then release the wait loop by
-; rewriting the JMP's low byte (helpers.c).  Printed in paged mode, as it
-; can be longer than the screen (a row for each user ROM), and paged mode
-; is put back as it was.  Paged mode waits for SHIFT at the keyboard, so
-; when the Beeb is driven down the serial redirect and nothing can press
-; SHIFT for it the Pi makes the VDU 14 a VDU 15 (helpers.c, HELP_PAGED_OP:
-; keep it in step with the ASSERT below).
+; rewriting the JMP's low byte (helpers.c).  It can be longer than the
+; screen (a row for each user ROM), so it is paged here: after a text
+; window's worth of lines, less one, it waits for any key.  Not the MOS's
+; paged mode, which waits for SHIFT at the keyboard itself: a Beeb driven
+; down the serial redirect or over telnet has keys to send, by OSRDCH, but
+; no SHIFT.  Paged mode is turned off meanwhile (two pagers would stop
+; twice) and put back as it was.  Escape ends the screen.  Lines are
+; counted by their line feeds, so a line that wraps (the 20 column MODEs)
+; counts as one.
 {
 ORG &FD00
 .waitloop
@@ -493,21 +496,44 @@ ORG &FD00
     ASSERT P% = &FD03
     LDA #117 : JSR OSBYTE       ; X = VDU status: bit 2 is paged mode
     TXA : PHA
-    ASSERT P% = &FD0A
-    LDA #14  : JSR OSWRCH       ; paged mode on (or off: the Pi's choice)
+    LDA #15  : JSR OSWRCH       ; paged mode off
+    LDA #160 : LDX #10 : JSR OSBYTE ; Y = the text window's top row (&30B)
+    STY top+1
+    LDA #160 : LDX #9 : JSR OSBYTE  ; X = its bottom row (&309)
+    TXA : SEC
+.top
+    SBC #0                      ; rows less one: the lines to a page
+    STA lines+1
+    TAY                         ; Y = lines left on this page
     LDA #0   : STA discaccess   ; the screen, at &FFE000
     LDA #&E0 : STA discaccess+1
     LDA #&FF : STA discaccess+2
 .stringloop
     LDA discaccess+3            ; auto increment register
-    JSR OSWRCH
-    TAX                         ; set flags
+.next
+    BEQ done
+    JSR OSWRCH                  ; keeps A and Y
+    CMP #10
     BNE stringloop
-    PLA : AND #4 : EOR #4       ; paged mode as it was: VDU 14 if on,
-    CMP #1                      ; VDU 15 if off (C = it was off)
-    LDA #14 : ADC #0
-    JSR OSWRCH
+    DEY
+    BNE stringloop
+    LDX discaccess+3            ; a page shown: is there any more?
+    BEQ done
+    JSR OSRDCH                  ; any key (keeps X and Y)
+    BCS escape
+.lines
+    LDY #0                      ; (a one row window never pages: Y wraps)
+    TXA
+    BNE next                    ; always
+.escape
+    LDA #126 : JSR OSBYTE       ; acknowledge it
+.done
+    PLA : AND #4                ; paged mode as it was
+    BEQ notpaged
+    LDA #14  : JSR OSWRCH
+.notpaged
     PAGERTS
+    PRINT "page 0 (help) spare bytes:", &FE00-9-P%
 
   ; no page switches to or from this one any more; the trailer stays so
   ; that every page a helper number can select has it

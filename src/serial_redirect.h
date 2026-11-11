@@ -66,7 +66,6 @@ void serial_redirect_drop_keys(uint8_t keep_after);   /* the keys not yet given 
                                                          the one after keep_after if that was the last given */
 void serial_redirect_telnetd_refresh(void); /* telnetd_enabled() changed: the ROM's TELNET byte says so */
 void serial_redirect_shift(void);           /* SHIFT pressed once (paged mode), read by the auto-start ROM's KEYV */
-bool serial_redirect_no_shift(void);        /* hooked, and SHIFT cannot be pressed for the Beeb: do not page */
 void serial_redirect_break(uint8_t how);  /* a BREAK, as the BREAK key (SER_BRK_*): see the .c */
 #define SER_BRK_PLAIN  0u
 #define SER_BRK_SHIFT  1u          /* SHIFT-BREAK: the boot */

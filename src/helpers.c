@@ -35,9 +35,6 @@
 #define SERIAL_HELPER_PAGE  19u
 #define TELNET_HELPER_PAGE  20u
 #define SERIAL_HELPER_LDY   0x06u
-/* Page 0, the help printer: the operand of its "LDA #14" (paged mode on),
-   at &FD0A in 6502code.asm.  Made 15 when nothing can press SHIFT. */
-#define HELP_PAGED_OP       0x0Bu
 
 /* &FC88 = HELPER_XFER shows the helper transfer page in the JIM window
    instead of a helper page.  It is a page of the services buffer, so a
@@ -250,11 +247,6 @@ static void helpers_bank_select(unsigned int gpio)
         if (data >= HELPER_PAGES)
             data = 0;
 
-        /* the help screen is printed paged, unless the Beeb is driven down
-           the serial redirect with nothing to press SHIFT for it: it would
-           stop part way until somebody reached the keyboard */
-        if (data == 0 && helper_ram[HELP_PAGED_OP - 1u] == 0xA9u)   /* LDA #: this 6502code.bin */
-            helper_ram[HELP_PAGED_OP] = serial_redirect_no_shift() ? 15u : 14u;
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
         if (data==0)
