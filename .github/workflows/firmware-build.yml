@@ -1,0 +1,72 @@
+name: "Firmware build"
+
+# Builds the three kernels (rpi, rpi2, rpi3) in release and debug with the
+# CMake presets, as src/scripts/build.sh does, and fails on any compiler
+# warning except the vendored FatFs -Wcast-qual one (CMakeLists.txt has no
+# -Werror on purpose).
+# NEVER RUN when written, so it is started by hand only (workflow_dispatch):
+# the distro arm-none-eabi-gcc is not the toolchain the firmware is built
+# with, and a warning here may be a compiler version difference, not a code
+# fault.  Add the push and pull_request triggers once it has gone green.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.preset }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: rpi,         image: kernel.img }
+          - { preset: rpi2,        image: kernel7a7.img }
+          - { preset: rpi3,        image: kernel7.img }
+          - { preset: rpi-debug,   image: kernel.img }
+          - { preset: rpi2-debug,  image: kernel7a7.img }
+          - { preset: rpi3-debug,  image: kernel7.img }
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tinyusb, lwip, cJSON, mbedtls and libsmb2 are all compiled in
+          submodules: recursive
+          # scripts/gitversion.h is made from git describe
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi cmake make
+          arm-none-eabi-gcc --version | head -1
+
+      - name: Remove the committed kernels so only a fresh link can satisfy the upload
+        run: rm -f firmware/kernel*.img
+
+      - name: Configure and build
+        working-directory: src
+        run: |
+          set -o pipefail
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }} -j"$(nproc)" 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: No compiler warnings (bar vendored FatFs -Wcast-qual)
+        run: |
+          w=$(grep -E "warning:|error:" "$RUNNER_TEMP/build.log" \
+                | grep -v -E "/fatfs/ff(unicode)?\.c:[0-9]+:[0-9]+: warning: .*\[-Wcast-qual\]" || true)
+          if [ -n "$w" ]; then
+            echo "$w" | head -40
+            echo "::error::compiler warnings in ${{ matrix.preset }}"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.preset }}
+          path: firmware/${{ matrix.image }}
+          if-no-files-found: error

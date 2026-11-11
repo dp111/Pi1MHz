@@ -32,6 +32,9 @@ jobs:
       # fujinet builds src/fujinet/cJSON; mtpsession compiles usb/mtp_fs.c
       # against TinyUSB's headers (shallow: only its headers are read).  No
       # suite reads lwip or mbedtls, so they are not fetched.
+      - name: Committed firmware blobs match src/scripts/firmware.sha256
+        run: sh src/scripts/check-firmware-manifest.sh
+
       - name: cJSON submodule
         run: git submodule update --init src/fujinet/cJSON
       - name: TinyUSB submodule

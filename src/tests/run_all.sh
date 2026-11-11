@@ -31,6 +31,16 @@ fi
 
 pass=
 fail=
+skipped=      # suites left out of the default run, with the reason
+partial=      # suites that ran but printed SKIP/SKIPPED (a tool was missing)
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+for d in "$HERE"/*/; do
+   s=$(basename "$d")
+   [ $# -eq 0 ] || continue
+   case " $SKIP " in *" $s "*) skipped="$skipped
+   $s (opt-in: in SKIP, run by beeb-roms.yml, needs beebasm and py65)" ;; esac
+done
 for s in $suites; do
    if   [ -f "$HERE/$s/run_tests.sh" ]; then script=$HERE/$s/run_tests.sh
    elif [ -f "$HERE/$s/run.sh" ];       then script=$HERE/$s/run.sh
@@ -41,11 +51,21 @@ for s in $suites; do
    # "sh -e" on purpose: the runner, not each script, guarantees that a
    # failed step stops the suite instead of reaching its banner.  Every
    # script is POSIX sh.
-   if sh -e "$script"; then pass="$pass $s"; else fail="$fail $s"; fi
+   # output goes through a file, not a pipe, so sh -e's exit status is kept
+   if sh -e "$script" > "$out" 2>&1; then pass="$pass $s"; else fail="$fail $s"; fi
+   cat "$out"
+   # suites that skip a check say so in their output and still exit 0
+   if grep -q -E "SKIP|skipped the" "$out"; then
+      partial="$partial
+   $s: $(grep -E -m1 "SKIP|skipped the" "$out")"
+   fi
    [ -n "$GITHUB_ACTIONS" ] && echo "::endgroup::"
 done
 
 echo
 echo "passed:${pass:- none}"
 echo "failed:${fail:- none}"
+echo "not run (opt-in):${skipped:- none}"
+echo "ran but skipped checks (tool missing):${partial:- none}"
+[ -z "$skipped$partial" ] || echo "NOTE: 'passed' does not cover the skipped items above"
 [ -z "$fail" ]
