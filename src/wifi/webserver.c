@@ -2790,6 +2790,7 @@ static void status_wifi_link(ws_strbuf_t *b, const status_ctx_t *ctx)
          delta over the interval between them. */
       sdio_runtime_request_pktcnts();
       sdio_runtime_request_rate();
+      sdio_runtime_request_ap();
       if (sdio_runtime_get_rssi(&rssi)) {
          snprintf(tmp, sizeof tmp, "%ld dBm", (long)rssi);
          table_row(b, "Signal (RSSI)", tmp);
@@ -2804,6 +2805,23 @@ static void status_wifi_link(ws_strbuf_t *b, const status_ctx_t *ctx)
             table_row(b, "Link rate (TX)", tmp);
          } else {
             table_row(b, "Link rate (TX)", "(querying)");
+         }
+      }
+      {
+         uint8_t bssid[6];
+         uint8_t channel;
+         if (sdio_runtime_get_ap_bssid(bssid)) {
+            snprintf(tmp, sizeof tmp, "%02x:%02x:%02x:%02x:%02x:%02x",
+                     bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+            table_row(b, "Access point (BSSID)", tmp);
+         } else {
+            table_row(b, "Access point (BSSID)", "(querying)");
+         }
+         if (sdio_runtime_get_ap_channel(&channel)) {
+            snprintf(tmp, sizeof tmp, "%u", (unsigned)channel);
+            table_row(b, "Channel", tmp);
+         } else {
+            table_row(b, "Channel", "(querying)");
          }
       }
    }
@@ -7915,6 +7933,7 @@ void webserver_poll(void)
    sdio_runtime_rssi_poll();
    sdio_runtime_pktcnts_poll();
    sdio_runtime_rate_poll();
+   sdio_runtime_ap_poll();
    sdio_runtime_powersave_poll();
    sdio_runtime_powersave_verify_poll();
 }

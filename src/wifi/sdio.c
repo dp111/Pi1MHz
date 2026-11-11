@@ -190,6 +190,20 @@ static uint16_t g_runtime_rate_request_id;
 static uint32_t g_runtime_rate_deadline_us;
 static bool g_runtime_rssi_step_sent;
 static uint32_t g_runtime_rssi_step_deadline_us;
+/* Associated access point (BSSID) and channel, one-shot like RATE.  One
+   request runs two ioctls in turn (phase 0 WLC_GET_BSSID, phase 1 the
+   "chanspec" GET-VAR, whose low byte is the channel number), one control
+   transaction at a time. */
+static uint8_t g_runtime_ap_bssid[6];
+static bool g_runtime_ap_bssid_valid;
+static uint8_t g_runtime_ap_channel;
+static bool g_runtime_ap_channel_valid;
+static bool g_runtime_ap_query_wanted;
+static bool g_runtime_ap_step_sent;
+static bool g_runtime_ap_request_pending;
+static uint8_t g_runtime_ap_phase;
+static uint16_t g_runtime_ap_request_id;
+static uint32_t g_runtime_ap_deadline_us;
 static sdio_wifi_scan_result_t
    g_runtime_scan_results[SDIO_WIFI_SCAN_MAX_RESULTS];
 static uint8_t g_runtime_scan_result_count;
@@ -4421,6 +4435,28 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
             g_runtime_rate_valid = true;
             g_runtime_rate_request_pending = false;
          }
+
+         /* WLC_GET_BSSID reply: 6 bytes.  The "chanspec" GET-VAR reply
+            (WLC_GET_VAR): little-endian u16 chanspec, channel in the low
+            byte. */
+         if (g_runtime_ap_request_pending
+             && cdc_request_id == g_runtime_ap_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)) {
+            if (g_runtime_ap_phase == 0u && cdc_cmd == WLC_GET_BSSID
+                && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 6u)) {
+               memcpy(g_runtime_ap_bssid,
+                      &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
+               g_runtime_ap_bssid_valid = true;
+               g_runtime_ap_request_pending = false;
+            } else if (g_runtime_ap_phase == 1u && cdc_cmd == WLC_GET_VAR
+                       && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 4u)) {
+               g_runtime_ap_channel = (uint8_t)
+                  (sdio_load_u32_le(&frame_buffer[header_length + CDC_HEADER_LENGTH])
+                   & 0xFFu);
+               g_runtime_ap_channel_valid = g_runtime_ap_channel != 0u;
+               g_runtime_ap_request_pending = false;
+            }
+         }
       }
       return false;
    }
@@ -6885,7 +6921,8 @@ bool sdio_runtime_scan_start(void)
       return false;
    if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
        || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_request_pending
-       || g_runtime_rate_query_wanted || g_runtime_rate_request_pending)
+       || g_runtime_rate_query_wanted || g_runtime_rate_request_pending
+       || g_runtime_ap_query_wanted || g_runtime_ap_request_pending)
       return false;
 
    memset(g_runtime_scan_results, 0, sizeof g_runtime_scan_results);
@@ -7407,6 +7444,95 @@ void sdio_runtime_rate_poll(void)
 void sdio_runtime_request_rate(void)
 {
    g_runtime_rate_query_wanted = true;
+}
+
+/* Lowest priority of the one-shot reads: defers to RSSI, PKTCNTS and RATE,
+   which share the one control template.  Phase 0 reads the BSSID, phase 1
+   the channel; each ends like the others (reply, or the 250 ms deadline). */
+void sdio_runtime_ap_poll(void)
+{
+   uint32_t now;
+
+   if (!g_runtime_ap_query_wanted)
+      return;
+
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
+       || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_request_pending
+       || g_runtime_rate_query_wanted || g_runtime_rate_request_pending)
+      return;
+
+   if (!sdio_runtime_link_is_up()) {
+      g_runtime_ap_query_wanted = false;
+      g_runtime_ap_step_sent = false;
+      g_runtime_ap_request_pending = false;
+      g_runtime_ap_phase = 0u;
+      return;
+   }
+
+   if (!g_runtime_ap_step_sent && sdio_runtime_tx_window_shut()) {
+      g_runtime_ap_request_pending = false;
+      return;
+   }
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_ap_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       g_runtime_ap_phase == 0u
+                                          ? WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID
+                                          : WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC);
+      g_runtime_ap_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_ap_request_pending = true;
+      if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+         g_runtime_ap_request_pending = false;
+         g_runtime_ap_query_wanted = false;
+         g_runtime_ap_phase = 0u;
+         return;
+      }
+      g_runtime_ap_step_sent = true;
+      g_runtime_ap_deadline_us = now + 250000u;
+      return;
+   }
+
+   if (g_runtime_ap_request_pending
+       && (int32_t)(now - g_runtime_ap_deadline_us) < 0)
+      return;
+
+   /* Reply landed or deadline passed: next phase, or done. */
+   g_runtime_ap_request_pending = false;
+   g_runtime_ap_step_sent = false;
+   if (g_runtime_ap_phase == 0u) {
+      g_runtime_ap_phase = 1u;
+      return;
+   }
+   g_runtime_ap_phase = 0u;
+   g_runtime_ap_query_wanted = false;
+}
+
+void sdio_runtime_request_ap(void)
+{
+   g_runtime_ap_query_wanted = true;
+}
+
+bool sdio_runtime_get_ap_bssid(uint8_t bssid_out[6])
+{
+   if (bssid_out == NULL || !g_runtime_ap_bssid_valid)
+      return false;
+
+   memcpy(bssid_out, g_runtime_ap_bssid, 6u);
+   return true;
+}
+
+bool sdio_runtime_get_ap_channel(uint8_t *channel_out)
+{
+   if (channel_out == NULL || !g_runtime_ap_channel_valid)
+      return false;
+
+   *channel_out = g_runtime_ap_channel;
+   return true;
 }
 
 bool sdio_runtime_get_rate(int32_t *rate_500kbps_out)

@@ -444,6 +444,14 @@ bool sdio_runtime_get_pktcnts(uint32_t out[5]);
 void sdio_runtime_request_rate(void);
 void sdio_runtime_rate_poll(void);
 bool sdio_runtime_get_rate(int32_t *rate_500kbps_out);
+
+/* On-demand associated-AP read, same pattern: WLC_GET_BSSID then the
+   "chanspec" GET-VAR (channel = low byte).  Lowest priority of the one-shot
+   reads.  The getters are false until the first reply. */
+void sdio_runtime_request_ap(void);
+void sdio_runtime_ap_poll(void);
+bool sdio_runtime_get_ap_bssid(uint8_t bssid_out[6]);
+bool sdio_runtime_get_ap_channel(uint8_t *channel_out);
 /* Cache a 6-byte MAC the runtime should push into the chip's
    cur_etheraddr iovar at boot.  Must be called BEFORE
    sdio_runtime_start() so the SET_MAC stage picks it up.  Passing
