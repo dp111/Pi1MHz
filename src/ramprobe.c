@@ -32,6 +32,7 @@
 
 #define NMI_EVERY_US  40000u      /* the NMI again, if it went unanswered */
 #define NMI_TRIES     3u
+#define LEAVE_US      1000u       /* after a continue, the agent's last instructions: no NMI yet */
 #define EVENT_WAIT_US 300000u     /* rung 0: the vsync event comes every 20 ms */
 #define IRQ_WAIT_US   40000u      /* rung 1: an IRQ is taken at once, unless interrupts are off */
 #define STEP_LIMIT_US 500000u     /* a step of work */
@@ -65,10 +66,10 @@ static struct {
    /* the NMI */
    bool     nmi_low;
    uint32_t nmi_us;
+   uint32_t left_us;           /* when the agent last said it was going */
    unsigned nmi_sent;
    uint32_t peeked;
    uint32_t resets;            /* BBC resets seen: each one loses the install */
-   bool     keying;            /* stopped to type the *KEY10 line, for the install */
 } R;
 
 _Static_assert(RP_REPORT == SERVICES_RAMPROBE_FIRST && RP_DATA + RP_MAX_TRANSFER - 1u == SERVICES_RAMPROBE_LAST,
@@ -225,40 +226,6 @@ static void send_chunk(void)
    send_call(c, n, 0, 0, 0, STEP_LIMIT_US);
 }
 
-/* The install leaves *KEY10 to the Pi: once it has left its page, put the line in the keyboard
-   buffer through INSV, which the OS's own keyboard interrupt uses, so it is safe from a stop. */
-static const char KEY10_LINE[] = "*KEY10 X%=23:CALL &FC88|M\r";
-static void send_key(void)
-{
-   uint8_t c[RP_CODE_MAX];
-   size_t n = 0;
-   const uint16_t at = 0xFD00u + MB_CODE;
-   c[n++] = 0xA0; c[n++] = 0x00;                          /* LDY #0 */
-   size_t top = n;
-   c[n++] = 0xB9; size_t s1 = n; n += 2;                  /* LDA line,Y */
-   c[n++] = 0xF0; size_t done = n++;                      /* BEQ done */
-   c[n++] = 0x98; c[n++] = 0x48;                          /* TYA : PHA */
-   c[n++] = 0xB9; size_t s2 = n; n += 2;                  /* LDA line,Y */
-   c[n++] = 0xA2; c[n++] = 0x00;                          /* LDX #0: the keyboard buffer */
-   c[n++] = 0x20; size_t tr = n; n += 2;                  /* JSR insv */
-   c[n++] = 0x68; c[n++] = 0xA8;                          /* PLA : TAY */
-   c[n++] = 0xC8;                                         /* INY */
-   c[n++] = 0xD0; c[n] = (uint8_t)(top - (n + 1u)); n++;  /* BNE top */
-   c[done] = (uint8_t)(n - (done + 1u));
-   c[n++] = 0x60;                                         /* done: RTS */
-   uint16_t insv = (uint16_t)(at + n);
-   c[n++] = 0x6C; c[n++] = 0x2A; c[n++] = 0x02;           /* insv: JMP (&022A) */
-   uint16_t line = (uint16_t)(at + n);
-   memcpy(c + n, KEY10_LINE, sizeof KEY10_LINE);          /* with its 0 */
-   n += sizeof KEY10_LINE;
-   c[s1] = c[s2] = (uint8_t)line; c[s1 + 1] = c[s2 + 1] = (uint8_t)(line >> 8);
-   c[tr] = (uint8_t)insv; c[tr + 1] = (uint8_t)(insv >> 8);
-   R.op = OP_REGS;                                        /* and then go on */
-   R.state = RP_WORKING;
-   send_call(c, n, 0, 0, 0, STEP_LIMIT_US);
-}
-_Static_assert(sizeof KEY10_LINE + 26u <= RP_CODE_MAX, "the *KEY10 code fits the agent's call area");
-
 static void start_resume(void)
 {
    R.state = RP_RESUMING;
@@ -277,6 +244,17 @@ static void read_result(void)
 
 /* ---- the poll ------------------------------------------------------------- */
 
+/* The SD card's 6502code.bin has this build's probe pages: each its own number, and the agent's
+   RP_VERSION.  It is loaded apart from the kernel, so the two can differ. */
+#define MISMATCH "the SD card's Pi1MHz/6502code.bin isn't this firmware's (pages 22 and 23): copy this build's"
+static bool pages_ok(void)
+{
+   const uint8_t *agent = helpers_page(RP_HELPER_AGENT);
+   return agent != NULL && helpers_page_number(RP_HELPER_AGENT) == RP_HELPER_AGENT
+       && helpers_page_number(RP_HELPER_INSTALL) == RP_HELPER_INSTALL
+       && agent[RP_VERSION_AT] == RP_VERSION;
+}
+
 static bool start_halt(int rung);
 
 static void ramprobe_poll(void)
@@ -290,13 +268,6 @@ static void ramprobe_poll(void)
       if (*J(RP_REPORT + RP_HALTED_AT) == 1u && ramprobe_installed()) {
          *J(RP_REPORT + RP_HALTED_AT) = 2u;          /* seen: not again */
          start_resume();
-      } else if (ramprobe_installed() && *J(RP_REPORT + RP_KEY_AT) != 0u
-                 && helpers_window_page() != (int)RP_HELPER_INSTALL) {
-         /* The install wants *KEY10 set, and has left its page: a stop there would come back
-            to JIM RAM, not to it.  Rung 1, then rung 0. */
-         *J(RP_REPORT + RP_KEY_AT) = 0u;
-         R.keying = true;
-         if (!start_halt(RP_RUNG_IRQ)) R.keying = false;
       }
       break;
 
@@ -309,8 +280,6 @@ static void ramprobe_poll(void)
          if (R.oneshot) {
             R.state = RP_WORKING;
             send_chunk();
-         } else if (R.keying) {
-            send_key();
          }
       } else if (R.rung != RP_RUNG_NMI) {
          if (Pi1MHz_now_us - R.t0 >= (R.rung == RP_RUNG_EVENT ? EVENT_WAIT_US : IRQ_WAIT_US)) {
@@ -318,17 +287,9 @@ static void ramprobe_poll(void)
             fail(R.rung == RP_RUNG_EVENT
                  ? "rung 0 (the vsync event) didn't answer in 300 ms: events off, or EVNTV taken?"
                  : "rung 1 (nIRQ, IRQ2V) didn't answer in 40 ms: interrupts off, or IRQ2V taken?");
-            bool again = R.keying && R.rung == RP_RUNG_IRQ;
             R.oneshot = false;
             R.rung = RP_RUNG_NONE;
             R.state = RP_RUNNING;
-            if (again) {
-               R.error[0] = '\0';
-               if (!start_halt(RP_RUNG_EVENT)) R.keying = false;
-            } else if (R.keying) {
-               R.keying = false;
-               fail("the install's *KEY10 wasn't set: the BBC answered neither rung 0 nor rung 1");
-            }
          }
       } else if (Pi1MHz_now_us - R.nmi_us >= NMI_EVERY_US) {
          if (R.nmi_sent >= NMI_TRIES) {
@@ -353,7 +314,6 @@ static void ramprobe_poll(void)
          if (R.op == OP_CALL) {
             R.state = RP_HALTED;
          } else if (R.op == OP_REGS) {
-            R.keying = false;
             start_resume();
          } else {
             R.ri = R.next_ri;
@@ -375,7 +335,6 @@ static void ramprobe_poll(void)
          fail("the code didn't return: the machine may need a Break");
          R.waiting = false;
          R.oneshot = false;
-         R.keying = false;
          R.state = RP_RUNNING;
       }
       break;
@@ -383,9 +342,11 @@ static void ramprobe_poll(void)
    case RP_RESUMING:
       if (*J(RP_REPORT + RP_HALTED_AT) == 0u) {
          R.state = RP_RUNNING;
+         R.left_us = Pi1MHz_now_us;
       } else if (Pi1MHz_now_us - R.t0 >= STEP_LIMIT_US) {
          fail("the agent didn't leave");
          R.state = RP_RUNNING;
+         R.left_us = Pi1MHz_now_us;      /* it may yet: no NMI into it for LEAVE_US either */
       }
       break;
 
@@ -407,17 +368,24 @@ static bool start_halt(int rung)
 {
    if (R.state != RP_RUNNING) { fail(R.state == RP_OFF ? "off" : "busy"); return false; }
    if (rung < RP_RUNG_EVENT || rung > RP_RUNG_NMI) { fail("bad rung: 0, 1 or 2"); return false; }
+   if (!pages_ok()) {
+      fail(MISMATCH);
+      return false;
+   }
    if (*J(RP_REPORT + RP_INSTALLED_AT) != RP_INSTALLED) {
-      fail(helpers_page_number(RP_HELPER_INSTALL) == RP_HELPER_INSTALL && helpers_page_number(RP_HELPER_AGENT) == RP_HELPER_AGENT
-           ? "not installed: type X%=23:CALL &FC88 on the BBC"
-           : "the SD card's Pi1MHz/6502code.bin has no probe pages (22 and 23): copy this build's");
+      fail("not installed: type X%=23:CALL &FC88 on the BBC");
       return false;
    }
    memset(J(RP_REPORT), 0, RP_INSTALLED_AT);
    R.rung = rung;
    R.state = RP_HALTING;
    R.t0 = Pi1MHz_now_us;
-   if (rung == RP_RUNG_NMI) {
+   if (rung == RP_RUNG_NMI && Pi1MHz_now_us - R.left_us < LEAVE_US) {
+      /* The agent has said it's going but may still be on its way out, between that and
+         rp_exit's RTI: an NMI there would nest a stop inside it.  The poll sends it when due. */
+      R.nmi_sent = 0u;
+      R.nmi_us = R.left_us + LEAVE_US - NMI_EVERY_US;
+   } else if (rung == RP_RUNG_NMI) {
       R.nmi_sent = 1u;
       R.nmi_us = Pi1MHz_now_us;
       nmi_line(true);
@@ -464,7 +432,8 @@ bool ramprobe_resume(const rp_resume_t *how)
 }
 
 /* Stopped: the transfer now.  Running, with a rung: in by it, the transfer, out again. */
-static bool start_transfer(op_t op, const rp_range_t *ranges, unsigned count, int bank, int rung)
+static bool start_transfer(op_t op, const rp_range_t *ranges, unsigned count, int bank, int rung,
+                           const uint8_t *bytes)
 {
    bool now = R.state == RP_HALTED;
    if (!now && (rung == RP_RUNG_NONE || R.state != RP_RUNNING)) return need_halted();
@@ -480,6 +449,11 @@ static bool start_transfer(op_t op, const rp_range_t *ranges, unsigned count, in
          services port the transfer itself uses; a VIA or ACIA read clears interrupt flags under
          the running OS), and the agent runs from &FD00.  /bbc/run is for deliberate I/O. */
       if (address < 0xFF00u && address + length > 0xFC00u) { fail("that's I/O: &FC00-&FEFF (use /bbc/run)"); return false; }
+      /* The NMI's JMP: the rest of the probe is in FRED, out of reach. */
+      if (op == OP_POKE && address < RP_NMI_JMP + 3u && address + length > RP_NMI_JMP) {
+         fail("that's the probe's NMI JMP at &0D00-&0D02");
+         return false;
+      }
       total += length;
    }
    if (total > RP_MAX_TRANSFER) { fail("more than 64 KB in all"); return false; }
@@ -496,8 +470,10 @@ static bool start_transfer(op_t op, const rp_range_t *ranges, unsigned count, in
    if (!now) {
       R.oneshot = true;
       if (!start_halt(rung)) { R.oneshot = false; return false; }
-      return true;
    }
+   /* Only now, every check passed and the probe installed: the data area is the probe's. */
+   if (bytes != NULL) memcpy(J(RP_DATA), bytes, total);
+   if (!now) return true;
    R.state = RP_WORKING;
    send_chunk();
    return true;
@@ -506,7 +482,7 @@ static bool start_transfer(op_t op, const rp_range_t *ranges, unsigned count, in
 bool ramprobe_peek_ranges(const rp_range_t *ranges, unsigned count, int bank, int rung)
 {
    R.error[0] = '\0';
-   return start_transfer(OP_PEEK, ranges, count, bank, rung);
+   return start_transfer(OP_PEEK, ranges, count, bank, rung, NULL);
 }
 
 bool ramprobe_peek(uint16_t address, uint32_t length, int bank, int rung)
@@ -518,18 +494,7 @@ bool ramprobe_peek(uint16_t address, uint32_t length, int bank, int rung)
 bool ramprobe_poke_ranges(const rp_range_t *ranges, unsigned count, const uint8_t *bytes, int rung)
 {
    R.error[0] = '\0';
-   if ((R.state == RP_HALTED || (R.state == RP_RUNNING && rung != RP_RUNG_NONE))
-       && count > 0u && count <= RP_MAX_RANGES) {
-      /* The NMI's JMP: the rest of the probe is in FRED, out of reach. */
-      uint32_t total = 0;
-      for (unsigned i = 0; i < count; i++) {
-         uint32_t address = ranges[i].address, end = address + ranges[i].length;
-         if (address < RP_NMI_JMP + 3u && end > RP_NMI_JMP) { fail("that's the probe's NMI JMP at &0D00-&0D02"); return false; }
-         total += ranges[i].length > RP_MAX_TRANSFER ? RP_MAX_TRANSFER + 1u : ranges[i].length;
-      }
-      if (total > 0u && total <= RP_MAX_TRANSFER) memcpy(J(RP_DATA), bytes, total);
-   }
-   return start_transfer(OP_POKE, ranges, count, RP_NO_BANK, rung);
+   return start_transfer(OP_POKE, ranges, count, RP_NO_BANK, rung, bytes);
 }
 
 bool ramprobe_poke(uint16_t address, const uint8_t *bytes, uint32_t length, int rung)
@@ -570,25 +535,32 @@ const char *ramprobe_state_name(void)
 
 /* The FRED code, from page 23, with both hooks idle until the install writes the old vectors
    into them; only those four bytes are the BBC's to write.  None of it if 6502code.bin has no
-   probe pages. */
+   probe pages.  rp_in's PHA only if the pages are this build's: the install checks for it.  The
+   rest is written even when they aren't, so that an install from another build that doesn't
+   check (an earlier one) hooks its own code, not whatever FRED held; and start_halt refuses
+   to use it. */
 static void put_fred(void)
 {
    static const struct { uint8_t at, len; } Blocks[] = {
       { RP_FRED_A, RP_FRED_A_LEN }, { RP_FRED_B, RP_FRED_B_LEN }, { RP_FRED_C, RP_FRED_C_LEN },
    };
+   if (helpers_page_number(RP_HELPER_INSTALL) != RP_HELPER_INSTALL) {
+      Pi1MHz_MemoryWrite(RP_FRED_A + RP_IN_AT, 0x00u);
+      return;
+   }
    const uint8_t *page = helpers_page(RP_HELPER_INSTALL);
-   if (page == NULL || helpers_page_number(RP_HELPER_INSTALL) != RP_HELPER_INSTALL) return;
    const uint8_t *code = page + RP_FRED_IN_PAGE;
    for (unsigned b = 0; b < sizeof Blocks / sizeof Blocks[0]; b++)
       for (unsigned i = 0; i < Blocks[b].len; i++)
          Pi1MHz_MemoryWrite(Blocks[b].at + i, *code++);
+   if (pages_ok()) Pi1MHz_MemoryWrite(RP_FRED_A + RP_IN_AT, RP_IN_OP);   /* page 23 has a 0 there */
    for (unsigned i = 1; i <= 2u; i++) {
       Pi1MHz_Register_Memory(WRITE_FRED, RP_HOOK_EVENT + i, Pi1MHz_EmulatedMemoryByte);
       Pi1MHz_Register_Memory(WRITE_FRED, RP_HOOK_IRQ2 + i, Pi1MHz_EmulatedMemoryByte);
    }
 }
 
-bool ramprobe_installed(void) { return R.state != RP_OFF && *J(RP_REPORT + RP_INSTALLED_AT) == RP_INSTALLED; }
+bool ramprobe_installed(void) { return R.state != RP_OFF && pages_ok() && *J(RP_REPORT + RP_INSTALLED_AT) == RP_INSTALLED; }
 const char *ramprobe_error(void) { return R.error; }
 uint32_t ramprobe_resets(void) { return R.resets; }
 int ramprobe_rung(void) { return R.rung; }
@@ -616,8 +588,7 @@ void ramprobe_init(uint8_t instance, uint8_t address)
    if (R.registered) R.resets++;
    /* Its report says installed no longer.  Written only if the install had written it: the area
       is the probe's only once the line is typed (services.h). */
-   if (*J(RP_REPORT + RP_INSTALLED_AT) == RP_INSTALLED) memset(J(RP_REPORT), 0, RP_KEY_AT + 1u);
-   R.keying = false;
+   if (*J(RP_REPORT + RP_INSTALLED_AT) == RP_INSTALLED) memset(J(RP_REPORT), 0, RP_INSTALLED_AT + 1u);
    put_fred();
    unask();
    R.rung = RP_RUNG_NONE;
@@ -625,6 +596,7 @@ void ramprobe_init(uint8_t instance, uint8_t address)
    R.state = RP_RUNNING;
    R.waiting = false;
    R.error[0] = '\0';
+   if (!pages_ok()) fail(MISMATCH);      /* GET /bbc says so before anyone tries a halt */
    R.peeked = 0;
    /* Every time: a BBC reset empties the poll table (init_emulator), and each emulator
       registers again.  Registering once left the probe with no poll after the first Break. */

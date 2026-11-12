@@ -65,6 +65,9 @@ EXP_XFERT = 46      ; transfer page template (installed at &D90000)
 
 ; &FC88 value that shows the transfer page instead of a helper page
 XFER_SEL  = &FE
+; &FC88 value that shows again what the select before it replaced (helpers.c): the RAM probe's
+; way out of a stop, which may have landed while another helper ran
+BACK_SEL  = &FD
 
 ; zero page - the user area &70-&8F, nothing else.  The list-state
 ; variables are single bytes, so their odd neighbours are free.
@@ -499,7 +502,7 @@ RP_HALTED_AT     = 7
 RP_CALL_AT       = 8
 RP_INSTALLED_AT  = 13
 RP_INSTALLED     = &5A
-RP_KEY_AT        = 14        ; the install's word on *KEY10: not 0, and the Pi sets it
+RP_VERSION       = 1         ; at &FDFE in page 22: the Pi runs the probe only with its own
 RP_EVNTV         = &0220
 RP_IRQ2V         = &0206
 RP_NMI           = &0D00     ; where the 6502's NMI goes (the OS's vector, fixed)
@@ -523,7 +526,8 @@ ORG &FC6F
     JMP 0                ; RP_IDLE: the old IRQ2V, which the install writes here
     LDA &FC              ; the interrupted A, as the OS left it
 .rp_in                   ; the way in, for every rung: A on the stack, the agent takes the rest
-    PHA
+    EQUB 0               ; PHA, which only a Pi with this build's kernel writes in (RP_IN_OP):
+                         ; one copying the block as it stands leaves a BRK, which the install refuses
     LDA #RP_AGENT_PAGE
     STA &FC88            ; ask for the agent's page...
 .rp_ready
@@ -556,8 +560,8 @@ ASSERT rp_fred_b_end <= &FCA0
 ; Block C, &FCB0-&FCB6: between the mouse (&FCAC-&FCAF) and the serial block (&FCB7).
 ORG &FCB0
 .rp_fred_c
-.*rp_exit                ; the agent leaves with A the page to show (&FF: the program's own JIM
-    STA &FC88            ; page), Y put back, and X and A on the stack above the frame
+.*rp_exit                ; the agent leaves with A the select (BACK_SEL: the window as the stop
+    STA &FC88            ; found it), Y put back, and X and A on the stack above the frame
     PLA
     TAX
     PLA
@@ -1260,8 +1264,8 @@ ORG &FD00
     STA &FCA8
     PLA                  ; Y back
     TAY
-    LDA #&FF             ; and its own JIM page: out through rp_exit, in FRED
-    JMP rp_exit
+    LDA #BACK_SEL        ; and the window as the stop found it (JIM RAM, or a helper's page as
+    JMP rp_exit          ; it was left): out through rp_exit, in FRED
 .call
     LDA &FDF3
     LDX &FDF4
@@ -1290,13 +1294,15 @@ ORG &FD00
     RTS
     ASSERT P% <= &FDA0
     PRINT "helper 22 (probe agent) spare bytes:", &FDA0-P%
-    SKIPTO &FDFF
+    SKIPTO &FDFE
+    EQUB RP_VERSION          ; RP_VERSION in ramprobe.h: this page and the firmware agree
     EQUB RP_AGENT_PAGE
     ENDBLOCK &1600
 }
 ; What the Pi writes, checked against src/ramprobe.h (a change here wants one there).
 ASSERT rp_calljsr + 1 - &FD00 = &61        ; RP_AGENT_JSR
 ASSERT rp_irq2 = &FC6F                   ; RP_FRED_A, RP_HOOK_IRQ2
+ASSERT rp_in = &FC74                     ; RP_FRED_A + RP_IN_AT, where the Pi writes its PHA
 ASSERT rp_event = &FC8F                  ; RP_FRED_B, RP_HOOK_EVENT
 ASSERT rp_fred_c = &FCB0                 ; RP_FRED_C
 ASSERT RP_FRED_A_LEN = 24                ; RP_FRED_A_LEN
@@ -1307,16 +1313,19 @@ ASSERT RP_FRED_C_LEN = 7                 ; RP_FRED_C_LEN
 ; Page 23 : the RAM probe's install, typed once after switching on: X%=23:CALL &FC88.
 ; It points EVNTV and IRQ2V at the hooks in FRED, writing what they pointed at into the hooks'
 ; JMPs, unless they point at the hooks already (the line typed twice), and puts the JMP for the
-; NMI at &0D00.  It tells the Pi, turns the vsync event on (rung 0), and says so.  The Pi then
-; makes Break type the line again: once this page is left, it stops the BBC and puts
-; "*KEY10 X%=23:CALL &FC88|M" and Return in the keyboard buffer, so every soft Break puts it all
-; back by itself.  Y%=1 (CALL passes its low byte in Y, which &FC88 leaves alone) keeps the
-; BBC's own *KEY10: X%=23:Y%=1:CALL &FC88.  Its OS calls are safe: this is the foreground,
-; called from BASIC, never from a stop.  It uses &70-&73, BASIC's zero page for CALLs.
+; NMI at &0D00, if the Pi has put the FRED code in (else it does nothing).  It tells the Pi, turns the vsync event on (rung 0), sets *KEY10 to the line, so
+; every soft Break puts it all back by itself, and says so.  The key runs the CALL only where
+; HIMEM is under 40000: the BBC's own BASIC, never a second processor's, where &FC88 is RAM.
+; Y%=1 (CALL passes its low byte in Y, which &FC88 leaves alone) keeps the BBC's own *KEY10:
+; X%=23:Y%=1:CALL &FC88.  Its OS calls are safe: this is the foreground, called from BASIC,
+; never from a stop.  It uses &70-&73, BASIC's zero page for CALLs.
 ; The FRED code itself is here too, at the end, for the Pi to copy (rp_fred).
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
+    LDA rp_in            ; rp_in's PHA there?  Only a kernel that knows this 6502code.bin is its
+    CMP #&48             ; own (RP_VERSION) writes one, and GET /bbc says so when it isn't: hook
+    BNE said             ; nothing, or the way out (BACK_SEL) would mean something else
     TYA                  ; Y%, for later
     PHA
     SEI
@@ -1364,37 +1373,30 @@ ORG &FD00
     STA &FCA8
     LDA #RP_INSTALLED
     STA &FCA9
-    PLA                  ; +KEY_AT: Y% EOR 1, so 0 for Y%=1, which leaves *KEY10 as it is;
-    EOR #1               ; anything else, and the Pi types the *KEY10 line once this page
-    STA &FCA9            ; is left
-    PHA
     LDA #14              ; the vsync event on: OSBYTE 14,4
     LDX #4
     JSR OSBYTE
+    PLA                  ; Y%=1 keeps the BBC's own *KEY10
+    CMP #1
+    BEQ kept
+    LDX #LO(keyline)
+    LDY #HI(keyline)
+    JSR &FFF7            ; OSCLI
+.kept
     LDX #0
-    JSR say              ; "Pi1MHz probe on"
-    LDX #cr-msgs
-    PLA
-    BNE last
-    LDX #keptmsg-msgs
-.last
-    JSR say
-    LDX #&FF
-    JMP &FC88
 .say
-    LDA msgs,X
+    LDA msg,X            ; "Pi1MHz probe on"
     BEQ said
     JSR &FFE3
     INX
     BNE say
 .said
-    RTS
-.msgs
-    EQUS "Pi1MHz probe on", 0
-.keptmsg
-    EQUS " (KEY10 kept)"
-.cr
-    EQUB 13, 0
+    LDX #&FF
+    JMP &FC88
+.msg
+    EQUS "Pi1MHz probe on", 13, 0
+.keyline
+    EQUS "KEY10 X%=23:IF HIMEM<40000 CALL &FC88|M", 13
 .voff                    ; each vector's place in page 2 and its hook, for X = 0 and 2
     EQUB LO(RP_EVNTV)
 hooklo = voff + 1

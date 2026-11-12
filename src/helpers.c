@@ -16,6 +16,7 @@
 #include "serial_redirect.h"
 #include "services.h"
 #include "BeebSCSI/fatfs/ff.h"
+#include "ramprobe.h"
 
 /* One 256-byte page per helper entry point, 0..47 - the page the Beeb runs
    when it asks for helper n.  It is exactly as many pages as 6502code.bin
@@ -46,11 +47,26 @@
    (docs/advanced.md: 8-14 MB), beside the SD explorer's other buffers. */
 #define HELPER_XFER        0xFEu
 #define HELPER_XFER_OFFSET 0x00D90000u
+/* The RAM probe (ramprobe.c) stops the Beeb by selecting its agent's page, HELPER_STOP_PAGE,
+   and lets it go on with &FC88 = HELPER_BACK, which shows again what that select replaced: JIM
+   RAM at whatever page it was on (the user's, or the transfer page), or the helper page a stop
+   landed in, with the bytes that helper had written into it (helpers keep their variables in
+   their own page).  Neither is an ordinary select: a transfer under way stays so, and neither
+   touches the JMP/RTS at &FC8C, which belongs to whatever select the stopped code made last.
+   &FD was helper 0 before, as any other number past the last page still is; with no stop to
+   go back from it is &FF. */
+#define HELPER_STOP_PAGE   RP_HELPER_AGENT
+#define HELPER_BACK        RP_BACK_SEL
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
 static uint8_t helper_address;
-static volatile int helper_window = -1;     /* the helper page in the window, or -1 */
+/* The latest helper page selected; what a stop waiting for HELPER_BACK replaced (0xFF for JIM
+   RAM, or a page; HELPER_NO_STOP for none) and, for a page, its bytes as the Beeb left them; and
+   how many stops landed inside the agent itself, on its way out, which go back to it. */
+#define HELPER_NO_STOP HELPER_BACK
+static volatile uint8_t helper_sel = 0xFFu, helper_stopped = HELPER_NO_STOP, helper_nested;
+_Alignas(4) static uint8_t helper_stopped_page[256];
 static volatile bool     help_shown_pending;   /* a help screen was shown: reformat it later */
 static volatile uint32_t help_shown_us;
 /* The formatted help screen, two copies: the poll formats the one the FIQ
@@ -216,6 +232,54 @@ static void helpers_bank_select(unsigned int gpio)
       }
    }
 
+   if (data == HELPER_STOP_PAGE)
+   {
+      if (ram_emulator_window_is_helper() && helper_sel == HELPER_STOP_PAGE) {
+         /* A stop inside the agent, between the Pi's go and its RTI: what the first stop
+            replaced stays saved.  The agent's page afresh, mailbox and all, so this stop is an
+            ordinary one; the code the outer agent has still to run is the same bytes. */
+         helper_nested++;
+         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[HELPER_STOP_PAGE << 8]);
+         return;
+      }
+      /* ram_emulator's word on the window, not helper_sel: a page register write since may
+         have put JIM RAM back. */
+      helper_stopped = ram_emulator_window_is_helper() ? helper_sel : 0xFFu;
+      if (helper_stopped < HELPER_PAGES)
+      {
+         /* Words, not memcpy: the FIQ saves no VFP state. */
+         const uint32_t *src = (const uint32_t *)(const void *)&Pi1MHz->Memory[Pi1MHz_MEM_PAGE];
+         uint32_t *dst = (uint32_t *)(void *)helper_stopped_page;
+         for (unsigned int w = 0; w < 256u / 4u; w++)
+            dst[w] = src[w];
+      }
+      Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[HELPER_STOP_PAGE << 8]);
+      ram_emulator_window_helper();
+      helper_sel = HELPER_STOP_PAGE;
+      return;
+   }
+
+   if (data == HELPER_BACK)
+   {
+      if (helper_nested) {
+         helper_nested--;
+         return;
+      }
+      uint8_t was = helper_stopped;
+      helper_stopped = HELPER_NO_STOP;
+      if (was < HELPER_PAGES) {
+         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, helper_stopped_page);
+         ram_emulator_window_helper();
+         helper_sel = was;
+         return;
+      }
+      if (was == 0xFFu) {
+         ram_emulator_page_restore();      /* JIM RAM, at the page it was on */
+         return;
+      }
+      data = 0xFFu;                        /* nothing to go back to */
+   }
+
    if (data == HELPER_XFER)
    {
       /* A Beeb write into the window lands in JIM_ram[page_ram_addr + offset]
@@ -231,7 +295,6 @@ static void helpers_bank_select(unsigned int gpio)
       Pi1MHz->page_ram_addr = DISC_RAM_BASE + HELPER_XFER_OFFSET;
       Pi1MHz_MemoryWrite_FIQ(addr+4, 0x4c);
       ram_emulator_page_restore();       /* shows JIM RAM: writes reach it */
-      helper_window = -1;
       return;
    }
 
@@ -246,7 +309,6 @@ static void helpers_bank_select(unsigned int gpio)
         Pi1MHz_MemoryWrite_FIQ(addr+4, 0x60);
         // old page data
         ram_emulator_page_restore();
-        helper_window = -1;
     }
     else
     {
@@ -255,10 +317,10 @@ static void helpers_bank_select(unsigned int gpio)
         // select page
         if (data >= HELPER_PAGES)
             data = 0;
+        helper_sel = data;
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
-        helper_window = data;
         if (data==0)
         {
             /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
@@ -320,8 +382,6 @@ static void helpers_poll(void)
    info_refresh_cached();
 }
 
-int helpers_window_page(void) { return helper_window; }
-
 const uint8_t *helpers_page(uint8_t page)
 {
    return page < HELPER_PAGES ? &helper_ram[(size_t)page << 8] : NULL;
@@ -340,7 +400,9 @@ void helpers_init( uint8_t instance , uint8_t address)
    helper_address = address;
    help_shown_pending = false;      /* the screen is formatted again below */
    helper_xfer_active = false;      /* a BREAK mid-transfer: nothing to restore */
-   helper_window = -1;
+   helper_sel = 0xFFu;
+   helper_stopped = HELPER_NO_STOP;
+   helper_nested = 0u;
    if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
       return;
    /* 0x60 = RTS.  filesystemReadFile clamps to the file's length and leaves

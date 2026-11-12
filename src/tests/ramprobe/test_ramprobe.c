@@ -1,8 +1,8 @@
 /* The RAM probe end to end: the real ramprobe.c, its 6502 code and the real
    services_emulator.c, driving a cycle-stepped BBC (kc-beeb) with no agent ROM.
-   The one thing not the firmware's own is the &FC88 helper select, which is the
-   logic of helpers_bank_select with its timing as a parameter (helpers.c needs
-   too much of the firmware to build here).  Run by run_tests.sh. */
+   The &FC88 helper select (helpers.c) and the &FD00 window (ram_emulator.c) are the
+   firmware's too; the board (board.h) adds only a delay before a select takes
+   effect, as a parameter.  Run by run_tests.sh. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,9 +181,9 @@ static void session(void)
    int edges = nmi_edges;
    ok(!ramprobe_halt(RP_RUNG_NMI), "halt refused: %s", ramprobe_error());
    ok(nmi_edges == edges, "no NMI sent into a machine with no stub");
-   helper[(RP_HELPER_INSTALL << 8) + 255] = 0x60;          /* a 6502code.bin from before the probe */
+   helper_ram[(RP_HELPER_INSTALL << 8) + 255] = 0x60;          /* a 6502code.bin from before the probe */
    ok(!ramprobe_halt(RP_RUNG_EVENT) && strstr(ramprobe_error(), "6502code.bin"), "an old 6502code.bin, said: %s", ramprobe_error());
-   helper[(RP_HELPER_INSTALL << 8) + 255] = RP_HELPER_INSTALL;
+   helper_ram[(RP_HELPER_INSTALL << 8) + 255] = RP_HELPER_INSTALL;
    {
       uint8_t *rep = &pi.JIM_ram[DISC_RAM_BASE + RP_REPORT], was[16];
       memset(rep, 0xA7, sizeof was);                      /* someone else's bytes, say */
@@ -197,10 +197,12 @@ static void session(void)
    install();
    ok(m->ram[0x0D00] == 0x4C && m->ram[0x0D01] == (uint8_t)(RP_FRED_A + 5u) && m->ram[0x0D02] == 0xFC,
       "&0D00 holds JMP &FC%02X, the NMI's way in, and that's all of BBC RAM", RP_FRED_A + 5u);
-   ok(memcmp(pi.Memory + RP_FRED_A + 3u, rp_fred + 3u, RP_FRED_A_LEN - 3u) == 0
+   ok(rp_fred[RP_IN_AT] == 0x00 && pi.Memory[RP_FRED_A + RP_IN_AT] == RP_IN_OP
+      && memcmp(pi.Memory + RP_FRED_A + 3u, rp_fred + 3u, RP_IN_AT - 3u) == 0
+      && memcmp(pi.Memory + RP_FRED_A + RP_IN_AT + 1u, rp_fred + RP_IN_AT + 1u, RP_FRED_A_LEN - RP_IN_AT - 1u) == 0
       && memcmp(pi.Memory + RP_FRED_B + 3u, rp_fred + RP_FRED_A_LEN + 3u, RP_FRED_B_LEN - 3u) == 0
       && memcmp(pi.Memory + RP_FRED_C, rp_fred + RP_FRED_A_LEN + RP_FRED_B_LEN, RP_FRED_C_LEN) == 0,
-      "the hooks and the ways in and out are in FRED");
+      "the hooks and the ways in and out are in FRED, with the Pi's PHA at rp_in");
    ok(pi.Memory[RP_HOOK_EVENT] == RP_IDLE && pi.Memory[RP_HOOK_IRQ2] == RP_IDLE, "both hooks idle: JMP");
    ok(vec(0x0220) == 0xFC00u + RP_HOOK_EVENT && fred_vec(RP_HOOK_EVENT) >= 0x8000u,
       "EVNTV points at its hook in FRED, which goes on to &%04X", fred_vec(RP_HOOK_EVENT));
@@ -513,7 +515,7 @@ static void services_port(void)
    pi.Memory[256] = 0xAB;
    ok(halt_now() && resume_now(NULL), "stopped and let go");
    run_ms(1);
-   ok(pi.Memory[256] == 0xAB && !window_is_helper, "the window shows its page again");
+   ok(pi.Memory[256] == 0xAB && !ram_emulator_window_is_helper(), "the window shows its page again");
 }
 
 static void what_stops_it(void)
@@ -607,7 +609,7 @@ static void break_key(void)
    run_ms(100);
    type("X%=23:Y%=1:CALL &FC88\r");
    run_ms(300);
-   ok(ramprobe_installed() && on_screen("KEY10 kept"), "installed, and it says the key was kept");
+   ok(ramprobe_installed() && on_screen("Pi1MHz probe on"), "installed");
    type("CLS\r");
    run_ms(100);
    do_break(false);
@@ -617,11 +619,172 @@ static void break_key(void)
    run_ms(100);
    type("X%=23:Y%=0:CALL &FC88\r");
    run_ms(300);
-   ok(ramprobe_installed() && !on_screen("KEY10 kept"), "Y%% not 1: the key is set as before");
+   ok(ramprobe_installed(), "Y%% not 1: installed, and the key set");
    type("CLS\r");
    run_ms(100);
    do_break(false);
    ok(ramprobe_installed(), "and a soft Break puts it back");
+
+   puts("== the key checks HIMEM: a shadow mode's &8000 is still the BBC's own BASIC");
+   type("MODE 135\r");
+   run_ms(300);
+   type("CLS\r");
+   run_ms(100);
+   do_break(false);
+   ok(ramprobe_installed(), "a soft Break in MODE 135 puts it back too");
+}
+
+/* A stop while another helper runs from &FD00 must come back to that helper, its page as it
+   left it.  Helper 24 here counts in its own page (&FD80, &FD81) and in RAM (&82): a stop that
+   came back to JIM RAM would crash, and one that came back to a fresh copy of the page would
+   start the count again, leaving &82 past &C0. */
+static void helper_stop(void)
+{
+   puts("== a stop while another helper runs: back to it, its page as it was");
+   boot();
+   to_prompt();
+   install();
+   static const uint8_t counter[] = {
+      0xA9, 0x00, 0x8D, 0x80, 0xFD, 0x8D, 0x81, 0xFD, 0x85, 0x82,   /* LDA #0: STA &FD80, &FD81, &82 */
+      0xEE, 0x80, 0xFD, 0xD0, 0xFB,                                 /* loop: INC &FD80: BNE loop */
+      0xE6, 0x82, 0xEE, 0x81, 0xFD,                                 /* INC &82: INC &FD81 */
+      0xAD, 0x81, 0xFD, 0xC9, 0xC0, 0xD0, 0xEF,                     /* LDA &FD81: CMP #&C0: BNE loop */
+      0xA2, 0xFF, 0x4C, 0x88, 0xFC };                               /* LDX #&FF: JMP &FC88 */
+   memcpy(helper_ram + (24 << 8), counter, sizeof counter);
+   m->ram[0x82] = 0;
+   type("X%=24:CALL &FC88:PRINT 1000+?&82\r");
+   int in_helper = 0, stops = 0, lost = 0;
+   for (int i = 0; i < 400 && !on_screen("1192"); i++) {
+      int rung = i % 3 == 0 ? RP_RUNG_EVENT : RP_RUNG_IRQ;
+      if (ramprobe_halt(rung) && wait_state(RP_HALTED, 400)) {
+         stops++;
+         if ((ramprobe_stopped()->pc & 0xFF00) == 0xFD00) in_helper++;
+         if (!resume_now(NULL)) lost++;
+      } else {
+         lost++;
+      }
+      run_ms(rnd(8));
+   }
+   run_ms(300);
+   ok(in_helper > 20 && lost == 0, "%d stops, %d of them in the helper, %d lost", stops, in_helper, lost);
+   ok(on_screen("1192") && m->ram[0x82] == 0xC0, "it finished its count, once: &82=%u", m->ram[0x82]);
+   ok(pi.Memory[0x88 + 4] == 0x60 && !ram_emulator_window_is_helper(), "and left the window on JIM RAM");
+
+   /* Again with the stops' selects 5 us late, about the board's worst: the way out has 16
+      cycles (8 us) between its &FD and the RTI back into the helper's page.  Only while the
+      helper counts: the firmware's own STX &FC88 : NOP : JMP &FD00, which starts and ends every
+      helper, allows the select 2.5 us. */
+   puts("== the same, with the stops' selects 5 us late");
+   m->ram[0x82] = 0;
+   type("X%=24:CALL &FC88:PRINT 2000+?&82\r");
+   for (int i = 0; i < 1000 && m->ram[0x82] == 0; i++) run_ms(1);
+   select_delay = 10;
+   in_helper = stops = lost = 0;
+   for (int i = 0; i < 200 && m->ram[0x82] < 0xB0; i++) {
+      if (ramprobe_halt(i % 3 == 0 ? RP_RUNG_EVENT : RP_RUNG_IRQ) && wait_state(RP_HALTED, 400)) {
+         stops++;
+         if ((ramprobe_stopped()->pc & 0xFF00) == 0xFD00) in_helper++;
+         if (!resume_now(NULL)) lost++;
+      } else {
+         lost++;
+      }
+      run_ms(rnd(8));
+   }
+   select_delay = 0;
+   run_ms(300);
+   ok(in_helper > 10 && lost == 0 && on_screen("2192"), "%d stops, %d in the helper, %d lost; it finished its count once",
+      stops, in_helper, lost);
+
+   puts("== a helper left by the page registers, not by &FF: the stop goes back to JIM RAM");
+   type("?&FC88=24:?&FCFF=0:?&FCFE=0:?&FCFD=0:?&FD00=171\r");
+   run_ms(200);
+   ok(halt_now() && resume_now(NULL), "a stop and go");
+   type("?&FD01=205\r");
+   run_ms(200);
+   ok(!ram_emulator_window_is_helper() && pi.JIM_ram[0] == 171 && pi.JIM_ram[1] == 205, "writes reach JIM RAM after it: %u %u",
+      pi.JIM_ram[0], pi.JIM_ram[1]);
+}
+
+/* helpers.c's &FC88 select straight, as the agent's stop (22) and way out (&FD) use it, in the
+   cases the BBC can't easily be made to land in: a stop inside a stop, a stop during a transfer
+   page, and &FD with no stop. */
+static void sel(uint8_t v) { board_bus_write(0xFC88, v); }
+static void jim_page(uint32_t page)
+{
+   board_bus_write(0xFCFD, (uint8_t)(page >> 16));
+   board_bus_write(0xFCFE, (uint8_t)(page >> 8));
+   board_bus_write(0xFCFF, (uint8_t)page);
+}
+static void select_paths(void)
+{
+   puts("== the select: a stop inside a stop, a stop in a transfer, &FD alone");
+   boot();
+   to_prompt();
+   const uint32_t xfer = DISC_RAM_BASE + 0x00D90000u;
+   sel(24);
+   board_bus_write(0xFD40, 0x99);
+   sel(22);
+   ok(pi.Memory[256 + 255] == 22, "a stop shows the agent's page");
+   board_bus_write(0xFDF1, (uint8_t)~helper_ram[(22 << 8) + 0xF1]);   /* the Pi's mailbox, used */
+   sel(22);
+   ok(pi.Memory[256 + 0xF1] == helper_ram[(22 << 8) + 0xF1], "a stop inside it: the agent's page afresh, an ordinary stop");
+   sel(0xFD);
+   ok(pi.Memory[256 + 255] == 22 && ram_emulator_window_is_helper(), "a stop inside it, back: still the agent's page");
+   sel(0xFD);
+   ok(pi.Memory[256 + 0x40] == 0x99 && ram_emulator_window_is_helper(), "then back: helper 24, as it left it");
+   sel(0xFF);
+
+   jim_page(0x0123);
+   sel(0xFE);
+   ok(pi.page_ram_addr == xfer, "&FE: the transfer page");
+   board_bus_write(0xFD00, 0x5A);
+   sel(22);
+   sel(0xFD);
+   ok(pi.page_ram_addr == xfer && !ram_emulator_window_is_helper() && pi.Memory[256] == 0x5A,
+      "a stop in it, back: still the transfer page");
+   board_bus_write(0xFD01, 0x6B);
+   ok(pi.JIM_ram[xfer + 1] == 0x6B, "and writes reach it");
+   jim_page(0x0456);
+   sel(22);
+   sel(0xFD);
+   ok(pi.page_ram_addr == 0x045600u && !ram_emulator_window_is_helper(), "the page registers moved, a stop, back: that page");
+   sel(0xFF);
+   ok(pi.page_ram_addr == 0x012300u, "&FF: the user's page again, &%06X", (unsigned)pi.page_ram_addr);
+
+   sel(24);
+   pi.Memory[0x88 + 4] = 0x4C;
+   sel(0xFD);
+   ok(pi.Memory[0x88 + 4] == 0x60 && !ram_emulator_window_is_helper(), "&FD with no stop: as &FF");
+   jim_page(0);
+   ok(on_screen(">"), "BASIC never noticed");
+}
+
+/* The SD card's 6502code.bin is loaded apart from the kernel: one that isn't this build's must
+   leave the BBC alone, and GET /bbc must say what to do. */
+static void mismatch(void)
+{
+   puts("== a 6502code.bin that isn't this build's: the install hooks nothing, and the Pi says why");
+   code_bin[(RP_HELPER_AGENT << 8) + RP_VERSION_AT] ^= 0xFFu;
+   boot();
+   to_prompt();
+   uint16_t ev = vec(0x0220), irq2 = vec(0x0206);
+   install();
+   ok(vec(0x0220) == ev && vec(0x0206) == irq2 && m->ram[0x0D00] != 0x4C && !ramprobe_installed()
+      && pi.Memory[RP_FRED_A + RP_IN_AT] == 0x00, "no PHA at rp_in, nothing hooked, not installed");
+   ok(pi.Memory[RP_FRED_B] == RP_IDLE && pi.Memory[RP_FRED_C] == rp_fred[RP_FRED_A_LEN + RP_FRED_B_LEN],
+      "the rest of the FRED code is there, for an install that doesn't check");
+   /* An earlier build's install, which doesn't check: its report says installed. */
+   pi.JIM_ram[DISC_RAM_BASE + RP_REPORT + RP_INSTALLED_AT] = RP_INSTALLED;
+   ok(!ramprobe_installed() && !ramprobe_halt(RP_RUNG_IRQ) && pi.Memory[RP_HOOK_IRQ2] == RP_IDLE,
+      "the Pi still won't stop it: %s", ramprobe_error());
+   pi.JIM_ram[DISC_RAM_BASE + RP_REPORT + RP_INSTALLED_AT] = 0;
+   ok(on_screen(">") && !ramprobe_halt(RP_RUNG_EVENT) && strstr(ramprobe_error(), "isn't this firmware's"),
+      "BASIC carries on; a halt says: %s", ramprobe_error());
+   code_bin[(RP_HELPER_AGENT << 8) + RP_VERSION_AT] ^= 0xFFu;
+   boot();
+   to_prompt();
+   install();
+   ok(ramprobe_installed(), "with this build's pages again, it installs");
 }
 
 static void slow_fiq(void)
@@ -734,8 +897,6 @@ static void over_http(void)
 int main(int argc, char **argv)
 {
    roms = argc > 1 ? argv[1] : ".";
-   pi.JIM_ram_size = 2;
-   pi.JIM_ram = calloc(1, 2u * JIM_RAM_STEP);
    session();
    ladder();
    late_fiq();
@@ -746,6 +907,9 @@ int main(int argc, char **argv)
    services_port();
    what_stops_it();
    break_key();
+   helper_stop();
+   select_paths();
+   mismatch();
    slow_fiq();
    }
    printf("\n%d checks, %d failures\n", checks, fails);

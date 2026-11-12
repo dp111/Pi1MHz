@@ -22,17 +22,21 @@
    after page 22 there check the addresses, so a change on one side wants one on the other. */
 #define RP_HELPER_AGENT    22u      /* each page's number is its last byte, which rp_in waits on */
 #define RP_HELPER_INSTALL  23u      /* the line typed: X%=23:CALL &FC88 */
+#define RP_VERSION_AT     0xFEu     /* in page 22: RP_VERSION, so the SD card's 6502code.bin is this build's */
+#define RP_VERSION         1u
+#define RP_BACK_SEL       0xFDu     /* &FC88: the agent's way out (BACK_SEL), helpers.c's HELPER_BACK */
 #define RP_REPORT   0xE00000u       /* services offset of the report (services.h records it) */
 #define RP_HALTED_AT    7u          /* in the report: the stopped Y, X, A, P, PC, S, then 1 while halted */
 #define RP_CALL_AT      8u          /* a call's A, X, Y, P, then its sequence number */
 #define RP_INSTALLED_AT 13u
 #define RP_INSTALLED    0x5Au
-#define RP_KEY_AT       14u         /* the install's word on *KEY10: not 0, and the Pi types it */
 /* The code outside the agent's page is in FRED, in three blocks the Pi copies there from the
    end of page 23 (RP_FRED_IN_PAGE, A then B then C) at every reset.  The BBC's RAM holds only
    the NMI's JMP at &0D00. */
 #define RP_FRED_IN_PAGE 0xCFu
 #define RP_FRED_A       0x6Fu       /* &FC6F: the IRQ2V hook, the way in, the event's way on */
+#define RP_IN_AT        5u          /* rp_in in block A: 0 in page 23, the Pi's PHA here (RP_IN_OP) */
+#define RP_IN_OP        0x48u
 #define RP_FRED_A_LEN   24u
 #define RP_FRED_B       0x8Fu       /* &FC8F: the EVNTV hook */
 #define RP_FRED_B_LEN   17u

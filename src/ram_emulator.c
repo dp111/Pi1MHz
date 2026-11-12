@@ -75,6 +75,11 @@ void ram_emulator_window_helper(void)
    window_is_helper = true;
 }
 
+bool ram_emulator_window_is_helper(void)
+{
+   return window_is_helper;
+}
+
 static void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
