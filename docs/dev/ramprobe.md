@@ -157,6 +157,11 @@ then 1, and the NMI only with `--nmi`.
 | 1 | the Pi's nIRQ, through `IRQ2V` | programs that turn events off or take `EVNTV` | 40 ms |
 | 2 | NMI | anything, with interrupts off too | 3 tries, 40 ms apart |
 
+- Rung 0 stops inside the OS's vsync event, with the OS's interrupt frames under the agent's, so
+  the registers there are the OS's, not the program's.  `GET /bbc` gives `"stopped": null` after
+  a rung 0 stop, and a continue that sets a register is refused with 409.  Peeks, pokes, calls
+  and a plain continue work as on any rung.  To see or change the program's registers, halt by
+  rung 1 or 2, which stop with the program's own frame on the stack.
 - Rung 1 is the quickest: a stop and go takes 4 ms on the Model B over WiFi, against about
   20 ms for rung 0, which waits for the next frame.  Rung 0 suits screen writes, which then
   land just after the vsync.
@@ -184,9 +189,9 @@ that reuses one saves a TCP setup per request.
 
 | Route | What it does |
 |---|---|
-| `GET /bbc` | The status: `api`, `build`, `resets` (BBC resets seen), `state` (`waiting` until the line is typed, then `running`, `halted` and so on), `busy`, `installed`, `rung` (the last stop's), `error`, the stopped registers, the last call's A, X, Y and P, and `report` (the JIM address of the probe's report; its data buffer is `report` + &100) |
+| `GET /bbc` | The status: `api`, `build`, `resets` (BBC resets seen), `state` (`waiting` until the line is typed, then `running`, `halted` and so on), `busy`, `installed`, `rung` (the last stop's), `error`, the stopped registers (`null` after a rung 0 stop), the last call's A, X, Y and P, and `report` (the JIM address of the probe's report; its data buffer is `report` + &100) |
 | `POST /bbc/halt?rung=` | Stop the machine, by rung 0, 1 or 2 (0 if not given; 2 also needs `nmi=1`) |
-| `POST /bbc/continue?pc=&a=&x=&y=&p=` | Let it go on, each register optional |
+| `POST /bbc/continue?pc=&a=&x=&y=&p=` | Let it go on, each register optional.  Registers can't be set after a rung 0 stop (409) |
 | `POST /bbc/peek?addr=&len=&bank=&rung=` | Read up to 64 KB into the Pi.  `bank` picks a sideways bank.  Refused on the I/O pages, `&FC00-&FEFF`: reads there have side effects (use `/bbc/run`).  On a running machine with `rung`, one request does the stop, the read and the go |
 | `POST /bbc/peek?ranges=0x300:32,0x1900:256&bank=&rung=` | Several ranges in one request and one stop, up to 32 of them and 64 KB in all, their bytes back to back in `/bbc/data` in the order given (`peeked` is the total).  Each is checked as a single peek would be, and one bad range refuses the lot.  `:` and `,` may be sent as `%3A` and `%2C` |
 | `GET /bbc/data?offset=&len=` | The last peek's bytes, in hex, up to 4 KB a request |

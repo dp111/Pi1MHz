@@ -407,6 +407,12 @@ bool ramprobe_resume(const rp_resume_t *how)
    R.error[0] = '\0';
    if (!need_halted()) return false;
    if (how != NULL && (how->set_pc || how->set_p || how->set_a || how->set_x || how->set_y)) {
+      /* Rung 0 stops inside the OS's vsync event, with the OS's IRQ frames under its own: its
+         registers are the OS's, and a new PC would leave them on the stack, interrupts off. */
+      if (R.rung == RP_RUNG_EVENT) {
+         fail("rung 0 stops inside the OS: its registers aren't the program's; halt by rung 1 or 2 to set them");
+         return false;
+      }
       /* Run as a call first, writing them where the agent left them on the stack: with S as
          stopped, the frame at S+1 to S+3, A at S, X at S-1, Y at S-2 (6502code.asm, page 22). */
       uint8_t c[RP_CODE_MAX];

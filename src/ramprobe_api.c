@@ -135,15 +135,20 @@ static int status_json(char *out, size_t n, int http)
    uint32_t peeked = 0;
    (void)ramprobe_data(&peeked);
    rp_state_t st = ramprobe_state();
+   /* After rung 0, null: it stopped inside the OS's vsync event, so the registers are the OS's. */
+   char stopped[80] = "null";
+   if (ramprobe_rung() != RP_RUNG_EVENT)
+      snprintf(stopped, sizeof stopped, "{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"pc\":%u,\"s\":%u}",
+               s->a, s->x, s->y, s->p, s->pc, s->s);
    bool busy = st == RP_HALTING || st == RP_WORKING || st == RP_RESUMING;
    snprintf(out, n,
       "{\"api\":2,\"build\":\"%s\",\"resets\":%lu,"
       "\"state\":\"%s\",\"busy\":%s,\"installed\":%s,\"rung\":%d,\"error\":\"%s\","
-      "\"stopped\":{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u,\"pc\":%u,\"s\":%u},"
+      "\"stopped\":%s,"
       "\"result\":{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u},\"peeked\":%lu,"
       "\"report\":%lu}\n",
       GITVERSION, (unsigned long)ramprobe_resets(), ramprobe_state_name(), busy ? "true" : "false", ramprobe_installed() ? "true" : "false", ramprobe_rung(), ramprobe_error(),
-      s->a, s->x, s->y, s->p, s->pc, s->s, r->a, r->x, r->y, r->p, (unsigned long)peeked,
+      stopped, r->a, r->x, r->y, r->p, (unsigned long)peeked,
       (unsigned long)ramprobe_report_at());
    return http;
 }
