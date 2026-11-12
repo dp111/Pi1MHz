@@ -11,28 +11,21 @@
 #include "scripts/gitversion.h"
 #include "ramprobe.h"
 #include "ramprobe_api.h"
+#include "lib/textparse.h"
 #include <stdint.h>
 
 #define DATA_MAX_DEFAULT 4096u
 
-/* key=value in a query string: its value and length, or NULL if it isn't there.
-   No percent-decoding, since every value here is a number or hex digits. */
+/* key=value in a query string: its value and length, or NULL if it isn't there (lib/textparse:
+   keys in any case, only at a parameter's start).  No percent-decoding, since every value here
+   is a number or hex digits; ranges= decodes its own. */
 static const char *find(const char *query, const char *key, size_t *length)
 {
-   size_t klen = strlen(key);
-   for (const char *p = query; p != NULL && *p != '\0'; ) {
-      const char *end = strchr(p, '&');
-      size_t len = end != NULL ? (size_t)(end - p) : strlen(p);
-      if (len > klen && p[klen] == '=' && strncmp(p, key, klen) == 0) {
-         *length = len - klen - 1u;
-         return p + klen + 1u;
-      }
-      p = end != NULL ? end + 1 : NULL;
-   }
-   return NULL;
+   return text_query_find(query, key, length);
 }
 
-/* A copy of the value; false if it's missing or too long for out. */
+/* A copy of the value; false if it's missing or too long for out (never cut short: a cut hex=
+   would poke fewer bytes than asked). */
 static bool param(const char *query, const char *key, char *out, size_t n)
 {
    size_t len = 0;
@@ -43,33 +36,17 @@ static bool param(const char *query, const char *key, char *out, size_t n)
    return true;
 }
 
-/* An optional number: 0x2000 or 8192.  True if it's absent (*present false, *value
-   untouched) or good; false if it's malformed or over max. */
+/* An optional number: 0x2000 or 8192 (lib/textparse: decimal or 0x hex, never octal).  True if
+   it's absent (*present false, *value untouched) or good; false if it's malformed or over max. */
 static bool number(const char *query, const char *key, uint32_t max, uint32_t *value, bool *present)
 {
-   char v[16];
    size_t len = 0;
-   char *end;
    *present = false;
    const char *raw = find(query, key, &len);
    if (raw == NULL) return true;
-   if (len == 0u || len >= sizeof v) return false;
-   memcpy(v, raw, len);
-   v[len] = '\0';
-   if (v[0] == '-' || v[0] == '+' || v[0] == ' ') return false;
-   unsigned long n = strtoul(v, &end, 0);
-   if (*end != '\0' || n > max) return false;
-   *value = (uint32_t)n;
+   if (!text_parse_u32(raw, len, max, value)) return false;
    *present = true;
    return true;
-}
-
-static int hexval(char c)
-{
-   if (c >= '0' && c <= '9') return c - '0';
-   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-   return -1;
 }
 
 /* Hex digits into bytes: how many, or -1 if they aren't whole hex bytes that fit. */
@@ -78,52 +55,40 @@ static int unhex(const char *hex, uint8_t *out, size_t max)
    size_t len = strlen(hex);
    if (len == 0u || (len & 1u) != 0u || len / 2u > max) return -1;
    for (size_t i = 0; i < len / 2u; i++) {
-      int hi = hexval(hex[2u * i]), lo = hexval(hex[2u * i + 1u]);
+      int hi = text_hex_nibble(hex[2u * i]), lo = text_hex_nibble(hex[2u * i + 1u]);
       if (hi < 0 || lo < 0) return -1;
       out[i] = (uint8_t)(hi << 4 | lo);
    }
    return (int)(len / 2u);
 }
 
-/* ranges=0x300:32,0x1900:256 (':' and ',' may come as %3A and %2C): how many, 0 if there's no
+/* ranges=0x300:32,0x1900:256 (':' and ',' may come percent-encoded): how many, 0 if there's no
    ranges=, or -1 if it's malformed.  *total is all their lengths. */
 static int ranges_param(const char *query, rp_range_t *r, uint32_t *total)
 {
-   char v[RP_MAX_RANGES * 16u];
-   size_t len = 0, k = 0;
-   const char *raw = find(query, "ranges", &len);
+   char raw[RP_MAX_RANGES * 16u * 3u], v[RP_MAX_RANGES * 16u];
    *total = 0;
-   if (raw == NULL) return 0;
-   for (size_t i = 0; i < len; i++) {               /* the two escapes a client may send */
-      if (k + 1u >= sizeof v) return -1;
-      if (raw[i] == '%') {
-         if (i + 2u >= len) return -1;
-         int hi = hexval(raw[i + 1u]), lo = hexval(raw[i + 2u]);
-         if (hi < 0 || lo < 0) return -1;
-         v[k++] = (char)(hi << 4 | lo);
-         i += 2u;
-      } else {
-         v[k++] = raw[i];
-      }
+   if (!param(query, "ranges", raw, sizeof raw)) {
+      size_t len = 0;
+      return find(query, "ranges", &len) == NULL ? 0 : -1;    /* absent, or too long */
    }
-   v[k] = '\0';
+   if (!text_url_decode(raw, v, sizeof v)) return -1;
    int count = 0;
-   for (char *p = v; ; ) {
-      char *end;
-      if (count == (int)RP_MAX_RANGES || *p == '\0' || *p == '-' || *p == '+' || *p == ' ') return -1;
-      unsigned long a = strtoul(p, &end, 0);
-      if (end == p || *end != ':' || a > 0xFFFFu) return -1;
-      p = end + 1;
-      if (*p == '\0' || *p == '-' || *p == '+' || *p == ' ') return -1;
-      unsigned long l = strtoul(p, &end, 0);
-      if (end == p || l == 0u || l > RP_MAX_TRANSFER) return -1;
+   for (const char *p = v; ; ) {
+      const char *colon = strchr(p, ':');
+      if (count == (int)RP_MAX_RANGES || colon == NULL) return -1;
+      const char *l = colon + 1;
+      size_t llen = strcspn(l, ",");
+      uint32_t a, n;
+      if (!text_parse_u32(p, (size_t)(colon - p), 0xFFFFu, &a)
+          || !text_parse_u32(l, llen, RP_MAX_TRANSFER, &n) || n == 0u)
+         return -1;
       r[count].address = (uint16_t)a;
-      r[count].length = (uint32_t)l;
-      *total += (uint32_t)l;
+      r[count].length = n;
+      *total += n;
       count++;
-      if (*end == '\0') break;
-      if (*end != ',') return -1;
-      p = end + 1;
+      if (l[llen] == '\0') break;
+      p = l + llen + 1;                                /* past the ',' */
    }
    return count;
 }

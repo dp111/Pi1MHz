@@ -33,6 +33,12 @@ else
    echo "== SKIPPED: no beebasm, so 6502code.bin isn't checked against 6502code.asm =="
 fi
 
+# The API's request parsing alone, on a recording stub of ramprobe.c: no kc-beeb needed.
+echo "== ramprobe_api.c request parsing =="
+gcc -std=gnu2x -Wall -Wextra -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$SRC" -I"$HERE/stubs" -o "$GEN/api" "$HERE/test_api.c" "$SRC/ramprobe_api.c" "$SRC/lib/textparse.c"
+"$GEN/api"
+
 if [ -z "${KC_BEEB:-}" ] || [ ! -f "$KC_BEEB/machine.c" ]; then
    echo "== ramprobe: SKIPPED: set KC_BEEB to a kc-beeb core and KC_ROMS to its MOS 3.20 ROMs =="
    exit 0
@@ -72,10 +78,11 @@ E
 cp -r "$HERE"/stubs/* "$B/"
 for f in services_emulator.c services.h ramprobe.c ramprobe.h ramprobe_api.c ramprobe_api.h \
          helpers.c helpers.h ram_emulator.c ram_emulator.h; do cp "$SRC/$f" "$B/"; done
+mkdir -p "$B/lib"; cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
 cp "$HERE"/board.h "$HERE"/test_ramprobe.c "$HERE"/bbcsim.c "$B/"
 # -no-pie: ram_emulator.c sizes JIM RAM from the address of _end (board.h's mem_info).
 CC="gcc -std=gnu2x -g -D_GNU_SOURCE -fsanitize=address,undefined -fno-sanitize-recover=all -no-pie -w -I$B -I$B/kc"
-OBJS="$B/services_emulator.c $B/ramprobe.c $B/ramprobe_api.c $B/helpers.c $B/ram_emulator.c"
+OBJS="$B/services_emulator.c $B/ramprobe.c $B/ramprobe_api.c $B/helpers.c $B/ram_emulator.c $B/lib/textparse.c"
 $CC -O2 -o "$B/bbcsim" "$B/bbcsim.c" $OBJS
 if [ -n "$1" ]; then
    exec "$B/bbcsim" "$KC_ROMS" "$1"
