@@ -53,8 +53,7 @@
    landed in, with the bytes that helper had written into it (helpers keep their variables in
    their own page).  Neither is an ordinary select: a transfer under way stays so, and neither
    touches the JMP/RTS at &FC8C, which belongs to whatever select the stopped code made last.
-   &FD was helper 0 before, as any other number past the last page still is; with no stop to
-   go back from it is &FF. */
+   With no stop to go back from, &FD is &FF. */
 #define HELPER_STOP_PAGE   RP_HELPER_AGENT
 #define HELPER_BACK        RP_BACK_SEL
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
