@@ -19,6 +19,11 @@ int ramprobe_api(bool post, const char *path, const char *query, char *out, size
    RAMPROBE_API_BODY_MAX).  The same answer as ramprobe_api. */
 int ramprobe_api_body(const char *path, const char *query, const uint8_t *body, size_t len, char *out, size_t n);
 
+/* POST /bbc/shared?offset=: a body of len bytes, any size that fits in RP_SHARED_SIZE from offset,
+   goes straight into shared memory as it arrives, with no stop.  200 with *dest where to put it;
+   otherwise the error answer in out (and 0 if the probe is off). */
+int ramprobe_api_shared(const char *query, size_t len, uint8_t **dest, char *out, size_t n);
+
 /* The server's part of wait=1, which a client puts on a POST to be answered when the work is
    over rather than at once (so it needn't poll GET /bbc): true if the server should hold this
    request's answer, and then ramprobe_api_done() says when to send ramprobe_api_status(). */

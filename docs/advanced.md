@@ -14,7 +14,7 @@ All base addresses below are the defaults and can be relocated in
 which are hard-wired into the built-in 6502 helper code and must stay put.
 The RAM probe (helpers 22 and 23) runs its hooks from FRED at `&FC6F-&FC86`,
 `&FC8F-&FC9F` and `&FCB0-&FCB6` (keep other devices off them while it's on), and uses
-the services port at JIM `&E00000`; see [the RAM probe](dev/ramprobe.md).
+the services port at services offset `&E00000`; see [the RAM probe](dev/ramprobe.md).
 
 ## JIM expansion RAM
 
@@ -29,7 +29,7 @@ Two views of the same large expansion RAM (up to ~480 MB on a Pi Zero,
     &FC02  address, high byte
     &FC03  data (read/write, address auto-increments)
 
-Byte mode addresses the first 16 MB of the RAM.
+Byte mode addresses the top 16 MB of the RAM.
 
 **Page mode** (the whole RAM, 256 bytes at a time):
 
@@ -61,7 +61,7 @@ services (120-255 are unallocated). The allocation map is
 
 A 16 MB buffer in JIM RAM holds both the data being transferred and the
 command blocks. Writing `&Fn` to the command register (`&FCAA`) executes
-the command block located at `0xFFn000` in the buffer - so up to 16
+the command block located at `0xFFFn00` in the buffer - so up to 16
 command blocks (`&F0`-`&FF`) can be in flight, one per open file or
 directory. When a command completes, the command register reads back a
 result code (0 = success, or an error; bit 7 set means "still busy").
@@ -78,7 +78,10 @@ Suggested polling loop:
 Multiple files may be open at once, but each must be a unique file. A
 filing system such as MMFS can therefore cache an entire drive in the
 buffer and never need to raise PAGE. Suggested buffer layout: first 4 MB
-for the active filing system, 8-14 MB for the active program.
+for the active filing system, 8-14 MB for the active program.  The program
+area's first 4 MB (`&800000-&BFFFFF`) is the RAM probe's shared memory, which
+a program on the network also reads and writes over HTTP with `/bbc/shared`
+(see [the RAM probe](dev/ramprobe.md)).
 
 ### Result codes (FatFs `FRESULT`)
 

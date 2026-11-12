@@ -18,6 +18,8 @@ const char *const probe_page_body[] = {
    "<tr><th>Stopped at</th><td id=\"rg\">-</td></tr>"
    "<tr><th>Resets seen</th><td id=\"rs\">-</td></tr>"
    "<tr><th>Last error</th><td id=\"er\" class=\"err\"></td></tr>"
+   "<tr><th>Stops</th><td id=\"sp\">-</td></tr>"
+   "<tr><th>Shared memory</th><td id=\"sm\">-</td></tr>"
    "<tr><th>Build</th><td id=\"bd\" class=\"muted\">-</td></tr>"
    "</table></div>",
 
@@ -53,7 +55,13 @@ const char *const probe_page_body[] = {
    "POST /bbc/poke?addr=[&amp;hex=&amp;rung=]       write: hex, or up to 32 KB as the body\n"
    "POST /bbc/jsr?addr=[&amp;a=&amp;x=&amp;y=]          call code\n"
    "POST /bbc/run?hex=[&amp;a=&amp;x=&amp;y=]           run up to 80 bytes of code\n"
-   "GET  /bbc/data[?offset=&amp;len=]            the bytes peeked, hex</pre></div>",
+   "GET  /bbc/data[?offset=&amp;len=]            the bytes peeked, hex\n"
+   "POST /bbc/shared?offset=                write the body into shared memory, no stop\n"
+   "GET  /bbc/shared?offset=&amp;len=            read up to 4 KB of it, hex, no stop</pre>"
+   "<p class=\"muted\">Shared memory is for a remote application, such as a game agent or a video "
+   "player, and its own code on the BBC: the BBC reads and writes it while it runs, through the "
+   "services port (&amp;FCA6-&amp;FCA9) or the &amp;FD00 window, and the application over HTTP, "
+   "with no stop.</p></div>",
 
    /* the script: the state, once a second, and the buttons */
    "<script>"
@@ -67,6 +75,9 @@ const char *const probe_page_body[] = {
    "'PC &'+h(r.pc,4)+'  A &'+h(r.a,2)+'  X &'+h(r.x,2)+'  Y &'+h(r.y,2)+'  P &'+h(r.p,2)+'  S &'+h(r.s,2);"
    "document.getElementById('rs').textContent=s.resets;"
    "document.getElementById('er').textContent=s.error;"
+   "document.getElementById('sp').textContent=s.stops;"
+   "var m=s.shared;document.getElementById('sm').textContent=m?Math.round(m.size/1048576)+' MB at services &'+h(m.at,6)+"
+   "', JIM &'+h(m.jim,7)+(m.read>=0?', services port at +'+m.read:''):'-';"
    "document.getElementById('bd').textContent='api '+s.api+', '+s.build}"
    "function get(){return fetch('/bbc').then(function(r){return r.json()})}"
    "function wait(){return get().then(function(s){show(s);"

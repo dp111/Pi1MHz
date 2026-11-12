@@ -12,6 +12,7 @@
 #include "ramprobe.h"
 #include "ramprobe_api.h"
 #include "lib/textparse.h"
+#include "Pi1MHz.h"
 #include <stdint.h>
 
 #define DATA_MAX_DEFAULT 4096u
@@ -93,6 +94,32 @@ static int ranges_param(const char *query, rp_range_t *r, uint32_t *total)
    return count;
 }
 
+/* Where the services port's pointer is in shared memory, or -1 if it points elsewhere: from the
+   address the port publishes in its own registers (&FCA6-&FCA8, bits 0-23 of a services offset),
+   which its FIQ updates on every byte read or written, for the BBC to read back.  These are the
+   same three bytes the BBC would read, so nothing is asked of the services core.  The FIQ can
+   update them between two of these reads, so all three are read twice, and again until two
+   reads agree: never a torn value.  RP_SHARED_SIZE once the BBC has read or written the last
+   byte.  -1 while the BBC is stopped: the port is the probe's then. */
+#define SERVICES_PORT 0xA6u        /* &FCA6: hard-wired, as the probe's agent and 6502code.asm are */
+static uint32_t port_address(void)
+{
+   return (uint32_t)Pi1MHz_MemoryRead(SERVICES_PORT + 2u) << 16 | (uint32_t)Pi1MHz_MemoryRead(SERVICES_PORT + 1u) << 8
+        | (uint32_t)Pi1MHz_MemoryRead(SERVICES_PORT);
+}
+static long shared_read(void)
+{
+   if (ramprobe_state() != RP_RUNNING) return -1L;
+   uint32_t at = port_address();
+   for (int tries = 0; tries < 8; tries++) {
+      uint32_t again = port_address();
+      if (again == at)
+         return (at >= RP_SHARED && at <= RP_SHARED + RP_SHARED_SIZE) ? (long)(at - RP_SHARED) : -1L;
+      at = again;
+   }
+   return -1L;
+}
+
 static int status_json(char *out, size_t n, int http)
 {
    const rp_regs_t *s = ramprobe_stopped();
@@ -107,14 +134,15 @@ static int status_json(char *out, size_t n, int http)
                s->a, s->x, s->y, s->p, s->pc, s->s);
    bool busy = st == RP_HALTING || st == RP_WORKING || st == RP_RESUMING;
    snprintf(out, n,
-      "{\"api\":2,\"build\":\"%s\",\"resets\":%lu,"
+      "{\"api\":2,\"build\":\"%s\",\"resets\":%lu,\"stops\":%lu,"
       "\"state\":\"%s\",\"busy\":%s,\"installed\":%s,\"rung\":%d,\"error\":\"%s\","
       "\"stopped\":%s,"
       "\"result\":{\"a\":%u,\"x\":%u,\"y\":%u,\"p\":%u},\"peeked\":%lu,"
-      "\"report\":%lu}\n",
-      GITVERSION, (unsigned long)ramprobe_resets(), ramprobe_state_name(), busy ? "true" : "false", ramprobe_installed() ? "true" : "false", ramprobe_rung(), ramprobe_error(),
+      "\"report\":%lu,\"shared\":{\"at\":%lu,\"size\":%lu,\"jim\":%lu,\"read\":%ld}}\n",
+      GITVERSION, (unsigned long)ramprobe_resets(), (unsigned long)ramprobe_stops(), ramprobe_state_name(), busy ? "true" : "false", ramprobe_installed() ? "true" : "false", ramprobe_rung(), ramprobe_error(),
       stopped, r->a, r->x, r->y, r->p, (unsigned long)peeked,
-      (unsigned long)ramprobe_report_at());
+      (unsigned long)ramprobe_report_at(),
+      (unsigned long)RP_SHARED, (unsigned long)RP_SHARED_SIZE, (unsigned long)ramprobe_shared_jim(), shared_read());
    return http;
 }
 
@@ -167,6 +195,37 @@ static int data_hex(const char *query, char *out, size_t n)
    return 200;
 }
 
+/* GET /bbc/shared?offset=&len=: shared memory as hex, straight from the Pi's memory with no stop.
+   Both are needed, len is 1 to 4 KB, and the range must lie inside shared memory. */
+static int shared_hex(const char *query, char *out, size_t n)
+{
+   uint32_t offset = 0, len = 0;
+   bool has_offset, has_len;
+   if (!number(query, "offset", RP_SHARED_SIZE, &offset, &has_offset) || !has_offset)
+      return bad(out, n, "bad offset");
+   if (!number(query, "len", DATA_MAX_DEFAULT, &len, &has_len) || !has_len || len == 0u)
+      return bad(out, n, "bad len: 1 to 4096");
+   if (len > RP_SHARED_SIZE - offset) return bad(out, n, "past the end of shared memory (GET /bbc's shared.size)");
+   const uint8_t *d = ramprobe_shared() + offset;
+   if ((size_t)len * 2u + 2u > n) len = (uint32_t)((n - 2u) / 2u);
+   for (uint32_t i = 0; i < len; i++)
+      snprintf(out + 2u * i, 3u, "%02X", d[i]);
+   out[2u * len] = '\n';
+   out[2u * len + 1u] = '\0';
+   return 200;
+}
+
+int ramprobe_api_shared(const char *query, size_t len, uint8_t **dest, char *out, size_t n)
+{
+   uint32_t off = 0;
+   bool has;
+   if (ramprobe_state() == RP_OFF) return 0;
+   if (!number(query, "offset", RP_SHARED_SIZE, &off, &has) || !has) return bad(out, n, "bad offset");
+   if (len == 0u || len > RP_SHARED_SIZE - off) return bad(out, n, "bad length: none, or past the end of shared memory (GET /bbc's shared.size)");
+   *dest = ramprobe_shared() + off;
+   return 200;
+}
+
 int ramprobe_api_body(const char *path, const char *query, const uint8_t *body, size_t len, char *out, size_t n)
 {
    uint32_t v = 0;
@@ -213,8 +272,11 @@ int ramprobe_api(bool post, const char *path, const char *query, char *out, size
    if (!post) {
       if (strcmp(path, "/bbc") == 0) return status_json(out, n, 200);
       if (strcmp(path, "/bbc/data") == 0) return data_hex(query, out, n);
+      if (strcmp(path, "/bbc/shared") == 0) return shared_hex(query, out, n);
       return 0;
    }
+
+   if (strcmp(path, "/bbc/shared") == 0) return bad(out, n, "POST /bbc/shared takes its bytes as the body");
 
    if (strcmp(path, "/bbc/halt") == 0) {
       int rung;

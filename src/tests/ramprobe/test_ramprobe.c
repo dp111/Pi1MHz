@@ -62,14 +62,18 @@ static void boot(void)
    nmi_low = false;
    board_reset();
 }
-/* A pass of the main loop every 100 us, as a machine with a quiet poll has. */
+/* A pass of the main loop every 100 us, as a machine with a quiet poll has.  Each change of the
+   probe's state seen between passes is counted, so a test can show that nothing stopped the BBC. */
+static unsigned state_changes;
 static void run_ms(double ms)
 {
    uint64_t end = m->cpu.cycles + (uint64_t)(ms * 2000);
    while (m->cpu.cycles < end) {
       uint64_t step = m->cpu.cycles + 200;
+      rp_state_t was = ramprobe_state();
       machine_run(m, step < end ? step : end);
       board_poll();
+      if (ramprobe_state() != was) state_changes++;
    }
 }
 static int key_of(char c, int *shift)
@@ -874,6 +878,116 @@ static void over_http(void)
    ok(post("/bbc/continue", NULL) == 200 && strstr(api_out, "\"state\":\"running\""), "POST /bbc/continue");
 }
 
+/* Shared memory: the remote application's side over the routes, as the web server calls them, and
+   the BBC's side as typed BASIC, through the services port and the &FD00 window.  None of it
+   stops the BBC.  The board's JIM RAM is 48 MB, so the services area starts at 16 MB and a
+   window address (JIM) differs from a services offset, as on a real board. */
+static char shared_out[RAMPROBE_API_OUT];
+static int shared_post(const char *query, const uint8_t *bytes, size_t len)
+{
+   uint8_t *dest = NULL;
+   int st = ramprobe_api_shared(query, len, &dest, shared_out, sizeof shared_out);
+   if (st == 200) memcpy(dest, bytes, len);         /* as webserver.c gathers the body there */
+   return st;
+}
+static int shared_get(const char *query) { return ramprobe_api(false, "/bbc/shared", query, shared_out, sizeof shared_out); }
+static long json_long(const char *json, const char *key)
+{
+   const char *p = strstr(json, key);
+   return p ? strtol(p + strlen(key), NULL, 10) : -999;
+}
+static void shared_memory(void)
+{
+   puts("== shared memory: written over HTTP, read and written by the BBC, no stop");
+   boot();
+   to_prompt();
+   install();
+   const uint32_t jim = DISC_RAM_BASE + RP_SHARED;
+   ok(DISC_RAM_BASE == JIM_RAM_STEP, "the services area starts at 16 MB on this board: window and port addresses differ");
+   ok(ramprobe_api(false, "/bbc", NULL, api_out, sizeof api_out) == 200
+      && json_long(api_out, "\"shared\":{\"at\":") == (long)RP_SHARED && json_long(api_out, "\"size\":") == (long)RP_SHARED_SIZE
+      && json_long(api_out, "\"jim\":") == (long)jim,
+      "GET /bbc gives shared memory's services offset &%X, size %u and JIM address &%X", RP_SHARED, RP_SHARED_SIZE, jim);
+   long stops0 = json_long(api_out, "\"stops\":");
+   unsigned changes0 = state_changes;
+   int e0 = nmi_edges, q0 = irq_raised;
+
+   /* The application writes 8 bytes at +&100 over HTTP. */
+   static const uint8_t in[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+   ok(shared_post("offset=256", in, sizeof in) == 200 && ramprobe_state() == RP_RUNNING,
+      "POST /bbc/shared?offset=256: 8 bytes, the BBC still running");
+   ok(memcmp(&pi.JIM_ram[jim + 0x100], in, sizeof in) == 0, "they are at services &%X, JIM &%X", RP_SHARED + 0x100, jim + 0x100);
+   ok(shared_get("offset=256&len=8") == 200 && !strcmp(shared_out, "1122334455667788\n"), "GET /bbc/shared reads them back: %s", shared_out);
+
+   /* The BBC reads them through the services port: a services offset, then a byte a read. */
+   type("?&FCA6=0:?&FCA7=1:?&FCA8=&80:?&3000=?&FCA9:?&3001=?&FCA9:?&3002=?&FCA9\r");
+   run_ms(50);
+   ok(m->ram[0x3000] == 0x11 && m->ram[0x3001] == 0x22 && m->ram[0x3002] == 0x33,
+      "the BBC reads them through the services port at &800100: %02X %02X %02X", m->ram[0x3000], m->ram[0x3001], m->ram[0x3002]);
+   ramprobe_api(false, "/bbc", NULL, api_out, sizeof api_out);
+   ok(json_long(api_out, "\"read\":") == 0x103, "GET /bbc's shared.read says where the port has got: %ld", json_long(api_out, "\"read\":"));
+
+   /* And through the &FD00 window, whose page registers take the JIM address. */
+   char line[96];
+   snprintf(line, sizeof line, "?&FCFD=%u:?&FCFE=%u:?&FCFF=%u:?&3010=?&FD00:?&3011=?&FD07\r",
+            (jim + 0x100) >> 24, ((jim + 0x100) >> 16) & 255u, ((jim + 0x100) >> 8) & 255u);
+   type(line);
+   run_ms(50);
+   ok(m->ram[0x3010] == 0x11 && m->ram[0x3011] == 0x88, "and through the &FD00 window at JIM &%X: %02X %02X", jim + 0x100, m->ram[0x3010], m->ram[0x3011]);
+   /* The window holds a copy of the page, made when a page register is written. */
+   static const uint8_t newer[1] = {0x99};
+   ok(shared_post("offset=256", newer, 1) == 200, "the application writes +&100 again");
+   type("?&3012=?&FD00:?&FCFF=1:?&3013=?&FD00\r");
+   run_ms(50);
+   ok(m->ram[0x3012] == 0x11 && m->ram[0x3013] == 0x99,
+      "the window shows the new byte once a page register is written again: %02X then %02X", m->ram[0x3012], m->ram[0x3013]);
+
+   /* The BBC writes, through both; the application reads them back over HTTP. */
+   type("?&FCA6=0:?&FCA7=2:?&FCA8=&80:?&FCA9=171:?&FCA9=205:?&FD10=239\r");
+   run_ms(50);
+   ok(shared_get("offset=512&len=2") == 200 && !strcmp(shared_out, "ABCD\n"), "BBC writes through the services port, read over HTTP: %s", shared_out);
+   ok(shared_get("offset=272&len=1") == 200 && !strcmp(shared_out, "EF\n"), "and through the &FD00 window: %s", shared_out);
+
+   /* Bounds. */
+   static uint8_t big[4097];
+   char q[64];
+   snprintf(q, sizeof q, "offset=%u", RP_SHARED_SIZE - 4u);
+   ok(shared_post(q, big, 4) == 200, "a write up to the last byte: taken");
+   ok(shared_post(q, big, 5) == 400, "one byte past the end: 400");
+   snprintf(q, sizeof q, "offset=%u", RP_SHARED_SIZE);
+   ok(shared_post(q, big, 1) == 400, "at the end: 400");
+   ok(shared_post("offset=0", big, 0) == 400 && shared_post("", big, 1) == 400 && shared_post("offset=-1", big, 1) == 400,
+      "no body, no offset, a negative one: 400 each");
+   snprintf(q, sizeof q, "offset=%u&len=4", RP_SHARED_SIZE - 4u);
+   ok(shared_get(q) == 200 && strlen(shared_out) == 9, "a read of the last 4 bytes: taken");
+   snprintf(q, sizeof q, "offset=%u&len=5", RP_SHARED_SIZE - 4u);
+   int r1 = shared_get(q);
+   ok(r1 == 400 && shared_get("offset=0&len=4097") == 400 && shared_get("offset=0&len=0") == 400
+      && shared_get("offset=0") == 400 && shared_get("len=1") == 400,
+      "a read past the end, over 4 KB, of nothing, with no len or no offset: 400 each");
+   ok(post("/bbc/shared", "offset=0&hex=00") == 400, "POST /bbc/shared without a body: 400");
+
+   ramprobe_api(false, "/bbc", NULL, api_out, sizeof api_out);
+   ok(state_changes == changes0 && json_long(api_out, "\"stops\":") == stops0 && nmi_edges == e0 && irq_raised == q0
+      && ramprobe_state() == RP_RUNNING,
+      "no stop through all of that: %u state changes, %ld stops, %d NMIs, %d IRQs",
+      state_changes - changes0, json_long(api_out, "\"stops\":") - stops0, nmi_edges - e0, irq_raised - q0);
+
+   /* shared.read while the port is the probe's, then clear of the probe's own areas: all of
+      shared memory written, then a stop's transfer. */
+   ok(json_long(api_out, "\"read\":") == 0x202, "shared.read follows the BBC's writes too: %ld", json_long(api_out, "\"read\":"));
+   ok(halt_now() && ramprobe_api(false, "/bbc", NULL, api_out, sizeof api_out) == 200 && json_long(api_out, "\"read\":") == -1,
+      "and is -1 while the BBC is stopped, the port the probe's");
+   memset(ramprobe_shared(), 0xA5, RP_SHARED_SIZE);
+   ok(ramprobe_peek(0x3000, 0x4000, RP_NO_BANK, RP_RUNG_NONE) && wait_state(RP_HALTED, 2000)
+      && ramprobe_poke(0x3000, ramprobe_shared(), 0x4000, RP_RUNG_NONE) && wait_state(RP_HALTED, 2000) && resume_now(NULL),
+      "a stop with a 16 KB peek and poke");
+   size_t spoiled = 0;
+   for (uint32_t i = 0; i < RP_SHARED_SIZE; i++) spoiled += ramprobe_shared()[i] != 0xA5;
+   ok(spoiled == 0, "leaves shared memory alone: %zu bytes changed", spoiled);
+   ok(memcmp(m->ram + 0x3000, ramprobe_shared(), 0x4000) == 0, "and the poke's bytes came from it intact");
+}
+
 #ifndef BOARD_EXTRA
 /* Halt, then continue at a new PC, as `bbcprobe.py halt` then `continue pc=0x2000` does (halt
    tries rung 0 first; POST /bbc/halt with no rung is rung 0).  The code at &2000 records the P
@@ -932,6 +1046,7 @@ int main(int argc, char **argv)
    ladder();
    late_fiq();
    over_http();
+   shared_memory();
    new_pc();
    if (getenv("RAMPROBE_QUICK") == NULL) {
    stress();

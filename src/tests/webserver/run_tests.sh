@@ -17,7 +17,7 @@ trap 'rm -rf "$B"' EXIT
 
 cp "$SRC"/wifi/webserver.c "$SRC"/wifi/md5.h "$SRC"/wifi/lwip_util.c "$B/"
 cp "$HERE"/test_parsers.c "$HERE"/test_chunked.c "$HERE"/fuzz_parsers.c \
-   "$HERE"/test_kn_lifecycle.c "$HERE"/test_routes.c "$B/"
+   "$HERE"/test_kn_lifecycle.c "$HERE"/test_routes.c "$HERE"/test_bbc_shared.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
 mkdir -p "$B/lib"
 cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
@@ -60,6 +60,11 @@ dav_url_to_sdpath,dav_destination_sdpath,conn_pump,\
 route_dav_move_or_copy"
 awk -v fns="$ROUTE_FNS" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_routes.inc"
+# POST /bbc/shared: its framing checks, the 100 Continue, and the body into shared memory.
+BBC_FNS="ws_prefix_ci,ws_strcasestr,ws_find_header,ws_send_100_continue_if_expected,\
+bbc_shared_done,bbc_shared_begin,bbc_body_take,bbc_body_done"
+awk -v fns="$BBC_FNS" \
+    -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_bbc.inc"
 # conn_pump queues through lwip_util.c's lwip_tcp_write_some (a plain
 # extern function, which extract.awk does not look for): cut it out whole.
 sed -n '/^err_t lwip_tcp_write_some(/,/^}/p' "$B/lwip_util.c" > "$B/ws_lwip_util.inc"
@@ -88,6 +93,12 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/tr" "$B/test_routes.c" "$B/lib/textparse.c"
 "$B/tr"
+
+echo "== unit: POST /bbc/shared =="
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$B" -o "$B/tb" "$B/test_bbc_shared.c" "$B/lib/textparse.c"
+"$B/tb"
 
 echo "== fuzz: hostile inputs through every parser (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
