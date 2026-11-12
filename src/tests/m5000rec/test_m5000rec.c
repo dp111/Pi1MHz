@@ -57,6 +57,7 @@ bool audio_out_is_hdmi(void) { return false; }
 bool rpi_audio_beeb_muted(void) { return false; }
 
 const char *config_get(const char *key) { (void)key; return NULL; }
+uint32_t config_get_uint(const char *key, uint32_t max, uint32_t dflt) { (void)key; (void)max; return dflt; }
 bool config_beeb_write_protected(void) { return false; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}

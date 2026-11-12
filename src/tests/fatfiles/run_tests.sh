@@ -21,6 +21,7 @@ cp "$S"/rpi/*.h "$B/rpi/"
 cp "$S/wifi/webserver.h" "$B/wifi/"
 cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$SRC"/services_latch.h "$SRC"/fnv1a.h \
    "$SRC"/M5000_emulator.h "$SRC"/fujibus_service.h "$SRC"/config.c "$SRC"/config.h "$B/"
+mkdir -p "$B/lib"; cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
 cp "$SRC"/BeebSCSI/filesystem_storage.c "$B/BeebSCSI/"
 cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/ffunicode.c \
    "$SRC"/BeebSCSI/fatfs/diskio.h "$B/BeebSCSI/fatfs/"
@@ -34,6 +35,6 @@ gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
     "$B/test_fatfiles.c" "$B/services_emulator.c" "$B/fat_service.c" \
-    "$B/BeebSCSI/filesystem_storage.c" "$B/config.c" \
+    "$B/BeebSCSI/filesystem_storage.c" "$B/config.c" "$B/lib/textparse.c" \
     "$B/BeebSCSI/fatfs/ff.c" "$B/BeebSCSI/fatfs/ffunicode.c"
 "$B/t"

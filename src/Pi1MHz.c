@@ -137,6 +137,7 @@ _Static_assert(sizeof(Pi1MHzvc_asm) <= LOWMEM_VPU_PROGRAM_SIZE,
 #include "AUN/aun_emulator.h"
 #include "teletext_emulator.h"
 #include "watchdog.h"
+#include "lib/textparse.h"
 
 typedef struct {
    const char *name;
@@ -721,17 +722,11 @@ static void init_emulator(void) {
          RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
          RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_POST_RING & 0x00FFFFFF) )); // r1: the post ring base (docs/dev/bus-post-ring.md)
 
-         const char *prop = config_get("Pi1MHznOE");
-         if (prop)
-         {
-            int temp = atoi(prop);
-            if (temp == 0)
-               RPI_PropertyAdd(0); // r2  No external nOE pin
-            else
-               RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
-         }
-         else
+         /* r2: the external nOE pin, unless Pi1MHznOE is 0 (or off/no) */
+         if (config_get_flag("Pi1MHznOE", true))
             RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+         else
+            RPI_PropertyAdd(0); // r2  No external nOE pin
 
          RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
          RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
@@ -773,8 +768,7 @@ static void init_emulator(void) {
    /* BeebAudio_Off routes the shared audio pin once here, so whichever PWM
       audio emulator (M5000/BeebSID) runs doesn't have to read it itself. */
    {
-      const char *bp = config_get("BeebAudio_Off");
-      rpi_audio_mute_beeb(bp && atoi(bp) == 1);
+      rpi_audio_mute_beeb(config_get_flag("BeebAudio_Off", false));
    }
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
@@ -824,10 +818,13 @@ static void init_hardware(void)
 {
    // enable overriding default LED option using command.txt
    // depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx
+   /* A GPIO number, 0-53; anything else (or none) is no LED.  atoi() made
+      a typo GPIO 0 and drove it as an output. */
    const char *prop = get_cmdline_prop("disk_led_gpio");
-   if (prop)
+   uint32_t pin;
+   if (text_parse_u32_str(prop, 53u, &pin))
    {
-      led_pin = (uint8_t)atoi(prop);
+      led_pin = (uint8_t)pin;
       RPI_SetGpioOutput(led_pin);
    }
    else
@@ -1082,12 +1079,9 @@ _Noreturn void kernel_main(void)
 
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");
-   if (prop)
-   {
-      int b = atoi(prop);
-      if (b > 0)
-         baud_rate = (unsigned int) b;
-   }
+   uint32_t b;
+   if (text_parse_u32_str(prop, 4000000u, &b) && b > 0u)
+      baud_rate = (unsigned int) b;
 
    RPI_AuxMiniUartInit( baud_rate );
 

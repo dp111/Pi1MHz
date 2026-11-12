@@ -38,6 +38,7 @@
 #include "../config.h"
 #include "../Pi1MHz.h"                 /* Pi1MHz_break: the nRST edges */
 #include "../net_dns.h"
+#include "../lib/textparse.h"
 #include "../watchdog.h"
 #include "../rpi/audio.h"
 #include "../rpi/systimer.h"
@@ -219,14 +220,22 @@ static void dns_found(const char *name, const ip_addr_t *addr, void *arg)
 static bool resolve(const char *server_port)
 {
    char server[64];
-   unsigned port = 0;
+   uint16_t port = 0;
+   uint8_t oct[4];
    snprintf(server, sizeof server, "%s", server_port);
    char *colon = strchr(server, ':');
    if (colon != NULL) {
       *colon = '\0';
-      port = (unsigned)atoi(colon + 1);
+      if (!text_parse_port_str(colon + 1, &port)) {
+         snprintf(last_error, sizeof last_error, "bad port in %s", server_port);
+         return false;
+      }
    }
-   if (!ipaddr_aton(server, &dns_addr)) {
+   /* Strict dotted quad, as everywhere else (lib/textparse.h): lwIP's
+      ipaddr_aton read 192.168.001.010 as .1.8. */
+   if (text_parse_ipv4_str(server, oct)) {
+      IP_ADDR4(&dns_addr, oct[0], oct[1], oct[2], oct[3]);
+   } else {
       dns_done = false;
       dns_ok = false;
       err_t rc = net_dns_lookup(server, &dns_addr, dns_found, NULL);
@@ -238,7 +247,7 @@ static bool resolve(const char *server_port)
       }
    }
    if (port != 0u)
-      snprintf(server_ip, sizeof server_ip, "%s:%u", ipaddr_ntoa(&dns_addr), port);
+      snprintf(server_ip, sizeof server_ip, "%s:%u", ipaddr_ntoa(&dns_addr), (unsigned)port);
    else
       snprintf(server_ip, sizeof server_ip, "%s", ipaddr_ntoa(&dns_addr));
    return true;

@@ -15,6 +15,7 @@ cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$SRC"/serv
 cp "$SRC"/M5000_emulator.h "$B/"
 cp "$SRC"/fujibus_service.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"
+mkdir -p "$B/lib"; cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$B/lib/"
 cp "$HERE"/test_services.c "$HERE"/test_config.c "$HERE"/fuzz_fat.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
 cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"   # no share: fsr_* are FatFs's
@@ -25,7 +26,7 @@ echo "== services port + FAT interlock =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
-    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c"
+    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c" "$B/lib/textparse.c"
 "$B/t"
 
 echo "== FujiNet service latch =="
@@ -43,14 +44,14 @@ echo "== config parser =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/tc" \
-    "$B/test_config.c" "$B/config.c"
+    "$B/test_config.c" "$B/config.c" "$B/lib/textparse.c"
 "$B/tc"
 
 echo "== fuzz: FAT commands (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/f" \
-    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c"
+    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c" "$B/lib/textparse.c"
 "$B/f"
 
 echo "SERVICES TESTS PASSED"

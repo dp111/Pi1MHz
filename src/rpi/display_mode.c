@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "display_mode.h"
 #include "mailbox.h"
@@ -34,6 +35,7 @@
 #include "../config.h"
 #include "hdmi_audio.h"           /* hdmi_pixel_clock_hz */
 #include "systimer.h"             /* RPI_GetSystemTime: where the boot time went (DEBUG) */
+#include "../lib/textparse.h"
 
 #define TAG_GET_EDID_BLOCK_    0x30020u
 #define TAG_SET_TIMING         0x48017u
@@ -240,12 +242,15 @@ void display_mode_select(void)
     const char *v = config_get("Display_refresh");
     uint32_t hz = 50u;
     if (v != NULL) {
-        if (strcmp(v, "off") == 0 || atoi(v) == 0) {
+        uint32_t want;
+        bool     num = text_parse_u32_str(v, UINT32_MAX, &want);
+        if (strcasecmp(v, "off") == 0 || (num && want == 0u)) {
             snprintf(report, sizeof report, "off (config.txt decides)");
             return;
         }
-        hz = (uint32_t)atoi(v);
-        if (hz < 24u || hz > 120u) hz = 50u;
+        /* Not a number, or out of range: the default.  atoi() made a typo
+           "off" (0) and "60Hz" 60. */
+        if (num && want >= 24u && want <= 120u) hz = want;
     }
 
     fw_timing_t now;

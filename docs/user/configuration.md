@@ -31,6 +31,10 @@ see [cmdline.txt settings](#cmdlinetxt-settings) at the end.
   value, is off. The two exceptions are `aun_debug` and
   `teletext_debug`, which are on whenever the key is present at all -
   even `aun_debug=0`.
+- Numbers are decimal, or hex written `0x2A` or `&2A`. A leading `0`
+  is still decimal (`010` is ten). The value must be the number and
+  nothing else: `60Hz`, `off` or a number out of the key's range is
+  ignored and the key keeps its default.
 
 Example:
 
@@ -57,6 +61,8 @@ plus `_addr`:
 - `<name>_addr=0xNN` - move the device to base address `&FCNN`
   (this also switches on a device that defaults to off, like BeebSID)
 - `<name>_addr=-1` - disable the device completely
+- anything else that isn't a number from `0x00` to `0xFF` (`off`, a
+  typo) also disables the device, rather than moving it to `&FC00`
 
 | Key | Default base | Device |
 |---|---|---|

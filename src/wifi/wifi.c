@@ -16,7 +16,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>   /* strtoul - wifi_parse_test_iovars */
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>  /* strcasecmp */
 
@@ -446,8 +446,10 @@ static void wifi_clear_error(void)
 
    An entry with no "=value" is a GET-only probe: the iovar is read back out of
    the chip and reported on /status, never written, so a firmware default can be
-   discovered without disturbing it.  Values take strtoul base 0, so 0x-prefixed
-   hex works - which matters because a ratespec is written that way.
+   discovered without disturbing it.  Values are decimal, or hex after 0x or &
+   (lib/textparse.h, never octal) - hex matters because a ratespec is written
+   that way - and a negative one is its 32-bit two's complement, as strtoul
+   made it.
 
    This exists so a firmware knob can be A/B'd by editing Pi1MHz.cfg and
    rebooting, rather than rebuilding.  Unset sends nothing, so the join sequence
@@ -471,7 +473,19 @@ static uint8_t wifi_parse_test_iovars(wifi_test_iovar_t *out, const char *spec)
          break;
       memcpy(out[count].name, spec, namelen);
       out[count].name[namelen] = '\0';
-      out[count].value = has_value ? (uint32_t)strtoul(eq + 1, NULL, 0) : 0u;
+      if (has_value) {
+         /* decimal, or hex after 0x or & (never octal); a bad number ends the
+            scan like any other malformed entry */
+         const char *v  = eq + 1;
+         size_t      vl = end != NULL ? (size_t)(end - v) : strlen(v);
+         int32_t     neg;
+         if (text_parse_s32(v, vl, INT32_MIN, -1, &neg))
+            out[count].value = (uint32_t)neg;
+         else if (!text_parse_u32(v, vl, UINT32_MAX, &out[count].value))
+            break;
+      } else {
+         out[count].value = 0u;
+      }
       out[count].set   = has_value;
       count++;
       if (end == NULL)

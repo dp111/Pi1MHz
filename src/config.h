@@ -70,6 +70,12 @@ bool config_get_flag(const char *key, bool dflt);
 /* config_get_flag(key, false). */
 bool config_get_bool(const char *key);
 
+/* A key's value as a number: decimal, or hex after 0x or & (never octal: 010
+ * is ten), the whole value and no more than max.  dflt if the key is absent,
+ * empty, not a number, or over max - so a typo leaves the default rather than
+ * becoming a setting, as atoi() made "off" 0 and "12abc" 12. */
+uint32_t config_get_uint(const char *key, uint32_t max, uint32_t dflt);
+
 /* True if "Beeb_write_protect" is set. When true, every write the Beeb
  * initiates to the SD card is a silent no-op (USB/MTP and web/WebDAV writes
  * are unaffected). Default (key absent) is false. */

@@ -315,7 +315,8 @@ static void store_integer(parse_state * st, const parserkey * key,
                           parserkeyvalue * value)
 {
     size_t len = parse_strlen(st->in, st->ptr, st->insize);
-    int parsed;
+    size_t numlen = len;
+    int32_t parsed;
 
     value->v.integer = malloc(sizeof(int));
     if (value->v.integer == NULL)
@@ -324,10 +325,16 @@ static void store_integer(parse_state * st, const parserkey * key,
         st->ptr += len;
         return;
     }
-    parsed = (int) strtol((char *)st->in + st->ptr, 0, 0);
+    /* The number alone, up to any spacing before a '#' comment: decimal, or
+       hex after 0x or &, with an optional '-', never octal.  Anything else
+       reads as 0, as strtol made of text, before the clamp. */
+    while (numlen > 0u && (st->in[st->ptr + numlen - 1u] == ' ' || st->in[st->ptr + numlen - 1u] == '\t'))
+        numlen--;
+    if (!text_parse_s32((const char *)st->in + st->ptr, numlen, INT32_MIN, INT32_MAX, &parsed))
+        parsed = 0;
     if (parsed < key->min) parsed = key->min;      /* clamp to the key's range */
     if (parsed > key->max) parsed = key->max;
-    *value->v.integer = parsed;
+    *value->v.integer = (int)parsed;
     LOG_DEBUG("number %d\n", *value->v.integer);
     value->length = 1;
     st->ptr += len;

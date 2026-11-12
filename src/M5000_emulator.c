@@ -220,12 +220,9 @@ static bool m5000_pin_sums;
 // is OFF
 
 static void M5000_gain(void) {
-   const char *prop = config_get("M5000_Gain");
-
-   if (prop)
-      gain = atoi(prop);
-   else
-      gain = DEFAULT_GAIN;
+   /* 0-2000: a gain, plus 1000 for autoranging off.  Anything else, a
+      negative value included, is the default (it clamps to 256 below). */
+   gain = (int)config_get_uint("M5000_Gain", 2000u, DEFAULT_GAIN);
 
    if ( gain >1000 )
    {

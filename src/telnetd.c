@@ -1585,9 +1585,7 @@ void telnetd_init(void)
    g_debug = config_get_flag("telnetd_debug", false);
    tnd_out_reset(&g_out, g_utf8);
    {
-      const char *m = config_get("telnetd_mode");
-      long mode = (m != NULL && m[0] != '\0') ? strtol(m, NULL, 10) : 7;
-      tnd_out_assume_mode(&g_out, (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7));
+      tnd_out_assume_mode(&g_out, (uint8_t)config_get_uint("telnetd_mode", 7u, 7u));
       g_mc_mode = g_out.mode;                   /* the MODE changes count from here */
    }
 

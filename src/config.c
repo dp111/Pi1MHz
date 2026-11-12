@@ -8,6 +8,7 @@
 #include <stdbool.h>
 
 #include "config.h"
+#include "lib/textparse.h"
 #include "rpi/rpi.h"               /* LOG_DEBUG          */
 #include "BeebSCSI/filesystem.h"   /* filesystemReadFile */
 
@@ -102,12 +103,14 @@ int config_emulator_override(const char *name, uint8_t *addr)
    const char *v = config_get(key);
    if (v == NULL)
       return 0;
-   long t = strtol(v, NULL, 0);
+   int32_t t;
    /* A FRED base is one byte.  A negative value disables the emulator; so
       does one past 0xFF - truncating it to a byte (as this did) turned a typo
       like BeebSID_addr=0x140 into base 0x40, the SCSI emulator's default, and
-      the two fought over the same callbacks with no diagnostic. */
-   if (t < 0 || t > 0xFF)
+      the two fought over the same callbacks with no diagnostic.  So does
+      anything that isn't a number: strtol read "off" as 0, base &FC00, where
+      the emulator then sat on whatever owns the page's first bytes. */
+   if (!text_parse_s32_str(v, INT32_MIN, INT32_MAX, &t) || t < 0 || t > 0xFF)
       return -1;
    *addr = (uint8_t)t;
    return 1;
@@ -163,6 +166,12 @@ bool config_get_flag(const char *key, bool dflt)
 bool config_get_bool(const char *key)
 {
    return config_get_flag(key, false);
+}
+
+uint32_t config_get_uint(const char *key, uint32_t max, uint32_t dflt)
+{
+   uint32_t v;
+   return text_parse_u32_str(config_get(key), max, &v) ? v : dflt;
 }
 
 bool config_beeb_write_protected(void)

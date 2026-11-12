@@ -430,26 +430,16 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
 #endif
 
    /* VFS jukebox gets reset every break typically back to the menu*/
-   const char *prop2 = config_get("VFSJUKE");
-   int vfsjuke = 0;
-   if (prop2)
-      vfsjuke = atoi(prop2);
-   filesystemInitialiseVFS((uint8_t) vfsjuke);
+   filesystemInitialiseVFS((uint8_t)config_get_uint("VFSJUKE", 255u, 0u));
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.
    if (!PowerOn)
    {
-      const char *prop = config_get("SCSIJUKE");
-      int scsijuke = 0;
-      if (prop)
-         scsijuke = atoi(prop);
-
-      const char *prop3 = config_get("SCSIID");
-      if (prop3)
-      scsiid = (uint8_t) atoi(prop3);
+      uint8_t scsijuke = (uint8_t)config_get_uint("SCSIJUKE", 255u, 0u);
+      scsiid = (uint8_t)config_get_uint("SCSIID", 255u, scsiid);
 
       // Initialise the SD Card and FAT file system functions
-      filesystemInitialise((uint8_t)scsijuke);
+      filesystemInitialise(scsijuke);
       // Initialise the SCSI emulation
       scsiInitialise();
 

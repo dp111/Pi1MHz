@@ -63,7 +63,13 @@ int main(void)
       "MixedCase=Hello\n"
       "Teletext_addr=-1\n"              /* negative address = disable */
       "Harddisc_addr=0x50\n"            /* address override */
-      "f_off=off\n" "f_OFF=OFF\n" "f_on=On\n" "f_no=no\n" "f_two=2\n" "f_junk=maybe\n" "f_true=true\n";
+      "f_off=off\n" "f_OFF=OFF\n" "f_on=On\n" "f_no=no\n" "f_two=2\n" "f_junk=maybe\n" "f_true=true\n"
+      "BeebSID_addr=off\n"            /* a word: disabled, not &FC00 */
+      "Serial_addr=010\n"             /* decimal ten, not octal 8 */
+      "Rambyte_addr=&FD\n"            /* the BBC's hex */
+      "Rampage_addr=0x40junk\n"       /* trailing text: disabled */
+      "n_dec=42\n" "n_hex=0x2A\n" "n_amp=&2a\n" "n_oct=010\n" "n_neg=-1\n" "n_word=off\n"
+      "n_tail=12abc\n" "n_big=300\n";
 
    config_parse(cfg, strlen(cfg));
 
@@ -85,6 +91,24 @@ int main(void)
    assert(config_emulator_override("Harddisc", &addr) == 1 && addr == 0x50);
    addr = 0xAA;
    assert(config_emulator_override("M5000", &addr) == 0 && addr == 0xAA); /* no key, untouched */
+   addr = 0xAA;
+   assert(config_emulator_override("BeebSID", &addr) < 0 && addr == 0xAA);  /* strtol said 0: base &FC00 */
+   addr = 0xAA;
+   assert(config_emulator_override("Serial", &addr) == 1 && addr == 10);   /* not octal */
+   addr = 0xAA;
+   assert(config_emulator_override("Rambyte", &addr) == 1 && addr == 0xFD);
+   addr = 0xAA;
+   assert(config_emulator_override("Rampage", &addr) < 0 && addr == 0xAA);
+
+   /* numbers: the whole value or the default */
+   assert(config_get_uint("n_dec", 255u, 7u) == 42u);
+   assert(config_get_uint("n_hex", 255u, 7u) == 42u && config_get_uint("n_amp", 255u, 7u) == 42u);
+   assert(config_get_uint("n_oct", 255u, 7u) == 10u);
+   assert(config_get_uint("n_neg", 255u, 7u) == 7u);           /* atoi said -1 */
+   assert(config_get_uint("n_word", 255u, 7u) == 7u);          /* atoi said 0 */
+   assert(config_get_uint("n_tail", 255u, 7u) == 7u);          /* atoi said 12 */
+   assert(config_get_uint("n_big", 255u, 7u) == 7u && config_get_uint("n_big", 300u, 7u) == 300u);
+   assert(config_get_uint("empty_value", 255u, 7u) == 7u && config_get_uint("nope", 255u, 7u) == 7u);
 
    /* the one boolean parser (telnetd's own said "off" was on, wifi's said "no" was) */
    assert(!config_get_flag("f_off", true) && !config_get_flag("f_OFF", true));

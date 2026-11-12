@@ -18,6 +18,7 @@
 #include "lwip/tcp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
+#include "../lib/textparse.h"
 
 #include "smb_socket.h"
 /* After lwIP's headers: the renames apply to the port headers' prototypes,
@@ -345,7 +346,12 @@ int smbp_getaddrinfo(const char *node, const char *service,
       return EAI_MEMORY;
    r->sin.sin_len = sizeof r->sin;
    r->sin.sin_family = AF_INET;
-   r->sin.sin_port = lwip_htons((uint16_t)(service ? atoi(service) : 445));
+   uint16_t port = 445u;
+   if (service != NULL && !text_parse_port_str(service, &port)) {
+      free(r);
+      return EAI_SERVICE;
+   }
+   r->sin.sin_port = lwip_htons(port);
    r->sin.sin_addr.s_addr = ip4_addr_get_u32(&ip);
    r->ai.ai_family = AF_INET;
    r->ai.ai_socktype = SOCK_STREAM;

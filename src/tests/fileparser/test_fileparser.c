@@ -131,6 +131,25 @@ int main(void)
       parse_releasekeyvalues(v, K_COUNT);
    }
    {
+      /* the number alone: never octal, a trailing comment allowed, text is 0 (then clamped) */
+      static const struct { const char *file; int want; const char *what; } N[] = {
+         { "Size=010\n",        10, "INTEGER 010 is ten, not octal 8" },
+         { "Size=0x14\n",       20, "INTEGER in hex" },
+         { "Size=&14\n",        20, "INTEGER in the BBC's hex" },
+         { "Size=20   # c\n",   20, "INTEGER before spaces and a comment" },
+         { "Size=  30\n",       30, "INTEGER after spaces" },
+         { "Size=12abc\n",       5, "INTEGER with trailing text reads as 0, clamped" },
+         { "Size=-3\n",          5, "a negative INTEGER is clamped" },
+      };
+      for (size_t i = 0; i < sizeof N / sizeof N[0]; i++) {
+         parserkeyvalue v[K_COUNT] = {0};
+         set_file(N[i].file);
+         (void)parse_readfile("f", 0, keys, v);
+         ok(v[K_SIZE].length == 1 && *v[K_SIZE].v.integer == N[i].want, N[i].what);
+         parse_releasekeyvalues(v, K_COUNT);
+      }
+   }
+   {
       parserkeyvalue v[K_COUNT] = {0};
       g_file_present = false;
       ok(parse_readfile("missing", 0, keys, v) == 0, "a missing file fails");

@@ -16,6 +16,7 @@
 #include <string.h>
 #include "Pi1MHz.h"
 #include "config.h"
+#include "lib/textparse.h"
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
@@ -83,6 +84,12 @@ const char *config_get(const char *key)
       if (strcmp(cfg_key[i], key) == 0)
          return cfg_val[i];
    return NULL;
+}
+
+uint32_t config_get_uint(const char *key, uint32_t max, uint32_t dflt)
+{
+   uint32_t v;
+   return text_parse_u32_str(config_get(key), max, &v) ? v : dflt;
 }
 
 bool config_get_flag(const char *key, bool dflt)
