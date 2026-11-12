@@ -1214,9 +1214,7 @@ ORG &FD00
 ; clearing to race with.  It keeps what it saves on the stack, under the frame, with no RAM of
 ; its own: with S as reported (the frame at S+1 to S+3), A is at S, X at S-1, Y at S-2, and the
 ; program's services port pointer below them.  The Pi, which knows S, changes them there for a
-; continue with new registers.  It waits and runs the Pi's code here, on the bus: the RAM
-; copies of 75ed244e (for a cassette relay click heard by microphone, with no mechanism known)
-; are undone, to be tried again on a real Model B.
+; continue with new registers.  It waits and runs the Pi's code here, on the bus.
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
