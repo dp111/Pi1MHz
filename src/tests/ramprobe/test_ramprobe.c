@@ -875,6 +875,56 @@ static void over_http(void)
 }
 
 #ifndef BOARD_EXTRA
+/* Halt, then continue at a new PC, as `bbcprobe.py halt` then `continue pc=0x2000` does (halt
+   tries rung 0 first; POST /bbc/halt with no rung is rung 0).  The code at &2000 records the P
+   and S it was handed, then counts in &70.  What a program handed the machine should see: the
+   I flag clear and the OS's clock still ticking (interrupts serviced), and S where the program
+   was.  Rung 1 does the same as the control.  kc-beeb runs the real MOS 3.20. */
+static void new_pc(void)
+{
+   static const int rungs[] = {RP_RUNG_IRQ, RP_RUNG_EVENT};
+   static const uint8_t probe[] = {
+      0x08, 0x68, 0x85, 0x71,     /* PHP : PLA : STA &71   the P it was handed */
+      0xBA, 0x86, 0x72,           /* TSX : STX &72         the S */
+      0xE6, 0x70, 0x4C, 0x07, 0x20 /* .l INC &70 : JMP l */
+   };
+   for (unsigned k = 0; k < 2; k++) {
+      int rung = rungs[k];
+      printf("== halt by rung %d, then continue at &2000\n", rung);
+      boot();
+      to_prompt();
+      install();
+      type("10 REPEAT:A%=A%+1:UNTIL 0\r");
+      type("RUN\r");
+      run_ms(200);
+      bool h = ramprobe_halt(rung) && wait_state(RP_HALTED, 400);
+      rp_regs_t st = *ramprobe_stopped();
+      printf("     stopped: PC=&%04X S=&%02X P=&%02X A=&%02X  (rung %d)\n", st.pc, st.s, st.p, st.a, ramprobe_rung());
+      static const uint8_t zero[3] = {0, 0, 0};
+      bool poked = h && ramprobe_poke(0x2000, probe, sizeof probe, RP_RUNG_NONE) && wait_state(RP_HALTED, 200)
+                     && ramprobe_poke(0x0070, zero, 3, RP_RUNG_NONE) && wait_state(RP_HALTED, 200);
+      rp_resume_t go = { .set_pc = true, .pc = 0x2000 };
+      bool resumed = poked && resume_now(&go);
+      if (!resumed) {
+         ok(poked && strstr(ramprobe_error(), "rung 0") != NULL, "rung %d: continue at a new PC refused: %s", rung, ramprobe_error());
+         ok(resume_now(NULL), "a plain continue");
+         run_ms(200);
+         continue;
+      }
+      run_ms(100);
+      uint8_t clk0[10];
+      memcpy(clk0, &m->ram[0x0292], 10);
+      uint8_t c0 = m->ram[0x70];
+      run_ms(500);
+      bool ticking = memcmp(clk0, &m->ram[0x0292], 10) != 0;
+      uint8_t p = m->ram[0x71], s = m->ram[0x72];
+      printf("     at &2000: P=&%02X (I %s)  S=&%02X  counting %s  OS clock %s  CPU PC=&%04X\n",
+             p, (p & 4) ? "SET" : "clear", s, m->ram[0x70] != c0 ? "yes" : "NO", ticking ? "ticking" : "STOPPED", m->cpu.pc);
+      ok(m->ram[0x70] != c0 && !(p & 4) && ticking,
+         "rung %d: the code at &2000 runs with interrupts on and the OS's clock ticking", rung);
+   }
+}
+
 int main(int argc, char **argv)
 {
    roms = argc > 1 ? argv[1] : ".";
@@ -882,6 +932,7 @@ int main(int argc, char **argv)
    ladder();
    late_fiq();
    over_http();
+   new_pc();
    if (getenv("RAMPROBE_QUICK") == NULL) {
    stress();
    through_the_os();
