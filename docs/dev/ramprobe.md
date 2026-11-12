@@ -39,21 +39,29 @@ X%=23:CALL &FC88
 
 It prints `Pi1MHz probe on`.  Helper 23 points `EVNTV` and `IRQ2V` at hooks the Pi serves in
 FRED, writes their old values into the hooks, puts a 3-byte `JMP` for the NMI at `&0D00`, turns
-the vsync event on and tells the Pi.  The
-Pi then types `*KEY10 X%=23:CALL &FC88|M` into the keyboard buffer, which BASIC runs as the next
-line, so a soft Break puts the probe back by itself.  Ctrl-Break and
-power-on clear the key: type the line again then.
+the vsync event on, tells the Pi, and sets
+`*KEY10 X%=23:IF HIMEM<40000 CALL &FC88|M`, so a soft Break puts the probe back by itself.  The
+`HIMEM` test keeps the key from calling `&FC88` in a second processor's BASIC, where it is
+ordinary RAM: the BBC's own `HIMEM` is never above `&8000`, except in the Master's BAS128, where
+a soft Break then doesn't reinstall the probe (type the line again).  Ctrl-Break and power-on clear the
+key: type the line again then.
 
 On the BBC it takes `&0D00-&0D02`, `EVNTV`, `IRQ2V`, the vsync event (turned on, and left on)
 and soft key 10.  The install uses `&70-&73`, BASIC's zero page for `CALL`, while it runs.  The install
 replaces `*KEY10`, so a Break definition of your own is lost.  To keep yours, install with
 `X%=23:Y%=1:CALL &FC88` (`CALL` passes Y%'s low byte in Y, and only 1 counts): the line then
-says `KEY10 kept`, the Pi types nothing, and a soft Break doesn't reinstall the probe.  Y% is one of
+leaves the key alone, and a soft Break doesn't reinstall the probe.  Y% is one of
 BASIC's resident variables and stays 1 until changed, so type `Y%=0` to have the key set again.
 The agent runs from the Pi's memory through the `&FD00` window. The 6502 code is helpers 22
 and 23 in `6502code/6502code.asm`, assembled with beebasm into `6502code.bin` like every other helper,
-so the SD card needs this build's `Pi1MHz/6502code.bin`. With an older one the install line
-does nothing and `GET /bbc` says so.
+so the SD card needs this build's `Pi1MHz/6502code.bin`.  The firmware loads it from the card
+apart from the kernel, so page 22 carries a version byte (`RP_VERSION`, at `&FDFE`), and the
+copy of the FRED code in page 23 has a 0 where `rp_in`'s `PHA` goes.  Only a kernel that finds
+its own version writes the `PHA`, and the install line hooks nothing without it, so neither a
+newer card with an older kernel nor the reverse can hook code that doesn't match.  On a
+mismatch the Pi still writes the rest of the FRED code (an install from an earlier build doesn't
+check, and its hooks must lead somewhere), refuses every stop, and `GET /bbc` says to copy this
+build's file.
 
 **This opens the BBC to remote code execution over your WiFi network: anyone on it can then stop the BBC, read and write its memory and run code on it, until Ctrl-Break or power-off.**  There is no password: the Pi1MHz's web pages are served in
 the clear, so one would protect nothing.  Use it on a network you trust, and turn it off with
@@ -90,16 +98,10 @@ any data it copies into the BBC, has to be in its own page.  The byte counts are
 
 | Page | What | Spare | Why |
 |---|---|---|---|
-| 22, the agent | code `&FD00-&FD8E`; the Pi's code for a call `&FDA0-&FDEF`; the mailbox `&FDF0-&FDF5`; its number at `&FDFF` | 17 (before `&FDA0`) | It runs while the machine is stopped, and the Pi writes calls into it then.  `rp_in` waits for `22` at `&FDFF` before jumping in. |
-| 23, the install | hooks `EVNTV` and `IRQ2V` (not again if the line is typed twice), puts the NMI's `JMP` at `&0D00`, tells the Pi (and whether `Y%` was 1), turns the vsync event on, says so; and at `&FDCF-&FDFE`, the FRED code below, for the Pi to copy | 27 | |
+| 22, the agent | code `&FD00-&FD8E`; the Pi's code for a call `&FDA0-&FDEF`; the mailbox `&FDF0-&FDF5`; `RP_VERSION` at `&FDFE`; its number at `&FDFF` | 17 (before `&FDA0`) | It runs while the machine is stopped, and the Pi writes calls into it then.  `rp_in` waits for `22` at `&FDFF` before jumping in. |
+| 23, the install | checks the FRED code is there, hooks `EVNTV` and `IRQ2V` (not again if the line is typed twice), puts the NMI's `JMP` at `&0D00`, tells the Pi, turns the vsync event on, sets `*KEY10` (unless `Y%` is 1), says so; and at `&FDCF-&FDFE`, the FRED code below, for the Pi to copy | 3 | |
 
-Pages 24-30 are free.  The Pi sets `*KEY10`, so the line's text and the `OSCLI` aren't in the
-page.  It waits until the BBC has left page 23 (`helpers_window_page`) before it stops it to
-type the line: a stop always goes back to JIM RAM, so one inside page 23 would leave the install
-with no code under it.  It stops the BBC by rung 1, or rung 0 if that doesn't answer, and puts
-the line in the keyboard buffer through `INSV`, which the OS's own keyboard interrupt uses, so
-it's safe from a stop.  A client that asks for something in those few milliseconds is told
-`busy`.
+Pages 24-30 are free.
 
 ### In FRED: 48 bytes, the Pi's
 
@@ -227,8 +229,20 @@ Continue and Peek buttons, the install line and these routes.  Its HTML and scri
   from a stop that landed in VDU code threw BASIC back to its prompt.  The stopped `pc` and `s`
   say where the machine was.
 - **Interrupts are off while the machine is stopped.**  Stop, do the work, continue.
-- **Code in other helper pages.**  Page 22 is the only page the probe knows how to go back to.
-  Code in other helper pages or JIM RAM isn't safe to stop in.
+- **Code the Pi calls must not select a helper.**  A stop can land while another helper runs
+  from `&FD00` (the help screen, the SD explorer, a ROM loader), or while the transfer page is
+  in use: the way out puts back the page the stop found, as that helper left it.  `helpers.c`
+  keeps the one page the agent's select replaced, so code run by `/bbc/run` or `/bbc/jsr` that
+  writes `&FC88` itself loses it.
+- **Timing, at the edges.**  The way in waits for the agent's page, but nothing on either side
+  has the bytes to wait more.
+  - The way out has 16 cycles (8 µs) between its `&FD` and the `RTI`. A stop that landed in
+    another helper's code needs the FIQ to put that page back within that. The firmware's own
+    `STX &FC88 : NOP : JMP &FD00`, which starts every helper, allows 2.5 µs. The tests cover
+    5 µs.
+  - `rp_in` takes `22` at `&FDFF` as the agent's page. A stop that lands while the window shows
+    a page whose last byte is already `&16`, with the FIQ slower than one `CMP`, would jump in
+    too soon. Probe and helper pages hold their own numbers there.
 - **The Pi's audio.**  On the Model B, probe traffic made the Pi's audio into the BBC's speaker
   crackle.  `BeebAudio_Off=1` silences it.
 
@@ -245,7 +259,16 @@ Continue and Peek buttons, the install line and these routes.  Its HTML and scri
 4. The Pi writes a command to `&FDF0`, then a new sequence number to `&FDF1`.  The agent acts
    when the number changes, so there is no flag to clear and no race.
 5. To leave, the agent restores the port pointer and Y and jumps to `rp_exit`, in FRED, which
-   writes `&FF` to `&FC88` (the program's own JIM page), pulls X and A, and returns.
+   writes `&FD` to `&FC88`, pulls X and A, and returns.  `&FD` (`HELPER_BACK` in `helpers.c`)
+   shows again what the agent's select replaced: JIM RAM at the page it was on (the program's
+   own, or the transfer page, whose session goes on), or another helper's page with the bytes
+   that helper had written into it.  Neither select touches the `JMP`/`RTS` at `&FC8C`, which
+   belongs to the stopped code's last select.  A stop that lands in the agent's own way out,
+   after the Pi's go and before the `RTI`, selects 22 with 22 already showing: `helpers.c`
+   counts it and shows the agent's page afresh, so it is an ordinary stop, and its `&FD` leaves
+   that page in place for the outer agent's last instructions.  (The Pi also waits 1 ms after a
+   go before an NMI, so this is rare.)  `&FD` with no stop to go back from is `&FF`; before the
+   probe it was helper 0, like every number past the last page.
 
 ## Limits
 
@@ -263,14 +286,16 @@ Continue and Peek buttons, the install line and these routes.  Its HTML and scri
 ## Tests
 
 `src/tests/ramprobe/run_tests.sh` builds the real `ramprobe.c`, `ramprobe_api.c`,
-`services_emulator.c` against an emulated BBC, with ASan and UBSan, and runs the probe's pages
+`services_emulator.c`, `helpers.c` (the `&FC88` select) and `ram_emulator.c` (the `&FD00`
+window and the JIM page registers) against an emulated BBC, with ASan and UBSan, and runs the probe's pages
 from the committed `firmware/Pi1MHz/6502code.bin`.  With beebasm about (on `PATH` or `BEEBASM`)
 it first checks that bin is what `6502code.asm` assembles to, so the two can't drift apart.
 
 - **`test_ramprobe.c`, on kc-beeb:** install, halt, peek, poke, calls, all three rungs and their
   failures, 2000 random stops on a program that checks its own registers and on BASIC printing
   through the OS, the program's own port and JIM page, lockout, a call that doesn't return, a
-  reset, the FIQ late by up to 200 µs, and the routes with malformed requests.  The
+  reset, the FIQ late by up to 200 µs, stops inside another helper, a stop inside a stop, stops
+  during a transfer page, a mismatched `6502code.bin`, and the routes with malformed requests.  The
   register checker has a control: spoiling the saved A must be caught.
 - **`test_bbcprobe.py`, over HTTP:** the same firmware behind a small HTTP server, driven by
   `tools/bbcprobe.py` as a person would, with `wait=1`, body pokes, and a rehook after the vectors
@@ -278,5 +303,6 @@ it first checks that bin is what `6502code.asm` assembles to, so the two can't d
   `run_tests.sh 8080` serves it for trying another client.
 
 Not covered by the host tests: `webserver.c` itself (the tests use their own HTTP server), and
-the `&FC88` page select, which the tests model on `helpers_bank_select`.  Code fetched from FRED
-is: kc-beeb runs the hooks from the board's FRED bytes.
+the board's timing, which the tests model (a select takes effect at once or after a delay, a
+FIQ runs late or not).  Code fetched from FRED is: kc-beeb runs the hooks from the board's FRED
+bytes.

@@ -144,8 +144,6 @@ int main(int argc, char **argv)
 {
    if (argc < 3) { fprintf(stderr, "usage: bbcsim ROMS PORT\n"); return 2; }
    roms = argv[1];
-   pi.JIM_ram_size = 2;
-   pi.JIM_ram = calloc(1, 2u * JIM_RAM_STEP);
 
    int s = socket(AF_INET, SOCK_STREAM, 0);
    int yes = 1;

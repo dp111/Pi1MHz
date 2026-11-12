@@ -1,12 +1,12 @@
-/* board.h - the Pi1MHz board around the firmware, for an emulated BBC: FRED and JIM, the
-   &FC88 helper select, the FIQ, the main-loop poll and the config.  Included once, by the
-   emulator's glue (test_ramprobe.c and bbcsim.c, both on kc-beeb),
+/* board.h - the Pi1MHz board around the firmware, for an emulated BBC: FRED and JIM as the
+   board serves them, the FIQ, the main-loop poll, the SD card's 6502code.bin and the config.
+   Included once, by the emulator's glue (test_ramprobe.c and bbcsim.c, both on kc-beeb),
    which supplies board_nmi_line() and calls board_bus_read(), board_bus_write(),
    board_reset() and board_poll().
 
-   The one thing here that isn't the firmware's own is the &FC88 select: the logic of
-   helpers_bank_select, with its timing as a parameter (helpers.c needs too much of the
-   firmware to build here). */
+   The firmware's own code does the rest: the &FC88 select is helpers.c's, and the &FD00
+   window and JIM page registers are ram_emulator.c's.  The one thing added is a delay before
+   a select takes effect, as a parameter (select_delay). */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,24 +17,23 @@
 #include "Pi1MHz.h"
 #include "ramprobe.h"
 #include "ramprobe_api.h"
+#include "ram_emulator.h"
 
 /* ---- the board around the firmware --------------------------------------- */
 static Pi1MHz_t pi;
 Pi1MHz_t *const Pi1MHz = &pi;
 uint32_t Pi1MHz_now_us;
 uint32_t board_now;
-static callback_func_ptr write_cb[256], read_cb[256];
-static func_ptr poll_cb[4];
+static callback_func_ptr write_cb[256], read_cb[256], jim_cb[256];
+static func_ptr poll_cb[8];
 static int polls;
-static uint8_t helper[47 * 256];
-static uint32_t page_addr;
-static bool window_is_helper;
-static int pending = -1;
-static uint32_t pending_at, select_delay;
+static uint32_t select_delay;
 
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr fn)
 {
-   if (access == WRITE_FRED) write_cb[addr & 0xffu] = fn; else read_cb[addr & 0xffu] = fn;
+   if (access == WRITE_FRED) write_cb[addr & 0xffu] = fn;
+   else if (access == WRITE_JIM) jim_cb[addr & 0xffu] = fn;
+   else read_cb[addr & 0xffu] = fn;
 }
 void Pi1MHz_Register_Poll(func_ptr fn, const char *name)
 {
@@ -43,6 +42,8 @@ void Pi1MHz_Register_Poll(func_ptr fn, const char *name)
    poll_cb[polls++] = fn;
 }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { pi.Memory[addr & 0x1ffu] = data; }
+void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data) { pi.Memory[addr & 0x1ffu] = data; }
+void Pi1MHz_MemoryWritePage(uint32_t addr, const void *data) { memcpy(pi.Memory + (addr & 0x100u), data, 256); }
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data) { pi.Memory[addr & 0x1ffu] = (uint8_t)data; pi.Memory[(addr + 1u) & 0x1ffu] = (uint8_t)(data >> 8); }
 static void board_nmi_line(bool low);   /* the emulator's: nNMI, low or not */
 static void board_irq_line(bool low);   /* the emulator's: nIRQ, the Pi's share of it */
@@ -64,17 +65,41 @@ bool config_get_flag(const char *key, bool dflt)
    if (v == NULL || v[0] == '\0') return dflt;
    return !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' || !strncasecmp(v, "off", 3));
 }
-int helpers_page_number(uint8_t page) { return page < 47 ? helper[(page << 8) + 255] : -1; }
-static int window_page = -1;
-int helpers_window_page(void) { return window_page; }
-
-const uint8_t *helpers_page(uint8_t page) { return page < 47 ? helper + (page << 8) : NULL; }
+/* What helpers.c and ram_emulator.c need of the rest of the firmware. */
+volatile Pi1MHz_break_t Pi1MHz_break;
+uint8_t fx_register[256];
+uint32_t RPI_GetSystemTime(void) { return Pi1MHz_now_us; }
+uint8_t harddisc_emulator_get_address(void) { return 0; }
+uint8_t harddisc_emulator_get_instance(void) { return 0; }
+uint8_t M5000_emulator_read_instance(void) { return 0; }
+bool videoplayer_active(void) { return false; }
+uint8_t serial_redirect_address(void) { return 0; }
+char *get_info_string(void) { return "host"; }
+uint32_t get_temp_millidegrees(void) { return 40000; }
+bool info_refresh_cached(void) { return true; }
+void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned int n, char *out, size_t size)
+{
+   (void)dir; (void)pats;
+   for (unsigned i = 0; i < n; i++) out[i * size] = '\0';
+}
+/* ram_emulator.c sizes JIM RAM as the memory past the program's end (_end) less 4 MB, in 16 MB
+   steps: 32 MB here.  run_tests.sh links with -no-pie, so _end is low and fixed and the sum
+   doesn't wrap in 32 bits. */
+extern char _end;
+uint32_t mem_info(int size) { (void)size; return (uint32_t)(uintptr_t)&_end + 4u * 1024u * 1024u + 2u * JIM_RAM_STEP; }
+extern uint8_t helper_ram[];          /* helpers.c's: the pages it loaded from 6502code.bin */
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio) { pi.Memory[GET_ADDR(gpio) & 0xffu] = (uint8_t)GET_DATA(gpio); }
 
-/* The probe's pages, 22 and 23, from 6502code.bin as the firmware would load them
-   (RAMPROBE_6502CODE names it), and its FRED code, at the end of the install page. */
+/* The SD card's 6502code.bin (RAMPROBE_6502CODE names it), for helpers.c to load. */
 static const uint8_t *rp_fred;
 static uint8_t code_bin[47 * 256];
+uint32_t filesystemReadFile(const char *filename, uint8_t **address, unsigned int max_size)
+{
+   if (strcmp(filename, "Pi1MHz/6502code.bin") != 0) return 0;
+   size_t n = sizeof code_bin < max_size ? sizeof code_bin : max_size;
+   memcpy(*address, code_bin, n);
+   return (uint32_t)n;
+}
 static void load_6502code(void)
 {
    const char *path = getenv("RAMPROBE_6502CODE");
@@ -123,53 +148,34 @@ static void board_extra_init(void) {}
 static void board_extra_init(void);
 #endif
 
-/* helpers_bank_select, for a helper page or for &FF (JIM RAM again). */
-static void apply_select(uint8_t data)
-{
-   if (data == 0xFF) {
-      pi.Memory[0x88 + 4] = 0x60;
-      memcpy(pi.Memory + 256, pi.JIM_ram + page_addr, 256);
-      window_is_helper = false;
-      window_page = -1;
-   } else {
-      pi.Memory[0x88 + 4] = 0x4C;
-      if (data >= sizeof helper >> 8) data = 0;
-      memcpy(pi.Memory + 256, helper + (data << 8), 256);
-      window_is_helper = true;
-      window_page = data;
-   }
-}
-static void settle(void)
-{
-   if (pending >= 0 && (int32_t)(board_now - pending_at) >= 0) {
-      apply_select((uint8_t)pending);
-      pending = -1;
-   }
-}
 /* The board answers the BBC at once from the byte it prepared, and runs the callback in its FIQ
-   afterwards: a read straight after a write can see the old byte (docs/dev/bus-post-ring.md). */
+   afterwards, in bus order: a read straight after a write can see the old byte
+   (docs/dev/bus-post-ring.md).  fiq_delay is how late the FIQ runs; select_delay is how much
+   longer a helper select takes, and what comes after it on the bus waits for it. */
 static uint32_t fiq_delay;
-static struct { uint32_t due; callback_func_ptr fn; unsigned gpio; } fiq_q[64];
+#define FIQ_Q 1024u
+static struct { uint32_t due; callback_func_ptr fn; unsigned gpio; } fiq_q[FIQ_Q];
 static unsigned fiq_head, fiq_tail;
 static void fiq_run(void)
 {
    while (fiq_head != fiq_tail && (int32_t)(board_now - fiq_q[fiq_head].due) >= 0) {
       fiq_q[fiq_head].fn(fiq_q[fiq_head].gpio);
-      fiq_head = (fiq_head + 1) % 64;
+      fiq_head = (fiq_head + 1) % FIQ_Q;
    }
 }
-static void fiq_post(callback_func_ptr fn, unsigned gpio)
+static void fiq_post_after(callback_func_ptr fn, unsigned gpio, uint32_t extra)
 {
    if (!fn) return;
-   if (!fiq_delay) { fn(gpio); return; }
-   fiq_q[fiq_tail].due = board_now + fiq_delay;
+   if (!fiq_delay && !extra && fiq_head == fiq_tail) { fn(gpio); return; }
+   if ((fiq_tail + 1) % FIQ_Q == fiq_head) { fprintf(stderr, "board: FIQ queue full\n"); exit(2); }
+   fiq_q[fiq_tail].due = board_now + fiq_delay + extra;
    fiq_q[fiq_tail].fn = fn;
    fiq_q[fiq_tail].gpio = gpio;
-   fiq_tail = (fiq_tail + 1) % 64;
+   fiq_tail = (fiq_tail + 1) % FIQ_Q;
 }
+static void fiq_post(callback_func_ptr fn, unsigned gpio) { fiq_post_after(fn, gpio, 0); }
 static uint8_t board_bus_read(uint16_t a)
 {
-   settle();
    fiq_run();
    if (a >= 0xFD00) return pi.Memory[256 + (a & 0xFF)];
    uint8_t v = pi.Memory[a & 0xFF];
@@ -178,44 +184,31 @@ static uint8_t board_bus_read(uint16_t a)
 }
 static void board_bus_write(uint16_t a, uint8_t v)
 {
-   settle();
    fiq_run();
-   if (a >= 0xFD00) {
+   if (a >= 0xFD00) {                 /* the window: ram_emulator_page_write */
       pi.Memory[256 + (a & 0xFF)] = v;
-      if (!window_is_helper) pi.JIM_ram[page_addr + (a & 0xFF)] = v;
+      fiq_post(jim_cb[a & 0xFF], TEST_GPIO(a & 0xFFu, v));
       return;
    }
    uint8_t r = a & 0xFF;
-   if (r == 0x88) {
-      if (select_delay) { pending = v; pending_at = board_now + select_delay; }
-      else apply_select(v);
-      return;
-   }
-   if (r >= 0xFD) {                   /* the JIM page registers */
-      int sh = r == 0xFF ? 8 : r == 0xFE ? 16 : 24;
-      page_addr = ((page_addr & ~(0xFFu << sh)) | ((uint32_t)v << sh)) & 0xFFFFFF;
-      window_is_helper = false;
-      memcpy(pi.Memory + 256, pi.JIM_ram + page_addr, 256);
-      return;
-   }
-   fiq_post(write_cb[r], TEST_GPIO(r, v));
+   fiq_post_after(write_cb[r], TEST_GPIO(r, v), r == 0x88 ? select_delay : 0u);
 }
+void rampage_emulator_init(uint8_t instance, uint8_t address);
+void helpers_init(uint8_t instance, uint8_t address);
+/* A BBC reset: init_emulator's table, for the emulators here, in its order. */
 static void board_reset(void)
 {
-   static const uint8_t code[7] = {0x8E, 0x88, 0xFC, 0xEA, 0x4C, 0x00, 0xFD};
    memset(pi.Memory, 0xFF, 256);
-   memcpy(pi.Memory + 0x88, code, 7);
-   memset(helper, 0, sizeof helper);
-   for (int i = 0; i < 47; i++) { helper[i << 8] = 0xA2; helper[(i << 8) + 1] = 0xFF; helper[(i << 8) + 2] = 0x4C; helper[(i << 8) + 3] = 0x88; helper[(i << 8) + 4] = 0xFC; }
+   memset(write_cb, 0, sizeof write_cb);
+   memset(read_cb, 0, sizeof read_cb);
+   memset(jim_cb, 0, sizeof jim_cb);
    if (rp_fred == NULL) load_6502code();
-   for (unsigned i = RP_HELPER_AGENT; i <= RP_HELPER_INSTALL; i++) memcpy(helper + (i << 8), code_bin + (i << 8), 256);
-   page_addr = 0;
-   pending = -1;
-   window_is_helper = false;
-   window_page = -1;
+   fiq_head = fiq_tail = 0;            /* a reset: whatever was in flight is gone */
    polls = 0;                          /* init_emulator empties the poll table at every reset */
+   rampage_emulator_init(0, 0xFD);
    services_emulator_init(0, 0xA6);
    board_extra_init();
+   helpers_init(0, 0x88);
    ramprobe_init(0, 0);
 }
 

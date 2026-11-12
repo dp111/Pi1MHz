@@ -49,7 +49,7 @@ part of the standard firmware set.
 | 19 | Redirects the RS423 serial port to the Pi, where a Hayes-style modem dials out over WiFi. See [Serial redirector and modem](serial-modem.md) | - |
 | 20 | Telnet daemon: the Beeb's keyboard and screen over the network, from any telnet client (`telnetd_port` in `Pi1MHz.cfg`). See [The telnet daemon](telnetd.md) | - |
 | 21 | Loads VFS, for Domesday/VFS volumes, into sideways RAM in bank 8, 3, 2, 1 or 0 only. See [The VFS ROM](#the-vfs-rom) | `/Pi1MHz/VFS.rom` |
-| 22, 23 | The RAM probe: `X%=23:CALL &FC88` installs it for remote debug and control over the network, and has the Pi set `*KEY10` so a soft Break reinstalls it (`X%=23:Y%=1:CALL &FC88` leaves your own `*KEY10`). **This opens the BBC to remote code execution over your WiFi.** See [the RAM probe](../dev/ramprobe.md) | - |
+| 22, 23 | The RAM probe: `X%=23:CALL &FC88` installs it for remote debug and control over the network, and sets `*KEY10` so a soft Break reinstalls it (`X%=23:Y%=1:CALL &FC88` leaves your own `*KEY10`). **This opens the BBC to remote code execution over your WiFi.** See [the RAM probe](../dev/ramprobe.md) | - |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 

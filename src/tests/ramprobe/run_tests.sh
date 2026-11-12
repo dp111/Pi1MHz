@@ -1,9 +1,9 @@
 #!/bin/sh -e
 # The RAM probe (ramprobe.c) on the real services port (services_emulator.c) and a cycle-stepped
-# BBC: kc-beeb, a Master 128 with Acorn's ROMs, from a checkout of rp2350-bbc-micro.
-#   KC_BEEB    its src/cores/kc-beeb    (default: ~/rp2350-bbc-micro-os/src/cores/kc-beeb)
-#   KC_ROMS    its roms/mos3.20
-# Skipped, not failed, without them: they aren't in this repository.  ASan and UBSan.
+# BBC: kc-beeb, a Master 128 with Acorn's ROMs.  Neither is in this repository, so the run needs
+#   KC_BEEB    a kc-beeb core (machine.c and the rest)
+#   KC_ROMS    the MOS 3.20 ROMs (mos.rom; default: roms/mos3.20 beside the core's checkout)
+# Without them it prints SKIPPED (run_all.sh reports it) and exits 0.  ASan and UBSan.
 #
 #   run_tests.sh           the end-to-end test, then tools/bbcprobe.py over HTTP to bbcsim
 #   run_tests.sh PORT      just serve bbcsim on 127.0.0.1:PORT, to try a client against it
@@ -30,13 +30,16 @@ if [ -n "$BEEBASM" ]; then
       exit 1
    fi
 else
-   echo "== no beebasm: not checking 6502code.bin against 6502code.asm =="
+   echo "== SKIPPED: no beebasm, so 6502code.bin isn't checked against 6502code.asm =="
 fi
 
-KC_BEEB=${KC_BEEB:-$HOME/rp2350-bbc-micro-os/src/cores/kc-beeb}
+if [ -z "${KC_BEEB:-}" ] || [ ! -f "$KC_BEEB/machine.c" ]; then
+   echo "== ramprobe: SKIPPED: set KC_BEEB to a kc-beeb core and KC_ROMS to its MOS 3.20 ROMs =="
+   exit 0
+fi
 KC_ROMS=${KC_ROMS:-$(dirname "$(dirname "$(dirname "$KC_BEEB")")")/roms/mos3.20}
-if [ ! -f "$KC_BEEB/machine.c" ] || [ ! -f "$KC_ROMS/mos.rom" ]; then
-   echo "== ramprobe: skipped, no kc-beeb at $KC_BEEB =="
+if [ ! -f "$KC_ROMS/mos.rom" ]; then
+   echo "== ramprobe: SKIPPED: set KC_BEEB to a kc-beeb core and KC_ROMS to its MOS 3.20 ROMs =="
    exit 0
 fi
 B=$(mktemp -d)
@@ -65,12 +68,14 @@ rep("INLINE uint8_t machine_irq_level(const struct machine *m)\n{\n    return m-
     "extern uint8_t board_irq;\nINLINE uint8_t machine_irq_level(const struct machine *m)\n{\n    return m->sysvia.irq | m->usrvia.irq | board_irq;")
 open(p, 'w').write(s)
 E
-cp "$SRC"/services_emulator.c "$SRC"/services.h "$SRC"/ramprobe.c "$SRC"/ramprobe.h "$SRC"/ramprobe_api.c "$SRC"/ramprobe_api.h "$B/"
+# The firmware's own: the probe, the services port, the helper select and the JIM window.
 cp -r "$HERE"/stubs/* "$B/"
+for f in services_emulator.c services.h ramprobe.c ramprobe.h ramprobe_api.c ramprobe_api.h \
+         helpers.c helpers.h ram_emulator.c ram_emulator.h; do cp "$SRC/$f" "$B/"; done
 cp "$HERE"/board.h "$HERE"/test_ramprobe.c "$HERE"/bbcsim.c "$B/"
-printf '#include <stddef.h>\n#include <stdint.h>\nint helpers_page_number(uint8_t page);\nint helpers_window_page(void);\nconst uint8_t *helpers_page(uint8_t page);\n' > "$B/helpers.h"
-CC="gcc -std=gnu2x -g -D_GNU_SOURCE -fsanitize=address,undefined -fno-sanitize-recover=all -w -I$B -I$B/kc"
-OBJS="$B/services_emulator.c $B/ramprobe.c $B/ramprobe_api.c"
+# -no-pie: ram_emulator.c sizes JIM RAM from the address of _end (board.h's mem_info).
+CC="gcc -std=gnu2x -g -D_GNU_SOURCE -fsanitize=address,undefined -fno-sanitize-recover=all -no-pie -w -I$B -I$B/kc"
+OBJS="$B/services_emulator.c $B/ramprobe.c $B/ramprobe_api.c $B/helpers.c $B/ram_emulator.c"
 $CC -O2 -o "$B/bbcsim" "$B/bbcsim.c" $OBJS
 if [ -n "$1" ]; then
    exec "$B/bbcsim" "$KC_ROMS" "$1"
