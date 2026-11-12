@@ -63,9 +63,11 @@ mismatch the Pi still writes the rest of the FRED code (an install from an earli
 check, and its hooks must lead somewhere), refuses every stop, and `GET /bbc` says to copy this
 build's file.
 
-**This opens the BBC to remote code execution over your WiFi network: anyone on it can then stop the BBC, read and write its memory and run code on it, until Ctrl-Break or power-off.**  There is no password: the Pi1MHz's web pages are served in
-the clear, so one would protect nothing.  Use it on a network you trust, and turn it off with
-`ramprobe_addr=-1` if you don't want it.
+**This opens the BBC to remote code execution over your WiFi network: anyone on it can then stop the BBC, read and write its memory and run code on it, until Ctrl-Break or power-off.**  `/bbc` and `/probe` have no password of their own: like every other page, they ask for the
+web interface's digest login when `webdav_user` and `webdav_password` are set in `Pi1MHz.cfg`,
+and with no login set anyone on the network can use them.  The pages travel unencrypted (HTTP),
+so the login keeps out others on the network but not someone who can watch its traffic.  Use it
+on a network you trust, set a login, or turn it off with `ramprobe_addr=-1`.
 
 ## The JIM memory it uses
 
