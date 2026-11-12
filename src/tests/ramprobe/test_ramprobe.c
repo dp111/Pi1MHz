@@ -358,6 +358,10 @@ static void ladder(void)
    run_ms(300);
    ok(a_percent() == a0, "frozen");
    ok(ramprobe_peek(0x0404, 4, RP_NO_BANK, RP_RUNG_NONE) && wait_state(RP_HALTED, 200), "a peek, stopped");
+   /* Stopped inside the OS's vsync event: the registers are the OS's, so none may be set. */
+   rp_resume_t elsewhere = { .set_pc = true, .pc = 0x2000 }, just_a = { .set_a = true, .a = 1 };
+   ok(!ramprobe_resume(&elsewhere) && !ramprobe_resume(&just_a) && strstr(ramprobe_error(), "rung 0")
+      && ramprobe_state() == RP_HALTED, "a new PC or A refused, still stopped: %s", ramprobe_error());
    ok(resume_now(NULL), "continue");
    run_ms(200);
    ok(a_percent() != a0, "counting again");
@@ -840,6 +844,8 @@ static void over_http(void)
    int e = nmi_edges, q = irq_raised;
    ok(post("/bbc/halt", NULL) == 200 && strstr(api_out, "\"state\":\"halted\""), "POST /bbc/halt");
    ok(ramprobe_rung() == RP_RUNG_EVENT && nmi_edges == e && irq_raised == q, "with no rung: rung 0, no NMI, no IRQ");
+   ok(strstr(api_out, "\"stopped\":null") != NULL, "no registers: they'd be the OS's");
+   ok(post("/bbc/continue", "pc=0x2000") == 409 && ramprobe_state() == RP_HALTED, "continue with a pc: 409, still stopped");
    ok(post("/bbc/continue", NULL) == 200, "and on again");
    ok(post("/bbc/halt", "rung=2") == 400 && strstr(api_out, "nmi=1") && ramprobe_state() == RP_RUNNING && nmi_edges == e,
       "rung 2 without nmi=1: 400, no NMI sent: %s", api_out);

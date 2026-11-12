@@ -75,7 +75,9 @@ try:
 
     print("== halt, peek")
     r = cli("halt")
-    ok(r.returncode == 0 and "PC=" in r.stdout, f"halt: {r.stdout.strip()}")
+    ok(r.returncode == 0 and "rung 0" in r.stdout, f"halt, at rung 0: no registers: {r.stdout.strip()}")
+    r = cli("continue", "pc=0x2000", want=None)
+    ok(r.returncode != 0, "continue with a pc after it: refused")
     r = cli("peek", 0x0D00, 1)
     ok(r.stdout.strip().upper() == "4C", f"the NMI's JMP at &0D00: {r.stdout.strip()}")
 

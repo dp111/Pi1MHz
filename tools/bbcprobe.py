@@ -174,6 +174,8 @@ def regs(args):
 
 
 def show(r, pc=True):
+    if r is None:
+        return "in the OS's vsync event (rung 0): no program registers"
     line = f"A={r['a']:02X} X={r['x']:02X} Y={r['y']:02X} P={r['p']:02X}"
     return line + (f" PC={r['pc']:04X} S={r['s']:02X}" if pc else "")
 
