@@ -238,8 +238,7 @@ Continue and Peek buttons, the install line and these routes.  Its HTML and scri
   has the bytes to wait more.
   - The way out has 16 cycles (8 µs) between its `&FD` and the `RTI`. A stop that landed in
     another helper's code needs the FIQ to put that page back within that. The firmware's own
-    `STX &FC88 : NOP : JMP &FD00`, which starts every helper, allows 2.5 µs. The tests cover
-    5 µs.
+    `STX &FC88 : NOP : JMP &FD00`, which starts every helper, allows 2.5 µs.
   - `rp_in` takes `22` at `&FDFF` as the agent's page. A stop that lands while the window shows
     a page whose last byte is already `&16`, with the FIQ slower than one `CMP`, would jump in
     too soon. Probe and helper pages hold their own numbers there.
