@@ -767,42 +767,6 @@ static const char *ws_strcasestr(const char *hay, const char *needle)
    return NULL;
 }
 
-/* Decode percent-escapes (%XX) into raw bytes.  Control characters
-   (incl. NUL) decoded from %XX would let a client inject a string
-   terminator past a length check or smuggle CR/LF into a header
-   builder; reject them at decode time and replace with '_' so the
-   resulting path always survives strlen / strcmp.  ws_path_is_safe
-   later does the same control-byte check, so the two together
-   defend in depth - but every consumer of ws_url_decode benefits
-   from the early reject.
-
-   Returns true if the whole input fit in dst (NUL included); false
-   if it had to be truncated to fit.  Callers that want to surface
-   the truncation as a 400 rather than a silent 404 use the return
-   value; callers that only feed in known-bounded paths can ignore
-   it (the output is always NUL-terminated regardless). */
-static bool ws_url_decode(const char *src, char *dst, size_t dstsz)
-{
-   size_t o = 0u;
-   while (*src != '\0' && o + 1u < dstsz) {
-      unsigned char c;
-      if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
-         int hi = text_hex_nibble(src[1]);
-         int lo = text_hex_nibble(src[2]);
-         if (hi >= 0 && lo >= 0) {
-            c = (unsigned char)((hi << 4) | lo);
-            dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
-            src += 3;
-            continue;
-         }
-      }
-      c = (unsigned char)*src++;
-      dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
-   }
-   dst[o] = '\0';
-   return *src == '\0';
-}
-
 static bool ws_is_unreserved(char c)
 {
    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
@@ -1173,38 +1137,6 @@ static ws_range_result_t ws_parse_range(const char *value, uint32_t size,
    return WS_RANGE_OK;
 }
 
-/* Extract the value of `key` from a raw query string ("k=v&k2=v2",
-   the text after '?', percent-encoding left as-is).  Keys match
-   case-insensitively and only at parameter starts, so "xoffset=1"
-   never satisfies a lookup for "offset".  Returns true and fills out
-   (NUL-terminated, silently truncated to osz) when found. */
-static bool ws_query_param(const char *query, const char *key,
-                           char *out, size_t osz)
-{
-   size_t klen = strlen(key);
-   const char *p = query;
-
-   if (query == NULL)
-      return false;
-   while (*p != '\0') {
-      if (ws_prefix_ci(p, key, klen) && p[klen] == '=') {
-         const char *v = p + klen + 1u;
-         size_t o = 0u;
-         while (*v != '\0' && *v != '&') {
-            if (o + 1u < osz)
-               out[o++] = *v;
-            ++v;
-         }
-         out[o] = '\0';
-         return true;
-      }
-      while (*p != '\0' && *p != '&')
-         ++p;
-      if (*p == '&')
-         ++p;
-   }
-   return false;
-}
 
 /* ------------------------------------------------------------------ */
 /* SD path helpers                                                     */
@@ -4374,34 +4306,31 @@ static bool route_udpblast(ws_conn_t *c, const char *query)
 {
    char        val[40];
    ip_addr_t   dst;
-   long        parsed;
+   uint32_t    parsed;
    uint16_t    port = 5001u;
    uint32_t    mb = 8u;
    uint32_t    burst = 0u;      /* 0 = rig default (4/pass) */
    uint32_t    datagrams;
    ws_strbuf_t b;
 
-   if (!ws_query_param(query, "host", val, sizeof val)
+   if (!text_query_param(query, "host", val, sizeof val)
        || !ipaddr_aton(val, &dst))
       return ws_error(c, 400, "Bad Request",
                       "Usage: /udpblast?host=a.b.c.d&port=5001&mb=8&burst=4");
-   if (ws_query_param(query, "port", val, sizeof val)) {
-      parsed = strtol(val, NULL, 10);
-      if (parsed <= 0 || parsed > 65535)
+   if (text_query_param(query, "port", val, sizeof val)) {
+      if (!text_parse_u32_str(val, 65535u, &parsed) || parsed == 0u)
          return ws_error(c, 400, "Bad Request", "Bad port.");
       port = (uint16_t)parsed;
    }
-   if (ws_query_param(query, "mb", val, sizeof val)) {
-      parsed = strtol(val, NULL, 10);
-      if (parsed <= 0 || parsed > 1024)
+   if (text_query_param(query, "mb", val, sizeof val)) {
+      if (!text_parse_u32_str(val, 1024u, &parsed) || parsed == 0u)
          return ws_error(c, 400, "Bad Request", "Bad mb (1-1024).");
-      mb = (uint32_t)parsed;
+      mb = parsed;
    }
-   if (ws_query_param(query, "burst", val, sizeof val)) {
-      parsed = strtol(val, NULL, 10);
-      if (parsed <= 0 || parsed > 16)
+   if (text_query_param(query, "burst", val, sizeof val)) {
+      if (!text_parse_u32_str(val, 16u, &parsed) || parsed == 0u)
          return ws_error(c, 400, "Bad Request", "Bad burst (1-16).");
-      burst = (uint32_t)parsed;
+      burst = parsed;
    }
    datagrams = (mb * 1024u * 1024u) / 1472u;
    wifi_lwip_udpblast_start(&dst, port, datagrams, (uint8_t)burst);
@@ -4426,7 +4355,7 @@ static bool route_files_get(ws_conn_t *c, const char *rawpath)
    char    decoded[WS_PATH_MAX];
    char    sdpath[WS_PATH_MAX];
 
-   if (!ws_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
+   if (!text_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
       return ws_error(c, 400, "Bad Request",
                       "That path is too long.");
    ws_normalize_path(decoded, sdpath, sizeof sdpath);
@@ -5033,7 +4962,7 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
    char    boundary[WS_BOUNDARY_MAX];
    FILINFO fno;
 
-   if (!ws_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
+   if (!text_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
       return ws_error(c, 400, "Bad Request",
                       "That path is too long.");
    ws_normalize_path(decoded, dir, sizeof dir);
@@ -5089,7 +5018,7 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
 {
    char decoded[WS_PATH_MAX];
 
-   if (!ws_url_decode(rawpath, decoded, sizeof decoded))
+   if (!text_url_decode(rawpath, decoded, sizeof decoded))
       return false;
    ws_normalize_path(decoded, sdpath, sdpath_sz);
    return ws_path_is_safe(sdpath) && ws_resolve_aliases(sdpath, sdpath_sz);
@@ -6032,7 +5961,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       dav_put_in_place field).  Parse it up front so a malformed value
       is a clean 400 rather than a whole-file replace the client did
       not ask for. */
-   if (ws_query_param(query, "offset", off_str, sizeof off_str)) {
+   if (text_query_param(query, "offset", off_str, sizeof off_str)) {
       if (off_str[0] == '\0')
          return ws_error(c, 400, "Bad Request", "Malformed offset.");
       for (p = off_str; *p != '\0'; ++p) {

@@ -55,35 +55,35 @@ int main(void)
       && text_hex_nibble('F') == 15 && text_hex_nibble('g') == -1 && text_hex_nibble(' ') == -1,
       "text_hex_nibble table");
 
-   puts("== ws_url_decode ==");
+   puts("== text_url_decode ==");
    {
       char d[64];
-      ok(ws_url_decode("%41%62c", d, sizeof d) && streq(d, "Abc"),
+      ok(text_url_decode("%41%62c", d, sizeof d) && streq(d, "Abc"),
          "basic percent decode");
-      ok(ws_url_decode("a%20b", d, sizeof d) && streq(d, "a b"),
+      ok(text_url_decode("a%20b", d, sizeof d) && streq(d, "a b"),
          "space decode");
-      ok(ws_url_decode("%00", d, sizeof d) && streq(d, "_"),
+      ok(text_url_decode("%00", d, sizeof d) && streq(d, "_"),
          "encoded NUL neutralised to '_'");
-      ok(ws_url_decode("%0d%0a", d, sizeof d) && streq(d, "__"),
+      ok(text_url_decode("%0d%0a", d, sizeof d) && streq(d, "__"),
          "encoded CRLF neutralised (header smuggling)");
-      ok(ws_url_decode("%7f%1f", d, sizeof d) && streq(d, "__"),
+      ok(text_url_decode("%7f%1f", d, sizeof d) && streq(d, "__"),
          "DEL and control neutralised");
-      ok(ws_url_decode("a\rb\nc", d, sizeof d) && streq(d, "a_b_c"),
+      ok(text_url_decode("a\rb\nc", d, sizeof d) && streq(d, "a_b_c"),
          "raw control bytes neutralised");
-      ok(ws_url_decode("%zz%4", d, sizeof d) && streq(d, "%zz%4"),
+      ok(text_url_decode("%zz%4", d, sizeof d) && streq(d, "%zz%4"),
          "bad hex passes through literally");
-      ok(ws_url_decode("%", d, sizeof d) && streq(d, "%"),
+      ok(text_url_decode("%", d, sizeof d) && streq(d, "%"),
          "trailing lone percent");
-      ok(ws_url_decode("%ff", d, sizeof d)
+      ok(text_url_decode("%ff", d, sizeof d)
          && (unsigned char)d[0] == 0xFFu && d[1] == '\0',
          "high byte preserved");
-      ok(ws_url_decode("%2500", d, sizeof d) && streq(d, "%00"),
+      ok(text_url_decode("%2500", d, sizeof d) && streq(d, "%00"),
          "single decode only (no double decode)");
-      ok(ws_url_decode("AB", d, 3u) && streq(d, "AB"),
+      ok(text_url_decode("AB", d, 3u) && streq(d, "AB"),
          "exact fit reports success");
-      ok(!ws_url_decode("ABC", d, 3u) && streq(d, "AB"),
+      ok(!text_url_decode("ABC", d, 3u) && streq(d, "AB"),
          "truncation reports failure, output still terminated");
-      ok(ws_url_decode("", d, 1u) && streq(d, ""), "empty into size-1");
+      ok(text_url_decode("", d, 1u) && streq(d, ""), "empty into size-1");
    }
 
    puts("== ws_memfind / ws_find_header_end ==");
@@ -229,7 +229,7 @@ int main(void)
       ok(ws_path_is_safe("/a..b/..c/d.."), "dotdot inside names ok");
       ok(!ws_path_is_safe("/a\x01" "b"), "control byte rejected");
       /* Only bytes < 0x20 are rejected here: DEL (0x7f) is neutralised
-         earlier, at ws_url_decode time.  Documenting the split. */
+         earlier, at text_url_decode time.  Documenting the split. */
       ok(ws_path_is_safe("/a\x7f"),
          "DEL not this layer's job (decode neutralises it)");
 
@@ -696,28 +696,28 @@ int main(void)
          "overlong last saturates then clamps");
    }
 
-   puts("== ws_query_param ==");
+   puts("== text_query_param ==");
    {
       char v[16];
-      ok(ws_query_param("offset=8192", "offset", v, sizeof v)
+      ok(text_query_param("offset=8192", "offset", v, sizeof v)
          && streq(v, "8192"), "single param");
-      ok(ws_query_param("a=1&offset=42&b=2", "offset", v, sizeof v)
+      ok(text_query_param("a=1&offset=42&b=2", "offset", v, sizeof v)
          && streq(v, "42"), "middle of list");
-      ok(ws_query_param("OFFSET=7", "offset", v, sizeof v) && streq(v, "7"),
+      ok(text_query_param("OFFSET=7", "offset", v, sizeof v) && streq(v, "7"),
          "key is case-blind");
-      ok(!ws_query_param("xoffset=5", "offset", v, sizeof v),
+      ok(!text_query_param("xoffset=5", "offset", v, sizeof v),
          "prefix of a longer key does not match");
-      ok(!ws_query_param("offsetx=5", "offset", v, sizeof v),
+      ok(!text_query_param("offsetx=5", "offset", v, sizeof v),
          "longer key does not match");
-      ok(!ws_query_param("offset", "offset", v, sizeof v),
+      ok(!text_query_param("offset", "offset", v, sizeof v),
          "key without '=' does not match");
-      ok(ws_query_param("offset=", "offset", v, sizeof v) && streq(v, ""),
+      ok(text_query_param("offset=", "offset", v, sizeof v) && streq(v, ""),
          "empty value returned as empty string");
-      ok(ws_query_param("offset=1&offset=2", "offset", v, sizeof v)
+      ok(text_query_param("offset=1&offset=2", "offset", v, sizeof v)
          && streq(v, "1"), "first occurrence wins");
-      ok(!ws_query_param("", "offset", v, sizeof v), "empty query");
-      ok(!ws_query_param(NULL, "offset", v, sizeof v), "NULL query");
-      ok(ws_query_param("offset=123456789012345678", "offset", v, 4u)
+      ok(!text_query_param("", "offset", v, sizeof v), "empty query");
+      ok(!text_query_param(NULL, "offset", v, sizeof v), "NULL query");
+      ok(text_query_param("offset=123456789012345678", "offset", v, 4u)
          && streq(v, "123"), "value truncated to the buffer, terminated");
    }
 

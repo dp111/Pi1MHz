@@ -3,7 +3,7 @@
  * EXACT size, so any read or write one byte past what the parser was
  * given becomes an ASan fault instead of a silent pass.  On top of the
  * memory-safety net, the security-relevant postconditions are asserted:
- *   - ws_url_decode output carries no control bytes (header smuggling)
+ *   - text_url_decode output carries no control bytes (header smuggling)
  *   - ws_normalize_path output is always absolute, canonical, and free
  *     of backslashes / double slashes / trailing slashes
  *   - a true return from dav_url_to_sdpath never yields a ".." segment
@@ -112,7 +112,7 @@ int main(void)
       {
          size_t dsz = 1u + rnd() % 520u;
          char  *d   = outbuf(dsz);
-         (void)ws_url_decode(s, d, dsz);
+         (void)text_url_decode(s, d, dsz);
          assert(strlen(d) < dsz);
          no_ctrl(d);
          free(d);
@@ -206,7 +206,7 @@ int main(void)
       {
          size_t osz = 1u + rnd() % 24u;
          char  *o   = outbuf(osz);
-         if (ws_query_param(s, "offset", o, osz))
+         if (text_query_param(s, "offset", o, osz))
             assert(strlen(o) < osz);
          free(o);
       }
