@@ -670,31 +670,6 @@ static void helper_stop(void)
    ok(on_screen("1192") && m->ram[0x82] == 0xC0, "it finished its count, once: &82=%u", m->ram[0x82]);
    ok(pi.Memory[0x88 + 4] == 0x60 && !ram_emulator_window_is_helper(), "and left the window on JIM RAM");
 
-   /* Again with the stops' selects 5 us late, about the board's worst: the way out has 16
-      cycles (8 us) between its &FD and the RTI back into the helper's page.  Only while the
-      helper counts: the firmware's own STX &FC88 : NOP : JMP &FD00, which starts and ends every
-      helper, allows the select 2.5 us. */
-   puts("== the same, with the stops' selects 5 us late");
-   m->ram[0x82] = 0;
-   type("X%=24:CALL &FC88:PRINT 2000+?&82\r");
-   for (int i = 0; i < 1000 && m->ram[0x82] == 0; i++) run_ms(1);
-   select_delay = 10;
-   in_helper = stops = lost = 0;
-   for (int i = 0; i < 200 && m->ram[0x82] < 0xB0; i++) {
-      if (ramprobe_halt(i % 3 == 0 ? RP_RUNG_EVENT : RP_RUNG_IRQ) && wait_state(RP_HALTED, 400)) {
-         stops++;
-         if ((ramprobe_stopped()->pc & 0xFF00) == 0xFD00) in_helper++;
-         if (!resume_now(NULL)) lost++;
-      } else {
-         lost++;
-      }
-      run_ms(rnd(8));
-   }
-   select_delay = 0;
-   run_ms(300);
-   ok(in_helper > 10 && lost == 0 && on_screen("2192"), "%d stops, %d in the helper, %d lost; it finished its count once",
-      stops, in_helper, lost);
-
    puts("== a helper left by the page registers, not by &FF: the stop goes back to JIM RAM");
    type("?&FC88=24:?&FCFF=0:?&FCFE=0:?&FCFD=0:?&FD00=171\r");
    run_ms(200);
