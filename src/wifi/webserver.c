@@ -151,7 +151,7 @@ typedef enum {
    CONN_SEND_MEM,          /* sending an in-memory response             */
    CONN_SEND_FILE,         /* sending a header then streaming a file    */
    CONN_SEND_FB,           /* sending a header then streaming the framebuffer */
-   CONN_RECV_BBC,          /* gathering a /bbc/poke body into dl_buf */
+   CONN_RECV_BBC,          /* gathering a /bbc/poke body into dl_buf, or a /bbc/shared one */
    CONN_BBC_WAIT           /* a /bbc POST with wait=1: answered when the probe is done */
 } conn_state_t;
 
@@ -351,9 +351,12 @@ typedef struct {
    bool     pp_capture;
    size_t   pp_buf_len;                  /* bytes of the body held in dl_buf */
    /* POST /bbc/poke with its bytes as the body (CONN_RECV_BBC): gathered in dl_buf, then
-      handed to ramprobe_api_body with the query kept here. */
+      handed to ramprobe_api_body with the query kept here.  POST /bbc/shared's body goes
+      straight into shared memory instead, at bbc_dest. */
    uint32_t bbc_need, bbc_have;
    char     bbc_query[256];
+   uint8_t *bbc_dest;                     /* dl_buf, or the place in shared memory */
+   bool     bbc_shared;                   /* POST /bbc/shared: the bytes are the work */
    char     pp_path[WS_PATH_MAX];        /* target whose mtime we will stamp */
 
    /* PUT bodies arrive one ~1460-byte TCP segment at a time.  Writing
@@ -3913,9 +3916,75 @@ static bool bbc_answer(ws_conn_t *c, bool post, const char *q, int status, char 
    return ws_finish_typed(c, status, status == 200 ? "OK" : "Error", "application/json", &b);
 }
 
-/* A /bbc/poke body, all in: poke it. */
+/* A /bbc/shared body, all in and already where it goes: {"written":n}. */
+static bool bbc_shared_done(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   char text[32];
+   snprintf(text, sizeof text, "{\"written\":%lu}\n", (unsigned long)c->bbc_need);
+   sb_init(&b);
+   sb_puts(&b, text);
+   return ws_finish_typed(c, 200, "OK", "application/json", &b);
+}
+
+/* POST /bbc/shared?offset=: a body of any size that fits, straight into shared memory as it
+   arrives, with no stop.  Content-Length framing only: a Transfer-Encoding is refused, since
+   the length is checked against shared memory before a byte is taken.  A client that sent
+   "Expect: 100-continue" gets the 100 once the request has passed those checks. */
+static bool bbc_shared_begin(ws_conn_t *c, const char *q, int body_at)
+{
+   char hdr[24];
+   unsigned long cl = 0;
+   char *end = NULL;
+   uint8_t *dest = NULL;
+   char err[160];
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding", hdr, sizeof hdr))
+      return ws_error(c, 400, "Bad Request", "POST /bbc/shared takes a Content-Length body, not a Transfer-Encoding.");
+   /* A value too long for hdr comes back cut short, so it is refused, not read. */
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length", hdr, sizeof hdr)
+       && strlen(hdr) + 2u <= sizeof hdr && hdr[0] >= '0' && hdr[0] <= '9')
+      cl = strtoul(hdr, &end, 10);
+   if (end == NULL || *end != '\0')
+      cl = 0;
+   int status = ramprobe_api_shared(q, cl, &dest, err, sizeof err);
+   if (status == 0)
+      return ws_error(c, 404, "Not Found", "No such page.");
+   if (status != 200) {
+      ws_strbuf_t b;
+      sb_init(&b);
+      sb_puts(&b, err);
+      return ws_finish_typed(c, status, "Error", "application/json", &b);
+   }
+   ws_send_100_continue_if_expected(c);
+   size_t already = ((size_t)body_at < c->reqhdr_len) ? (c->reqhdr_len - (size_t)body_at) : 0u;
+   size_t take = already < cl ? already : (size_t)cl;
+   memcpy(dest, c->reqhdr + body_at, take);
+   c->bbc_dest = dest;
+   c->bbc_shared = true;
+   c->bbc_have = (uint32_t)take;
+   c->bbc_need = (uint32_t)cl;
+   if (take < cl) {
+      c->state = CONN_RECV_BBC;
+      return true;
+   }
+   return bbc_shared_done(c);
+}
+
+/* Body bytes for CONN_RECV_BBC, into dl_buf or shared memory: how many it took. */
+static size_t bbc_body_take(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   size_t need = c->bbc_need - c->bbc_have;
+   size_t take = (len < need) ? len : need;
+   memcpy(c->bbc_dest + c->bbc_have, data, take);
+   c->bbc_have += (uint32_t)take;
+   return take;
+}
+
+/* A body, all in: a /bbc/shared one is already where it goes; a /bbc/poke one is poked. */
 static bool bbc_body_done(ws_conn_t *c)
 {
+   if (c->bbc_shared)
+      return bbc_shared_done(c);
    char *text = malloc(RAMPROBE_API_OUT);
    if (text == NULL)
       return ws_oom(c);
@@ -3924,11 +3993,16 @@ static bool bbc_body_done(ws_conn_t *c)
 }
 
 /* /bbc and /bbc/... - the RAM probe (ramprobe_api.c).  POST /bbc/poke may carry its bytes as
-   the body (Content-Length, raw) instead of hex= in the URL, whose length caps it near 200. */
+   the body (Content-Length, raw) instead of hex= in the URL, whose length caps it near 200.
+   POST /bbc/shared always does, and its body may be any size that fits in shared memory. */
 static bool route_bbc(ws_conn_t *c, bool post, const char *path, const char *query, int body_at)
 {
    const char *q = query != NULL ? query + 1 : NULL;
    char cl_hdr[24];
+   c->bbc_shared = false;
+   c->bbc_dest = c->dl_buf;
+   if (post && strcmp(path, "/bbc/shared") == 0)
+      return bbc_shared_begin(c, q, body_at);
    if (post && strcmp(path, "/bbc/poke") == 0 && (q == NULL || strstr(q, "hex=") == NULL)
        && ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length", cl_hdr, sizeof cl_hdr)) {
       char *end;
@@ -7626,12 +7700,7 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
             return true;          /* wait for more header data */
          }
       } else if (c->state == CONN_RECV_BBC) {
-         size_t rem  = len - pos;
-         size_t need = c->bbc_need - c->bbc_have;
-         size_t take = (rem < need) ? rem : need;
-         memcpy(c->dl_buf + c->bbc_have, data + pos, take);
-         c->bbc_have += (uint32_t)take;
-         pos += take;
+         pos += bbc_body_take(c, data + pos, len - pos);
          if (c->bbc_have == c->bbc_need && !bbc_body_done(c))
             return false;
       } else if (c->state == CONN_RECV_UPLOAD) {

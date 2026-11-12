@@ -44,6 +44,7 @@ void Pi1MHz_Register_Poll(func_ptr fn, const char *name)
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { pi.Memory[addr & 0x1ffu] = data; }
 void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data) { pi.Memory[addr & 0x1ffu] = data; }
 void Pi1MHz_MemoryWritePage(uint32_t addr, const void *data) { memcpy(pi.Memory + (addr & 0x100u), data, 256); }
+uint8_t Pi1MHz_MemoryRead(uint32_t addr) { return pi.Memory[addr & 0x1ffu]; }
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data) { pi.Memory[addr & 0x1ffu] = (uint8_t)data; pi.Memory[(addr + 1u) & 0x1ffu] = (uint8_t)(data >> 8); }
 static void board_nmi_line(bool low);   /* the emulator's: nNMI, low or not */
 static void board_irq_line(bool low);   /* the emulator's: nIRQ, the Pi's share of it */
@@ -83,10 +84,11 @@ void fat_service_wild_leaves(const char *dir, const char *const *pats, unsigned 
    for (unsigned i = 0; i < n; i++) out[i * size] = '\0';
 }
 /* ram_emulator.c sizes JIM RAM as the memory past the program's end (_end) less 4 MB, in 16 MB
-   steps: 32 MB here.  run_tests.sh links with -no-pie, so _end is low and fixed and the sum
-   doesn't wrap in 32 bits. */
+   steps: 48 MB here, so the services area (its top 32 MB, DISC_RAM_BASE) starts at 16 MB and a
+   services offset differs from the JIM address the &FD00 window takes, as on a real board.
+   run_tests.sh links with -no-pie, so _end is low and fixed and the sum doesn't wrap in 32 bits. */
 extern char _end;
-uint32_t mem_info(int size) { (void)size; return (uint32_t)(uintptr_t)&_end + 4u * 1024u * 1024u + 2u * JIM_RAM_STEP; }
+uint32_t mem_info(int size) { (void)size; return (uint32_t)(uintptr_t)&_end + 4u * 1024u * 1024u + 3u * JIM_RAM_STEP; }
 extern uint8_t helper_ram[];          /* helpers.c's: the pages it loaded from 6502code.bin */
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio) { pi.Memory[GET_ADDR(gpio) & 0xffu] = (uint8_t)GET_DATA(gpio); }
 

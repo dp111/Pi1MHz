@@ -179,6 +179,52 @@ try:
     except urllib.error.HTTPError as e:
         ok(e.code == 400, f"a 40000-byte body refused: {e.code}")
 
+    print("== shared memory: written over HTTP, read and written by the BBC, no stop")
+    s = json.loads(cli("status").stdout)
+    sh, stops0 = s["shared"], s["stops"]
+    ok(sh["at"] == 0x800000 and sh["size"] == 0x400000, f"GET /bbc gives it: services &{sh['at']:X}, {sh['size']} bytes, JIM &{sh['jim']:X}")
+    big = bytes(random.randrange(256) for _ in range(100000))
+    req = urllib.request.Request(f"http://{host}/bbc/shared?offset=1000", method="POST", data=big,
+                                 headers={"Content-Type": "application/octet-stream"})
+    s = json.loads(urllib.request.urlopen(req, timeout=30).read())
+    ok(s == {"written": 100000}, f"100000 bytes in one request: {s}")
+    got = urllib.request.urlopen(f"http://{host}/bbc/shared?offset={1000 + 54321}&len=16", timeout=10).read().decode().strip()
+    ok(bytes.fromhex(got) == big[54321:54337], f"GET /bbc/shared reads them back: {got}")
+    r = cli("shared-read", 1000, 100000)
+    ok(bytes.fromhex(r.stdout.strip()) == big, "bbcprobe.py shared-read: all 100000, in 4 KB requests")
+    at = sh["at"] + 1000 + 54321                     # the BBC reads them through the services port
+    # two bytes as one number, a*1000+b: bbcsim types no quotes or semicolons
+    sim_post("/sim/type", text=f"?&FCA6={at & 255}:?&FCA7={at >> 8 & 255}:?&FCA8={at >> 16}:PRINT ?&FCA9*1000+?&FCA9\r")
+    want = str(big[54321] * 1000 + big[54322])
+    ok(want in screen().replace(" ", ""), f"the BBC reads them through the services port at &{at:06X}: {want}")
+    s = json.loads(cli("status").stdout)
+    ok(s["shared"]["read"] == 1000 + 54323, f"GET /bbc's shared.read says how far the port has got: {s['shared']['read']}")
+    page = bytes(range(256))
+    cli("shared-write", 0x3000, page.hex())
+    jim = sh["jim"] + 0x3000                         # and through the &FD00 window, at its JIM address
+    sim_post("/sim/type", text=f"?&FCFD={jim >> 24}:?&FCFE={jim >> 16 & 255}:?&FCFF={jim >> 8 & 255}:PRINT ?&FD05*1000+?&FD06\r")
+    ok("5006" in screen().replace(" ", ""), "the BBC reads them through the &FD00 window: 5006")
+    sim_post("/sim/type", text="?&FCA6=0:?&FCA7=&50:?&FCA8=&80:?&FCA9=12:?&FCA9=34:?&FD20=86\r")
+    r = cli("shared-read", 0x5000, 2)
+    ok(r.stdout.strip() == "0c22", f"the BBC writes through the services port, read back over HTTP: {r.stdout.strip()}")
+    r = cli("shared-read", 0x3020, 1)
+    ok(r.stdout.strip() == "56", f"and through the &FD00 window: {r.stdout.strip()}")
+    end = sh["size"]
+    r = urllib.request.urlopen(urllib.request.Request(f"http://{host}/bbc/shared?offset={end - 10}", method="POST",
+                               data=bytes(10), headers={"Content-Type": "application/octet-stream"}), timeout=20)
+    ok(r.status == 200, "a write up to its last byte: taken")
+    for what, url, data in (("a write past the end", f"/bbc/shared?offset={end - 10}", bytes(11)),
+                            ("a read past the end", f"/bbc/shared?offset={end - 1}&len=2", None),
+                            ("a read of over 4 KB", "/bbc/shared?offset=0&len=4097", None)):
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"http://{host}{url}", method="POST" if data else "GET",
+                                   data=data, headers={"Content-Type": "application/octet-stream"}), timeout=20)
+            ok(False, f"{what}: refused")
+        except urllib.error.HTTPError as e:
+            ok(e.code == 400, f"{what}: refused, {e.code}")
+    s = json.loads(cli("status").stdout)
+    ok(s["stops"] == stops0 and s["state"] == "running", f"no stop through all of that: {s['stops'] - stops0} stops")
+
     print("== stopped in a loop with interrupts off, and sent somewhere else")
     sim_post("/sim/type", text="?&2000=120:?&2001=76:?&2002=1:?&2003=32\r")   # SEI : JMP &2001
     # a separate line, as the keyboard stops with it

@@ -70,8 +70,11 @@ static struct {
    unsigned nmi_sent;
    uint32_t peeked;
    uint32_t resets;            /* BBC resets seen: each one loses the install */
+   uint32_t stops;             /* times the BBC came into the agent */
 } R;
 
+_Static_assert(RP_SHARED == SERVICES_SHARED_FIRST && RP_SHARED + RP_SHARED_SIZE - 1u == SERVICES_SHARED_LAST,
+               "shared memory, as services.h records it");
 _Static_assert(RP_REPORT == SERVICES_RAMPROBE_FIRST && RP_DATA + RP_MAX_TRANSFER - 1u == SERVICES_RAMPROBE_LAST,
                "the probe's place in the services area, as services.h records it");
 
@@ -267,6 +270,7 @@ static void ramprobe_poll(void)
          it go on at once, so a failure leaves the BBC as it was. */
       if (*J(RP_REPORT + RP_HALTED_AT) == 1u && ramprobe_installed()) {
          *J(RP_REPORT + RP_HALTED_AT) = 2u;          /* seen: not again */
+         R.stops++;
          start_resume();
       }
       break;
@@ -275,6 +279,7 @@ static void ramprobe_poll(void)
       if (*J(RP_REPORT + RP_HALTED_AT) == 1u) {
          const uint8_t *r = J(RP_REPORT);
          unask();
+         R.stops++;
          R.stopped = (rp_regs_t){ .y = r[0], .x = r[1], .a = r[2], .p = r[3], .pc = (uint16_t)(r[4] | (r[5] << 8)), .s = r[6] };
          R.state = RP_HALTED;
          if (R.oneshot) {
@@ -568,12 +573,15 @@ static void put_fred(void)
 
 bool ramprobe_installed(void) { return R.state != RP_OFF && pages_ok() && *J(RP_REPORT + RP_INSTALLED_AT) == RP_INSTALLED; }
 const char *ramprobe_error(void) { return R.error; }
+uint32_t ramprobe_stops(void) { return R.stops; }
 uint32_t ramprobe_resets(void) { return R.resets; }
 int ramprobe_rung(void) { return R.rung; }
 const rp_regs_t *ramprobe_stopped(void) { return &R.stopped; }
 const rp_regs_t *ramprobe_result(void) { return &R.result; }
 
 uint32_t ramprobe_report_at(void) { return RP_REPORT; }
+uint8_t *ramprobe_shared(void) { return J(RP_SHARED); }
+uint32_t ramprobe_shared_jim(void) { return DISC_RAM_BASE + RP_SHARED; }
 
 const uint8_t *ramprobe_data(uint32_t *length)
 {

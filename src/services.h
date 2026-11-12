@@ -38,8 +38,12 @@
 /* ---- fixed regions of the services area ----------------------------------
    Offsets from DISC_RAM_BASE that a module uses at a fixed place, so the next one can see
    what's taken.  Add yours.
+     &800000-&BFFFFF  shared memory (ramprobe.h, RP_SHARED): the program area's first 4 MB
+                      (docs/advanced.md), which the probe also serves over HTTP, /bbc/shared
      &E00000-&E100FF  the RAM probe's report (&100) and peek/poke data (64 KB), ramprobe.c:
                       only once its install line has been typed on the BBC */
+#define SERVICES_SHARED_FIRST   0x800000u
+#define SERVICES_SHARED_LAST    0xBFFFFFu
 #define SERVICES_RAMPROBE_FIRST 0xE00000u
 #define SERVICES_RAMPROBE_LAST  0xE100FFu
 
