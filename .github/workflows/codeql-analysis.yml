@@ -1,38 +1,93 @@
 name: "CodeQL"
 
+# The C/C++ is bare-metal ARM firmware built by CMake presets under src/:
+# CodeQL's autobuild cannot find or build it ("We were unable to
+# automatically build your code"), so the C/C++ job builds the rpi preset by
+# hand, as src/scripts/build.sh does.  One preset is enough for analysis: the
+# other kernels compile the same sources with a different -mcpu.
+#
+# Compiler: arm-none-eabi-gcc 16.2 (CodeQL supports GNU extensions up to
+# GCC 16; the local gcc17 build is newer than that).  Neither Arm nor xPack
+# ships a 16.x tarball, so the job runs in an Arch Linux container and
+# installs Arch's 16.2.0-1 package, pinned from the Arch Linux Archive so a
+# repo update cannot move it.
+
 on:
   push:
-    branches: [master, ]
+    branches: [master]
   pull_request:
     # The branches below must be a subset of the branches above
     branches: [master]
   schedule:
     - cron: '0 22 * * 0'
 
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
 jobs:
-  analyse:
-    name: Analyse
+  analyse-c-cpp:
+    name: Analyse (c-cpp)
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
+    timeout-minutes: 60
+    container: archlinux:latest
+
+    steps:
+    - name: Toolchain (arm-none-eabi-gcc 16.2.0) and build tools
+      run: |
+        pacman -Syu --noconfirm --needed git patch cmake make python
+        pacman -U --noconfirm \
+          https://archive.archlinux.org/packages/a/arm-none-eabi-gcc/arm-none-eabi-gcc-16.2.0-1-x86_64.pkg.tar.zst
+        pacman -S --noconfirm --needed arm-none-eabi-newlib
+        arm-none-eabi-gcc --version | head -1
+
+    - name: Checkout repository
+      uses: actions/checkout@v5
+      with:
+        # tinyusb, lwip, cJSON, mbedtls and libsmb2 are all compiled in
+        submodules: recursive
+        # scripts/gitversion.h is made from git describe
+        fetch-depth: 0
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: c-cpp
+        build-mode: manual
+
+    - name: Build (rpi preset)
+      working-directory: src
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        cmake --preset rpi
+        cmake --build --preset rpi -j"$(nproc)"
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:c-cpp"
+
+  analyse:
+    name: Analyse (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
-    # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
-      # Override language selection by uncommenting this and choosing your languages
-      # with:
-      #   languages: go, javascript, csharp, python, cpp, java
-
-    # Autobuild attempts to build any compiled languages  (C/C++, C#, or Java).
-    # If this step fails, then you should remove it and run the build manually (see below)
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v3
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: none
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:${{ matrix.language }}"
