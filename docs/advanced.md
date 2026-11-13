@@ -81,7 +81,8 @@ buffer and never need to raise PAGE. Suggested buffer layout: first 4 MB
 for the active filing system, 8-14 MB for the active program.  The program
 area's first 4 MB (`&800000-&BFFFFF`) is the RAM probe's shared memory, which
 a program on the network also reads and writes over HTTP with `/bbc/shared`
-(see [the RAM probe](dev/ramprobe.md)).
+(see [the RAM probe](dev/ramprobe.md)). The BBC sees the network's newer bytes once it
+writes a page register or the port's address again.
 
 ### Result codes (FatFs `FRESULT`)
 

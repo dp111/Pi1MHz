@@ -242,7 +242,9 @@ both sides reach without a stop:
   Pi's memory; `GET /bbc/shared?offset=&len=` reads up to 4 KB back, in hex.
 - **Its code on the BBC, while it runs:**
   - the services port: write the services offset to `&FCA6-&FCA8` (low byte first), then each
-    read or write of `&FCA9` moves a byte and steps on.
+    read or write of `&FCA9` moves a byte and steps on.  The port holds the byte at its address
+    ready to read, so a network write to exactly that byte is read stale once: set the address
+    again before reading what the application may have just changed.
   - the `&FD00` window: write a JIM address to `&FCFD-&FCFF` (high byte first).  Shared memory
     is at JIM `shared.jim` in `GET /bbc`, as it depends on the Pi's memory.  The window holds a
     copy of the page made when a page register is written: write one again (`&FCFF` will do) to

@@ -122,7 +122,9 @@ uint32_t ramprobe_report_at(void);   /* JIM address of the report; its data buff
    BBC runs, with no stop.  The application writes and reads it over HTTP (POST and GET
    /bbc/shared); the BBC reaches it through the services port (&FCA6-&FCA9: a 24-bit services
    offset, then a data register that moves on by itself) or through the &FD00 window, whose page
-   registers (&FCFD-&FCFF) take the JIM address that ramprobe_shared_jim() gives.  The probe
+   registers (&FCFD-&FCFF) take the JIM address that ramprobe_shared_jim() gives.  Both show the
+   application's newer bytes only once the BBC sets them again: the window is a copy of the page
+   made when a page register is written, and the port holds its next byte ready.  The probe
    writes it only for those routes and never interprets its bytes: what goes where is the
    application's choice.  services.h records it. */
 #define RP_SHARED      0x800000u

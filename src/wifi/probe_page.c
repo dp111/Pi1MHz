@@ -61,7 +61,8 @@ const char *const probe_page_body[] = {
    "<p class=\"muted\">Shared memory is for a remote application, such as a game agent or a video "
    "player, and its own code on the BBC: the BBC reads and writes it while it runs, through the "
    "services port (&amp;FCA6-&amp;FCA9) or the &amp;FD00 window, and the application over HTTP, "
-   "with no stop.</p></div>",
+   "with no stop. The BBC sees the application's newer bytes once it writes a page register or "
+   "the port's address again.</p></div>",
 
    /* the script: the state, once a second, and the buttons */
    "<script>"
