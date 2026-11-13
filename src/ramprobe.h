@@ -79,6 +79,7 @@ const char *ramprobe_state_name(void);
 bool        ramprobe_installed(void);   /* the install line typed since the last reset */
 const char *ramprobe_error(void);       /* why the last thing failed, or "" */
 uint32_t    ramprobe_resets(void);      /* BBC resets since the Pi started: a client's cue to recover */
+uint32_t    ramprobe_stops(void);       /* times the BBC has been stopped since the Pi started */
 
 /* How the agent is asked in.  The caller picks; only that rung is tried, and if it
    doesn't answer in its time the call fails, leaving nothing asked of the BBC.
@@ -115,5 +116,20 @@ const rp_regs_t *ramprobe_result(void);     /* the last call's A, X, Y, P */
 const uint8_t   *ramprobe_data(uint32_t *length);   /* the last peek's bytes */
 
 uint32_t ramprobe_report_at(void);   /* JIM address of the report; its data buffer is 0x100 on */
+
+/* Shared memory: the first 4 MB of the services area's program area (docs/advanced.md), through
+   which a remote application on the network and its own code on the BBC exchange data while the
+   BBC runs, with no stop.  The application writes and reads it over HTTP (POST and GET
+   /bbc/shared); the BBC reaches it through the services port (&FCA6-&FCA9: a 24-bit services
+   offset, then a data register that moves on by itself) or through the &FD00 window, whose page
+   registers (&FCFD-&FCFF) take the JIM address that ramprobe_shared_jim() gives.  Both show the
+   application's newer bytes only once the BBC sets them again: the window is a copy of the page
+   made when a page register is written, and the port holds its next byte ready.  The probe
+   writes it only for those routes and never interprets its bytes: what goes where is the
+   application's choice.  services.h records it. */
+#define RP_SHARED      0x800000u
+#define RP_SHARED_SIZE 0x400000u
+uint8_t *ramprobe_shared(void);
+uint32_t ramprobe_shared_jim(void);  /* its JIM address: DISC_RAM_BASE + RP_SHARED */
 
 #endif

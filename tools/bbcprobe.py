@@ -16,8 +16,11 @@
                                    program put them back (disc Elite's loader does): by the NMI
                                    if the machine is running, so it needs &0D00 intact (not
                                    after an Acorn DFS disc access; MMFS leaves it alone)
+     shared-read OFFSET LEN [-o FILE]       read shared memory, with no stop: hex, or into a file
+     shared-write OFFSET HEX | --file FILE  write shared memory, with no stop
 
-Halt first, then peek, poke, jsr or run. Numbers may be 0x2000 or 8192.
+Halt first, then peek, poke, jsr or run.  Shared memory needs no halt: it is in the Pi1MHz, and
+the BBC's own code reads and writes it while it runs.  Numbers may be 0x2000 or 8192.
 """
 import argparse
 import json
@@ -149,6 +152,17 @@ class Probe:
             out += bytes.fromhex(text)
         return bytes(out)
 
+    def shared_read(self, offset, length):
+        out = bytearray()
+        while len(out) < length:
+            n = min(4096, length - len(out))
+            out += bytes.fromhex(self._go("/bbc/shared", False, offset=offset + len(out), len=n).strip())
+        return bytes(out)
+
+    def shared_write(self, offset, data):
+        """Any length that fits, in one request: the body goes straight into the Pi's memory."""
+        return json.loads(self._go("/bbc/shared", True, data, offset=offset))
+
     def poke(self, addr, data):
         for at in range(0, len(data), CHUNK):
             self.act("/bbc/poke", addr=addr + at, hex=data[at:at + CHUNK].hex())
@@ -224,6 +238,20 @@ def main():
         print(show(p.act("/bbc/run", hex=a[0], **regs(a[1:]))["result"], pc=False))
     elif c == "rehook":
         p.rehook()
+    elif c == "shared-read":
+        data = p.shared_read(int(a[0], 0), int(a[1], 0))
+        if o.output:
+            with open(o.output, "wb") as f:
+                f.write(data)
+        else:
+            print(data.hex())
+    elif c == "shared-write":
+        if o.file:
+            with open(o.file, "rb") as f:
+                data = f.read()
+        else:
+            data = bytes.fromhex(a[1])
+        p.shared_write(int(a[0], 0), data)
     else:
         ap.error(f"no command {c}")
     return 0

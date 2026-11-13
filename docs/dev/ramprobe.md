@@ -9,7 +9,9 @@
 
 Stop a BBC Micro over the network, read and write its memory, call code, and let it go on.
 No ROM is needed in the BBC: one typed line installs it.  Web-based clients can use it, for
-example, for remote control, AI integration or video streaming.
+example, for remote control, AI integration or video streaming.  It also serves shared memory,
+which a program on the network and a program on the BBC both read and write without stopping
+the BBC (see "Shared memory").
 
 Tested on a Model B (MOS 1.20, MMFS Turbo, a Pi Zero 2 W on Ken Lowe's level shifter, over
 WiFi), and in the host tests on kc-beeb, an emulated Master 128.
@@ -72,10 +74,12 @@ on a network you trust, set a login, or turn it off with `ramprobe_addr=-1`.
 ## The JIM memory it uses
 
 While the machine is stopped in the agent, the probe talks to the BBC through the services port
-(`&FCA6-&FCA9`) at a fixed region of the JIM services buffer, services offset `&E00000`:
+(`&FCA6-&FCA9`) at a fixed region of the JIM services buffer, services offset `&E00000`.
+Shared memory, which the probe never stops the BBC for, is below it:
 
 | JIM offset (from `DISC_RAM_BASE`) | What |
 |---|---|
+| `&800000-&BFFFFF` | shared memory, 4 MB (`RP_SHARED`, `RP_SHARED_SIZE`): the first 4 MB of the program area (`docs/advanced.md`), also written and read over HTTP with `POST` and `GET /bbc/shared` |
 | `&E00000-&E000FF` | the report: the stopped registers, the halted flag, the call result, a sequence number and the installed marker |
 | `&E00100-&E100FF` | the peek/poke data buffer, up to `RP_MAX_TRANSFER` (64 KB) |
 
@@ -191,7 +195,7 @@ that reuses one saves a TCP setup per request.
 
 | Route | What it does |
 |---|---|
-| `GET /bbc` | The status: `api`, `build`, `resets` (BBC resets seen), `state` (`waiting` until the line is typed, then `running`, `halted` and so on), `busy`, `installed`, `rung` (the last stop's), `error`, the stopped registers (`null` after a rung 0 stop), the last call's A, X, Y and P, and `report` (the JIM address of the probe's report; its data buffer is `report` + &100) |
+| `GET /bbc` | The status: `api`, `build`, `resets` (BBC resets seen), `stops` (times the BBC has been stopped since the Pi started), `state` (`waiting` until the line is typed, then `running`, `halted` and so on), `busy`, `installed`, `rung` (the last stop's), `error`, the stopped registers (`null` after a rung 0 stop), the last call's A, X, Y and P, `report` (the JIM address of the probe's report; its data buffer is `report` + &100), and `shared`: `at` (shared memory's services offset), `size`, `jim` (its JIM address, for the `&FD00` window) and `read` (where the services port's pointer is in it, or -1 elsewhere and while stopped) |
 | `POST /bbc/halt?rung=` | Stop the machine, by rung 0, 1 or 2 (0 if not given; 2 also needs `nmi=1`) |
 | `POST /bbc/continue?pc=&a=&x=&y=&p=` | Let it go on, each register optional.  Registers can't be set after a rung 0 stop (409) |
 | `POST /bbc/peek?addr=&len=&bank=&rung=` | Read up to 64 KB into the Pi.  `bank` picks a sideways bank.  Refused on the I/O pages, `&FC00-&FEFF`: reads there have side effects (use `/bbc/run`).  On a running machine with `rung`, one request does the stop, the read and the go |
@@ -201,6 +205,8 @@ that reuses one saves a TCP setup per request.
 | `POST /bbc/poke?ranges=...&hex=&rung=` | Several ranges in one request and one stop: their bytes concatenated, in order, as `hex` or the body, which must be exactly the ranges' total.  Nothing is written if any range is refused |
 | `POST /bbc/jsr?addr=&a=&x=&y=` | Call code that ends with RTS; up to 5 s |
 | `POST /bbc/run?hex=&a=&x=&y=` | Run up to 80 bytes from the Pi's memory at `&FDA0` |
+| `POST /bbc/shared?offset=` | Write the body (`Content-Length`, no `Transfer-Encoding`), of any size that fits, into shared memory at `offset`, as it arrives; answers `{"written":n}`.  No stop |
+| `GET /bbc/shared?offset=&len=` | Read 1 to 4096 bytes of shared memory, in hex.  No stop.  Both are needed; a range past the end is refused |
 
 A game agent reading the same few places every frame wants `ranges` with `rung=1` and `wait=1`:
 one HTTP request stops the game, reads them all and lets it go on.  The Pi copies as many ranges
@@ -221,6 +227,42 @@ Continue and Peek buttons, the install line and these routes.  Its HTML and scri
 | Stop and go, rung 0 | about 20 ms |
 | 8 KB poke as a body | 93 ms |
 | MODE 7 screens, 1000 bytes each, poked at rung 0 | 48.8 a second |
+
+## Shared memory
+
+A remote application, a program on the network working with a running BBC program (a game agent,
+a video player, a live debugger view), needs to exchange data many times a second.  Stops are
+wrong for that: each one turns interrupts off for a millisecond or more, and on a real Model B
+tens of stops a second clicked the cassette relay and glitched a split-screen game.
+
+Shared memory is services offsets `&800000-&BFFFFF`, the first 4 MB of the program area, which
+both sides reach without a stop:
+
+- **The application, over HTTP:** `POST /bbc/shared?offset=` writes a body straight into the
+  Pi's memory; `GET /bbc/shared?offset=&len=` reads up to 4 KB back, in hex.
+- **Its code on the BBC, while it runs:**
+  - the services port: write the services offset to `&FCA6-&FCA8` (low byte first), then each
+    read or write of `&FCA9` moves a byte and steps on.  The port holds the byte at its address
+    ready to read, so a network write to exactly that byte is read stale once: set the address
+    again before reading what the application may have just changed.
+  - the `&FD00` window: write a JIM address to `&FCFD-&FCFF` (high byte first).  Shared memory
+    is at JIM `shared.jim` in `GET /bbc`, as it depends on the Pi's memory.  The window holds a
+    copy of the page made when a page register is written: write one again (`&FCFF` will do) to
+    see the application's newer bytes.  The BBC's writes to the window go through at once.
+
+`GET /bbc`'s `shared.read` is where the services port's pointer is in shared memory (-1
+elsewhere, and while the BBC is stopped), so a streaming application can keep ahead of its
+player.  `stops` counts the probe's stops.
+
+The probe writes shared memory only for `POST /bbc/shared`, and never interprets it; it is in
+the services area, so other services may write it too if a BBC program points them there.  A
+BBC reset doesn't clear it.  The routes need the probe on, not installed.
+
+An example convention, for a game agent: the input page at `+&0000`, written by the application
+and read by the game's patched key routine through the `&FD00` window; a state mirror at
+`+&0100`, written by the game's patched main loop through the services port once each pass (a
+sequence number, the state, the number again) and read by the application, which takes a copy
+whose two numbers match.
 
 ## What a client has to look after
 
@@ -301,11 +343,13 @@ it first checks that bin is what `6502code.asm` assembles to, so the two can't d
   failures, 2000 random stops on a program that checks its own registers and on BASIC printing
   through the OS, the program's own port and JIM page, lockout, a call that doesn't return, a
   reset, the FIQ late by up to 200 µs, stops inside another helper, a stop inside a stop, stops
-  during a transfer page, a mismatched `6502code.bin`, and the routes with malformed requests.  The
-  register checker has a control: spoiling the saved A must be caught.
+  during a transfer page, a mismatched `6502code.bin`, the routes with malformed requests, and
+  shared memory: written over HTTP, read and written by the BBC through the services port and
+  the `&FD00` window, its bounds, and no stop through any of it.  The register checker has a
+  control: spoiling the saved A must be caught.
 - **`test_bbcprobe.py`, over HTTP:** the same firmware behind a small HTTP server, driven by
-  `tools/bbcprobe.py` as a person would, with `wait=1`, body pokes, and a rehook after the vectors
-  are put back.
+  `tools/bbcprobe.py` as a person would, with `wait=1`, body pokes, a rehook after the vectors
+  are put back, and shared memory.
   `run_tests.sh 8080` serves it for trying another client.
 
 Not covered by the host tests: `webserver.c` itself (the tests use their own HTTP server), and

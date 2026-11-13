@@ -109,6 +109,23 @@ static void answer(int fd)
    }
    bool post = !strncmp(req, "POST ", 5);
    static uint8_t body[RAMPROBE_API_BODY_MAX];
+   if (post && strncmp(req, "POST /bbc/shared", 16) == 0) {   /* as webserver.c does: src/tests/webserver */
+      static char sout[RAMPROBE_API_OUT];
+      char *qs = strchr(req, '?'), *sp = qs ? strchr(qs, ' ') : NULL;
+      char q[256] = "";
+      if (qs && sp && (size_t)(sp - qs - 1) < sizeof q) { memcpy(q, qs + 1, (size_t)(sp - qs - 1)); q[sp - qs - 1] = 0; }
+      long cl = board_content_length(req);
+      uint8_t *dest = NULL;
+      int st = ramprobe_api_shared(q, cl > 0 ? (size_t)cl : 0u, &dest, sout, sizeof sout);
+      if (st == 200 && board_read_body(fd, req, got, dest, (size_t)cl) == cl)
+         snprintf(sout, sizeof sout, "{\"written\":%ld}\n", cl);
+      else if (st == 200) { st = 400; snprintf(sout, sizeof sout, "{\"error\":\"short body\"}\n"); }
+      char head[160];
+      int h = snprintf(head, sizeof head, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                       st, st == 200 ? "OK" : "Error", strlen(sout));
+      if (write(fd, head, (size_t)h) < 0 || write(fd, sout, strlen(sout)) < 0) perror("write");
+      return;
+   }
    long blen = post ? board_read_body(fd, req, got, body, sizeof body) : -1;   /* before req is cut up */
    char *sp1 = strchr(req, ' ');
    char *sp2 = sp1 ? strchr(sp1 + 1, ' ') : NULL;

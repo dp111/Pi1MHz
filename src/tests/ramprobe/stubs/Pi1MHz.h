@@ -36,6 +36,7 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio);
 void Pi1MHz_Register_Poll(func_ptr function_ptr, const char *name);
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
+uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data);
 void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data);
 void Pi1MHz_MemoryWritePage(uint32_t addr, const void *data);
