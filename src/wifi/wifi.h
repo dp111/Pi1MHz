@@ -263,8 +263,18 @@ typedef enum {
    WIFI_STATE_ERROR
 } wifi_state_t;
 
+/* network= in Pi1MHz.cfg: which link carries the network.  auto takes the
+   Pi 3B+'s Ethernet when a cable gives it a link, else WiFi
+   (docs/dev/ethernet-pi3-plan.md). */
+typedef enum {
+   WIFI_LINK_AUTO = 0,
+   WIFI_LINK_WIFI,
+   WIFI_LINK_ETHERNET
+} wifi_link_mode_t;
+
 typedef struct {
    bool enabled;
+   uint8_t link_mode;   /* wifi_link_mode_t */
    bool config_present;
    bool ip_config_valid;
    bool sdio_probe_enabled;
@@ -344,6 +354,8 @@ void wifi_boot(void);
    power-on, inside a SCSI command): false when none can come - the WiFi off or not set up, or
    its boot failed. */
 bool wifi_boot_step(void);
+/* The network runs over the wired Ethernet chip, not the WiFi radio. */
+bool wifi_link_is_wired(void);
 void wifi_note_sdio_ready(void);
 void wifi_note_firmware_ready(void);
 void wifi_note_network_ready(void);

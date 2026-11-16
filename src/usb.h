@@ -9,3 +9,6 @@ void usb_power_post(void);   /* after every init: posts the USB power-on */
 bool usb_is_host(void);
 /* One step of USB host work for a wait outside the poll loop - see usb.c. */
 bool usb_service(void);
+/* The host work a wired network link needs, from the network's own waits
+   (wifi_lwip.c, wifi.c) - see usb.c. */
+void usb_host_step(void);

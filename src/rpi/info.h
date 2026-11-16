@@ -24,6 +24,9 @@ extern uint32_t get_clock_rate(uint32_t clk_id);
 /* The USB port is behind an on-board hub (Pi 1/2/3 Model B): host only.
    Main loop only (a mailbox call). */
 extern bool board_usb_behind_hub(void);
+/* Has a wired Ethernet chip this firmware drives: the Pi 3 Model B+'s
+   LAN7515 (usb_ether.c). */
+extern bool board_wired_ethernet(void);
 /* Ask the board revision with the full mailbox bound, once per session.
    Boot context only (usb_init), so the poll path above finds it cached. */
 extern void board_revision_prime(void);

@@ -29,6 +29,9 @@ typedef struct {
 } wifi_lwip_context_t;
 
 void wifi_lwip_prepare(void);
+/* Run the netif over the wired Ethernet chip (usb_ether.c) instead of the
+   WiFi radio.  Set by wifi.c's link choice, before wifi_lwip_init_stack. */
+void wifi_lwip_set_wired(bool wired);
 void wifi_lwip_init_stack(void);
 void wifi_lwip_poll(void);
 /* Inside wifi_lwip_poll() - in an lwIP callback - right now. */

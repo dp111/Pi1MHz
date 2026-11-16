@@ -26,6 +26,7 @@
 #include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../wifi_service.h"        /* NTP server on /status */
 #include "../usb/mtp_fs.h"
+#include "../usb_ether.h"           /* Ethernet rows on /status */
 #include "../rpi/screen.h"
 #include "../rpi/display_mode.h"   /* Display mode row on /status */
 #include "../rpi/h264dec.h"           /* frame count on /status */
@@ -2723,6 +2724,24 @@ static void status_wifi_link(ws_strbuf_t *b, const status_ctx_t *ctx)
 {
    char tmp[256];
 
+   if (wifi_link_is_wired()) {
+      usb_ether_counts_t n;
+      usb_ether_counts(&n);
+      snprintf(tmp, sizeof tmp, "Ethernet (LAN7515), link %s",
+               usb_ether_link_up() ? "up" : "down");
+      table_row(b, "Network link", tmp);
+      snprintf(tmp, sizeof tmp, "%lu sent, %lu received, %lu dropped, %lu errors",
+               (unsigned long)n.tx_frames, (unsigned long)n.rx_frames,
+               (unsigned long)n.tx_dropped, (unsigned long)(n.rx_errors + n.usb_errors));
+      table_row(b, "Ethernet frames", tmp);
+      table_row(b, "Hostname",
+                (ctx->cfg != NULL && ctx->cfg->hostname[0] != '\0')
+                   ? ctx->cfg->hostname : "(default)");
+      return;
+   }
+   if (board_wired_ethernet() && usb_ether_error()[0] != '\0')
+      table_row(b, "Ethernet", usb_ether_error());
+
    table_row(b, "SSID",
              (ctx->cfg != NULL && ctx->cfg->ssid[0] != '\0') ? ctx->cfg->ssid : "(not set)");
    table_row(b, "Hostname",
@@ -2810,7 +2829,7 @@ static void status_network(ws_strbuf_t *b, const status_ctx_t *ctx)
       DIFFERENT addresses when NVRAM patching is off.  The chip MAC
       is what the AP sees, and it is what lwIP advertises, so it is
       the only one worth showing on /status. */
-   if (sdio_runtime_get_chip_mac(mac)) {
+   if (wifi_link_is_wired() ? usb_ether_mac(mac) : sdio_runtime_get_chip_mac(mac)) {
       snprintf(tmp, sizeof tmp, "%02X:%02X:%02X:%02X:%02X:%02X",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       table_row(b, "MAC address", tmp);

@@ -86,6 +86,13 @@ bool board_usb_behind_hub(void) {
    }
 }
 
+/* The Pi 3 Model B+ (new-style type 0x0D), whose LAN7515 usb_ether.c drives.
+   The older Model Bs' LAN951x is a different chip: not yet. */
+bool board_wired_ethernet(void) {
+   uint32_t rev = get_revision() & 0xFFFFFFu;
+   return (rev & (1u << 23)) != 0u && ((rev >> 4) & 0xFFu) == 0x0Du;
+}
+
 uint32_t get_clock_rate(uint32_t clk_id) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_CLOCK_RATE, clk_id);

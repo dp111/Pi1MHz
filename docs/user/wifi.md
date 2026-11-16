@@ -41,6 +41,24 @@ wifi_country=US
 Then power-cycle. Allow up to about 30 seconds after power-on for the
 Pi to join the network and get an address.
 
+## Wired Ethernet (Pi 3 Model B+)
+
+On a Pi 3 Model B+ the Ethernet socket works too. With a cable plugged
+in, nothing needs setting: Ethernet is used when it gets a link within
+about 8 seconds of power-on, and `wifi_ssid` is not needed. Without a
+link in that time, WiFi is used if `wifi_ssid` is set. To fix the
+choice, set `network=ethernet` or `network=wifi` in `Pi1MHz.cfg`.
+
+The choice is made once at power-on: plugging a cable in later does not
+move a Pi that started on WiFi. Address settings (`wifi_ip`,
+`wifi_hostname`, ...) apply to whichever link is in use. The web
+interface's status page shows the link in use. While the network is
+wired, the Beeb's WiFi commands (the ElkWiFi `*JOIN` and the like) are
+refused.
+
+Other Model B boards (Pi 1 B/B+, 2 B, 3 B) use a different Ethernet
+chip, which is not supported yet.
+
 ## Finding the Pi on your network
 
 By default the Pi asks your router for an address (DHCP) and announces

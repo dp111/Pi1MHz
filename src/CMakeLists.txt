@@ -309,6 +309,7 @@ set(core_files
    chainboot.c
    usb_mouse.c
    usb_storage.c
+   usb_ether.c
    videoplayer.c
    chapters.c
    rpi/fileparser.c

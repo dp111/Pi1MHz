@@ -8,6 +8,7 @@
 #include "usb/mtp_fs.h"
 #include "chainboot.h"
 #include "usb_storage.h"
+#include "usb_ether.h"
 #include "BeebSCSI/filesystem.h"
 #include <bsp/board_api.h>
 #include "rpi/interrupts.h"
@@ -16,6 +17,7 @@
 #include <strings.h>
 #include "rpi/base.h"
 #include "rpi/info.h"
+#include "rpi/systimer.h"
 #include "config.h"
 
 // Power device IDs for mailbox
@@ -303,17 +305,18 @@ static bool usb_choose_host(void)
    in slave mode the receive FIFO is still emptied promptly. */
 
 #define USB_HOST_POLL_US 250u
+static uint32_t s_host_last_us;    /* the last host step, from either caller below */
 static void usb_host_work(void) {
     tuh_int_handler(BOARD_TUH_RHPORT, false);
     tuh_task();
+    usb_ether_poll();      /* a Pi 3B+'s Ethernet chip: set-up steps, link, frames */
     usb_storage_poll();    /* FatFs work for a drive that came or went */
 }
 
 static void usb_host_task(void) {
-    static uint32_t last_us;
-    if ((uint32_t)(Pi1MHz_now_us - last_us) < USB_HOST_POLL_US)
+    if ((uint32_t)(Pi1MHz_now_us - s_host_last_us) < USB_HOST_POLL_US)
         return;
-    last_us = Pi1MHz_now_us;
+    s_host_last_us = Pi1MHz_now_us;
     usb_host_work();
     chainboot_poll();      /* a kernel.now PUT's restart (no MTP in host mode) */
 }
@@ -401,6 +404,31 @@ bool usb_service(void)
     return false;
   usb_host_work();
   return true;
+}
+
+/* The host work a wired network link needs, from where the network is being
+   waited on rather than from the poll loop: the wired drain (wifi_lwip.c) and
+   the link choice at boot (wifi.c), which run inside a SCSI command when SMB
+   storage waits for the network - and there usb_host_task does not.  Paced
+   with usb_host_task on one clock.  No usb_storage_poll: no FatFs mounting
+   from inside another command. */
+void usb_host_step(void)
+{
+  if (!s_usb_initialised)
+    return;
+  if (!s_usb_started) {
+    usb_boot_task();
+    return;
+  }
+  if (!s_usb_host)
+    return;
+  uint32_t t = RPI_GetSystemTime();
+  if ((uint32_t)(t - s_host_last_us) < USB_HOST_POLL_US)
+    return;
+  s_host_last_us = t;
+  tuh_int_handler(BOARD_TUH_RHPORT, false);
+  tuh_task();
+  usb_ether_poll();
 }
 
 void usb_init(uint8_t instance , uint8_t address) {

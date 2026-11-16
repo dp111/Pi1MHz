@@ -179,10 +179,13 @@ See [Sound](sound.md).
 ## WiFi settings
 
 See [WiFi setup](wifi.md). WiFi only starts at all when `wifi_ssid` is
-set.
+set. On a Pi 3 Model B+ the Ethernet socket can carry the network instead
+(see [Wired Ethernet](wifi.md#wired-ethernet-pi-3-model-b)); the `wifi_ip`,
+`wifi_hostname` and other address settings below apply to it too.
 
 | Key | Default | Meaning |
 |---|---|---|
+| `network` | `auto` | Pi 3B+ only: `ethernet` to use the Ethernet socket, `wifi` to use WiFi, `auto` to use Ethernet when a cable gives it a link within about 8 seconds of power-on, else WiFi. |
 | `wifi_ssid` | (none) | Name of the network to join. **Required** for any WiFi function. (`SSID` is accepted as an older alias.) |
 | `wifi_password` | (none) | WPA2 passphrase, 8-63 characters. It cannot contain `#`, which starts a comment and cuts the password short. (Alias: `SSIDpassword`.) |
 | `wifi_hostname` | `Pi1MHz` | Network name, one label (not a full domain name). Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS), and is shown at the top left of the web interface. |

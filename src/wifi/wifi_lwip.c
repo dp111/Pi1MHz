@@ -8,6 +8,8 @@
 #include "../Pi1MHz.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
+#include "../usb.h"
+#include "../usb_ether.h"
 
 #include "lwip/dhcp.h"
 #include "lwip/prot/dhcp.h"
@@ -236,6 +238,15 @@ const char *wifi_lwip_dhcp_domain(void)
    return wifi_lwip_dhcp_text(g_wifi_lwip_dhcp_domain);
 }
 
+/* The netif runs over the wired Ethernet chip, not the radio (wifi.c's link
+   choice, made once before the netif is built). */
+static bool s_wired;
+
+void wifi_lwip_set_wired(bool wired)
+{
+   s_wired = wired;
+}
+
 static bool wifi_lwip_address_ready(const struct netif *netif)
 {
    if (netif == NULL)
@@ -247,7 +258,7 @@ static bool wifi_lwip_address_ready(const struct netif *netif)
 static void wifi_lwip_update_runtime_state(void)
 {
    if (g_wifi_lwip_context.netif_added) {
-      if (sdio_runtime_link_is_up()) {
+      if (s_wired ? usb_ether_link_up() : sdio_runtime_link_is_up()) {
          netif_set_link_up(&g_wifi_lwip_context.netif);
          if (g_wifi_lwip_context.use_dhcp
              && !g_wifi_lwip_context.dhcp_started) {
@@ -280,7 +291,8 @@ static void wifi_lwip_update_runtime_state(void)
 
    /* A fresh association gets a fresh power-save state, so tell the driver
       to re-assert it - see sdio_runtime_powersave_note_link_change(). */
-   sdio_runtime_powersave_note_link_change(g_wifi_lwip_context.link_up);
+   if (!s_wired)
+      sdio_runtime_powersave_note_link_change(g_wifi_lwip_context.link_up);
 
    if (!g_wifi_lwip_link_logged || g_wifi_lwip_last_link_up != g_wifi_lwip_context.link_up) {
       wifi_lwip_debug_log("link %s", g_wifi_lwip_context.link_up ? "up" : "down");
@@ -1129,13 +1141,62 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us, bool *pbufs_gone)
    return drained_any;
 }
 
+/* linkoutput for the wired link: no credit window or glom batching to work
+   round - the chip takes a frame or its queue is full.  A refused frame is
+   lost (TCP resends it), as the WiFi path's are once its hold queue is full. */
+// cppcheck-suppress constParameterCallback
+static err_t wifi_lwip_wired_output(struct netif *netif, struct pbuf *p)
+{
+   static uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];   /* static: see wifi_lwip_link_output */
+   (void)netif;
+
+   if (p == NULL || p->tot_len > sizeof(frame))
+      return ERR_IF;
+   if (pbuf_copy_partial(p, frame, p->tot_len, 0) != p->tot_len)
+      return ERR_IF;
+   if (!usb_ether_send(frame, p->tot_len))
+      return ERR_IF;
+   wifi_lwip_rx_kick();
+   return ERR_OK;
+}
+
+/* The wired link's share of the service pass: step the USB host (the chip's
+   frames only move when it runs - and inside an SMB wait the poll loop's USB
+   task does not), then hand what has arrived to lwIP, within the same budget
+   as the WiFi drain.  A frame dropped for want of a pbuf is counted and lost,
+   as on WiFi; the rest wait in the chip for the next pass. */
+static void wifi_lwip_wired_service(uint32_t now_us)
+{
+   uint32_t budget_end = now_us + WIFI_LWIP_SERVICE_BUDGET_US;
+   const uint8_t *frame;
+   uint16_t len;
+
+   usb_host_step();
+   while (usb_ether_next_frame(&frame, &len)) {
+      if (!wifi_lwip_deliver_rx_frame(frame, len))
+         break;
+      if ((int32_t)(RPI_GetSystemTime() - budget_end) >= 0)
+         break;
+   }
+}
+
 static err_t wifi_lwip_netif_init(struct netif *netif)
 {
-   netif->name[0] = 'w';
-   netif->name[1] = 'f';
+   netif->name[0] = s_wired ? 'e' : 'w';
+   netif->name[1] = s_wired ? 'n' : 'f';
    netif->output = etharp_output;
-   netif->linkoutput = wifi_lwip_link_output;
+   netif->linkoutput = s_wired ? wifi_lwip_wired_output : wifi_lwip_link_output;
    netif->hwaddr_len = 6;
+   if (s_wired) {
+      /* The board's own MAC, which usb_ether.c gave the chip. */
+      if (!usb_ether_mac(netif->hwaddr)) {
+         wifi_set_error("Ethernet chip MAC unavailable");
+         return ERR_IF;
+      }
+      netif->mtu = 1500;
+      netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET;
+      return ERR_OK;
+   }
    /* Use the chip's real WiFi MAC: the firmware associates with that
       address, so the lwIP netif must present the same one or DHCP and
       ARP replies are addressed to a station the access point does not
@@ -1592,50 +1653,10 @@ static void wifi_lwip_rejoin_service(uint32_t now_us)
    wifi_lwip_schedule_next_rejoin(now_us);
 }
 
-static void wifi_lwip_poll_pass(void)
+/* The WiFi link's share of the service pass: association retries, then the
+   SDIO drain with its adaptive throttle. */
+static void wifi_lwip_radio_service(uint32_t pass_us)
 {
-   /* This must run BEFORE the timers_running gate: an ERROR latched during
-      first bring-up (SDIO failure, netif_add) happens with timers_running
-      still false, and is exactly the case this retry exists for. */
-   /* ERROR used to be an absorbing stop ("permanent").  But the recovery
-      ladder's last rung - the full chip restart - re-runs the bring-up
-      stages at RUNTIME, and a transient failure there (chip MAC query,
-      lwIP netif_add, dhcp_start) latched ERROR and killed polling: the
-      network then stayed dead until a BBC RST re-ran wifi_init().  Do the
-      same thing from a timer instead: retry the whole init on a doubling
-      backoff (1 min .. 10 min).  Genuine config errors (bad SSID) refail
-      fast and just idle in ERROR between attempts. */
-   /* One timer read for the pass.  Not Pi1MHz_now_us: SMB's waits call this from inside a
-      SCSI command, while the main loop - and so that stamp - stands still. */
-   const uint32_t pass_us = RPI_GetSystemTime();
-
-   if (wifi_get_state() == WIFI_STATE_ERROR) {
-      static uint32_t err_since_us;
-      uint32_t now = pass_us;
-      if (s_err_backoff_us == 0u)
-         s_err_backoff_us = 60000000u;
-      if (err_since_us == 0u) {
-         err_since_us = now | 1u;
-         wifi_lwip_debug_log("wifi error state - retry in %lus",
-                             (unsigned long)(s_err_backoff_us / 1000000u));
-      } else if (now - err_since_us >= s_err_backoff_us) {
-         err_since_us = 0u;
-         s_err_backoff_us <<= 1;
-         if (s_err_backoff_us > 600000000u)
-            s_err_backoff_us = 600000000u;
-         wifi_lwip_debug_log("wifi error state - retrying full init");
-         wifi_init();
-      }
-      return;
-   }
-
-   if (!g_wifi_lwip_context.timers_running)
-      return;
-
-   /* Cache the diag gate once per pass: the per-frame counting sites then
-      test one static bool instead of calling into sdio.c. */
-   s_pass_diag = sdio_runtime_diag_enabled();
-
    /* Keep trying to associate.  The chip does not re-associate by itself and
       the boot path issues the join exactly once, so a scan that comes back
       empty - WLC_E_SET_SSID status 3, which one noisy moment is enough to
@@ -1737,6 +1758,57 @@ static void wifi_lwip_poll_pass(void)
          (void)wifi_lwip_tx_hold_flush();
       }
    }
+}
+
+static void wifi_lwip_poll_pass(void)
+{
+   /* This must run BEFORE the timers_running gate: an ERROR latched during
+      first bring-up (SDIO failure, netif_add) happens with timers_running
+      still false, and is exactly the case this retry exists for. */
+   /* ERROR used to be an absorbing stop ("permanent").  But the recovery
+      ladder's last rung - the full chip restart - re-runs the bring-up
+      stages at RUNTIME, and a transient failure there (chip MAC query,
+      lwIP netif_add, dhcp_start) latched ERROR and killed polling: the
+      network then stayed dead until a BBC RST re-ran wifi_init().  Do the
+      same thing from a timer instead: retry the whole init on a doubling
+      backoff (1 min .. 10 min).  Genuine config errors (bad SSID) refail
+      fast and just idle in ERROR between attempts. */
+   /* One timer read for the pass.  Not Pi1MHz_now_us: SMB's waits call this from inside a
+      SCSI command, while the main loop - and so that stamp - stands still. */
+   const uint32_t pass_us = RPI_GetSystemTime();
+
+   if (wifi_get_state() == WIFI_STATE_ERROR) {
+      static uint32_t err_since_us;
+      uint32_t now = pass_us;
+      if (s_err_backoff_us == 0u)
+         s_err_backoff_us = 60000000u;
+      if (err_since_us == 0u) {
+         err_since_us = now | 1u;
+         wifi_lwip_debug_log("wifi error state - retry in %lus",
+                             (unsigned long)(s_err_backoff_us / 1000000u));
+      } else if (now - err_since_us >= s_err_backoff_us) {
+         err_since_us = 0u;
+         s_err_backoff_us <<= 1;
+         if (s_err_backoff_us > 600000000u)
+            s_err_backoff_us = 600000000u;
+         wifi_lwip_debug_log("wifi error state - retrying full init");
+         wifi_init();
+      }
+      return;
+   }
+
+   if (!g_wifi_lwip_context.timers_running)
+      return;
+
+   /* Cache the diag gate once per pass: the per-frame counting sites then
+      test one static bool instead of calling into sdio.c. */
+   s_pass_diag = sdio_runtime_diag_enabled();
+
+   if (s_wired)
+      wifi_lwip_wired_service(pass_us);
+   else
+      wifi_lwip_radio_service(pass_us);
+
 #ifdef DEBUG
    if (s_blast_remaining != 0u)
       wifi_lwip_udpblast_poll();

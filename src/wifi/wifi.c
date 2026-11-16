@@ -13,6 +13,8 @@
 #include "../config.h"
 #include "../telnetd.h"
 #include "../lib/textparse.h"
+#include "../usb.h"
+#include "../usb_ether.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -32,6 +34,7 @@ typedef struct {
 
 typedef enum {
    WIFI_BOOT_STAGE_IDLE = 0,
+   WIFI_BOOT_STAGE_CHOOSE_LINK,
    WIFI_BOOT_STAGE_START_SDIO,
    WIFI_BOOT_STAGE_WAIT_SDIO,
    WIFI_BOOT_STAGE_OPTIONAL_PROBE,
@@ -42,6 +45,21 @@ typedef enum {
 
 static wifi_boot_stage_t g_wifi_boot_stage;
 static bool g_wifi_images_preloaded;
+/* The link, chosen once per Pi uptime: lwIP's netif is built for one link
+   and kept across a BBC RST, so a re-init keeps the first choice. */
+static bool g_link_chosen;
+static bool g_wifi_wired;
+static uint32_t g_link_choice_start_us;
+/* How long auto waits for the Ethernet chip to set up and a cable to give a
+   link before it takes WiFi instead: USB power-on, enumeration, the chip's
+   set-up and autonegotiation together take a few seconds. */
+#define WIFI_LINK_CHOICE_US (8u * 1000000u)
+
+/* The wired link is possible on this board with this config. */
+static bool wifi_wired_possible(void)
+{
+   return g_wifi_config.link_mode != WIFI_LINK_WIFI && board_wired_ethernet();
+}
 /* WiFi is initialised exactly once.  A BBC RST re-runs init_emulator()
    - which calls every emulator's init again - but the WiFi connection
    has no BBC-bus state, so a reset must not tear it down and re-join. */
@@ -177,28 +195,36 @@ static void wifi_boot_fail(const char *message)
 
 static bool wifi_validate_config(void)
 {
+   if (g_wifi_config.link_mode == WIFI_LINK_ETHERNET && !board_wired_ethernet()) {
+      wifi_set_error("network=ethernet, but this board has no Ethernet chip Pi1MHz drives");
+      return false;
+   }
+
    if (!g_wifi_config.enabled) {
       g_wifi_state = WIFI_STATE_DISABLED;
       wifi_debug_log("disabled by configuration");
       return false;
    }
 
-   if (g_wifi_config.ssid[0] == '\0') {
-      wifi_set_error("wifi_ssid or SSID missing from Pi1MHz.cfg");
-      return false;
-   }
+   /* The WiFi settings matter only when WiFi may be the link. */
+   if (g_wifi_config.ssid[0] != '\0' || !wifi_wired_possible()) {
+      if (g_wifi_config.ssid[0] == '\0') {
+         wifi_set_error("wifi_ssid or SSID missing from Pi1MHz.cfg");
+         return false;
+      }
 
-   if (g_wifi_config.security != WIFI_SECURITY_OPEN
-       && g_wifi_config.security != WIFI_SECURITY_AUTO
-       && g_wifi_config.password[0] == '\0') {
-      wifi_set_error("selected WiFi security requires a key/password");
-      return false;
-   }
+      if (g_wifi_config.security != WIFI_SECURITY_OPEN
+          && g_wifi_config.security != WIFI_SECURITY_AUTO
+          && g_wifi_config.password[0] == '\0') {
+         wifi_set_error("selected WiFi security requires a key/password");
+         return false;
+      }
 
-   if (!wifi_profile_is_valid(g_wifi_config.ssid, g_wifi_config.password,
-                              g_wifi_config.security)) {
-      wifi_set_error("invalid WiFi SSID, key or security mode");
-      return false;
+      if (!wifi_profile_is_valid(g_wifi_config.ssid, g_wifi_config.password,
+                                 g_wifi_config.security)) {
+         wifi_set_error("invalid WiFi SSID, key or security mode");
+         return false;
+      }
    }
 
    if (!g_wifi_config.ip_config_valid) {
@@ -636,6 +662,17 @@ bool wifi_config_load(wifi_config_t *config)
       stack stays down - no SDIO bring-up, no firmware load, no polling.
       A password on its own is not enough to enable WiFi. */
    config->enabled = have_ssid;
+   {
+      const char *network = config_get("network");
+      config->link_mode = WIFI_LINK_AUTO;
+      if (network != NULL && strcasecmp(network, "wifi") == 0)
+         config->link_mode = WIFI_LINK_WIFI;
+      else if (network != NULL && strcasecmp(network, "ethernet") == 0)
+         config->link_mode = WIFI_LINK_ETHERNET;
+   }
+   /* A cable can be the network on its own: no SSID needed for it. */
+   if (config->link_mode != WIFI_LINK_WIFI && board_wired_ethernet())
+      config->enabled = true;
 
    port_prop = config_get("wifi_http_port");
    config->http_port = wifi_parse_port(port_prop, config->http_port);
@@ -737,7 +774,9 @@ void wifi_init(void)
 
    wifi_debug_log("boot start state=%s", wifi_state_name(g_wifi_state));
 
-   g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
+   g_wifi_boot_stage = (g_link_chosen ? g_wifi_wired : wifi_wired_possible())
+                          ? WIFI_BOOT_STAGE_CHOOSE_LINK : WIFI_BOOT_STAGE_START_SDIO;
+   g_link_choice_start_us = RPI_GetSystemTime();
    /* Latch only now: the config loaded, validated, and the boot is
       scheduled.  Any failure above (including wifi_validate_config
       returning false, which leaves us in WIFI_STATE_DISABLED) leaves
@@ -745,6 +784,11 @@ void wifi_init(void)
       the top - matching the recovery-on-BBC-RST contract above. */
    g_wifi_init_done = true;
    wifi_debug_log("boot scheduled");
+}
+
+bool wifi_link_is_wired(void)
+{
+   return g_wifi_wired;
 }
 
 bool wifi_boot_step(void)
@@ -759,6 +803,54 @@ void wifi_boot(void)
       return;
 
    switch (g_wifi_boot_stage) {
+      case WIFI_BOOT_STAGE_CHOOSE_LINK: {
+         /* Wired or WiFi.  The chip only appears once USB is powered and
+            has enumerated it, so step USB from here too: at power-on this
+            runs inside SMB storage's wait for the network, where the poll
+            loop's USB task does not. */
+         bool ssid = g_wifi_config.ssid[0] != '\0';
+         bool waited = (uint32_t)(RPI_GetSystemTime() - g_link_choice_start_us)
+                       >= WIFI_LINK_CHOICE_US;
+         bool wired;
+
+         usb_host_step();
+         if (g_link_chosen) {
+            wired = g_wifi_wired;
+         } else if (usb_ether_ready()) {
+            if (usb_ether_link_up() || !ssid
+                || g_wifi_config.link_mode == WIFI_LINK_ETHERNET)
+               wired = true;
+            else if (waited)
+               wired = false;        /* no cable: WiFi */
+            else
+               return;
+         } else if (usb_ether_error()[0] != '\0'
+                    && (!ssid || g_wifi_config.link_mode == WIFI_LINK_ETHERNET)) {
+            wifi_boot_fail(usb_ether_error());
+            return;
+         } else if (ssid && g_wifi_config.link_mode != WIFI_LINK_ETHERNET
+                    && (waited || usb_ether_error()[0] != '\0')) {
+            wired = false;           /* the chip never came up: WiFi */
+         } else {
+            return;
+         }
+
+         g_link_chosen = true;
+         g_wifi_wired = wired;
+         if (!wired) {
+            wifi_debug_log("link: WiFi");
+            g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
+            return;
+         }
+         wifi_debug_log("link: Ethernet");
+         wifi_lwip_set_wired(true);
+         /* No radio to start: from here the wired link takes the same road
+            as WiFi does once its firmware runs. */
+         g_wifi_state = WIFI_STATE_FIRMWARE_READY;
+         g_wifi_boot_stage = WIFI_BOOT_STAGE_INIT_LWIP;
+         return;
+      }
+
       case WIFI_BOOT_STAGE_START_SDIO:
          /* The chip's power-up goes through the mailbox, which waits for
             any request still out: usb_init's posted USB power-on takes
@@ -899,6 +991,8 @@ void wifi_set_error(const char *message)
 bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
                                  wifi_security_t security)
 {
+   if (g_wifi_wired)
+      return false;        /* the network is the cable: no radio to drive */
    if (!wifi_profile_is_valid(ssid, password, security))
       return false;
 
@@ -936,6 +1030,8 @@ bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
 
 bool wifi_enable_radio(void)
 {
+   if (g_wifi_wired)
+      return false;        /* the network is the cable: no radio to drive */
    /* ElkWiFi starts in discovery mode: *WIFI ON and *LAP must work before
       the user has supplied an SSID.  With the SSID empty the SDIO state
       machine runs the whole bring-up - CLM, country, WLC_UP, event masks -
@@ -977,6 +1073,8 @@ bool wifi_enable_radio(void)
 
 bool wifi_disconnect(void)
 {
+   if (g_wifi_wired)
+      return false;        /* the network is the cable: no radio to drive */
    if (!sdio_runtime_disconnect())
       return false;
    wifi_lwip_disconnect();
@@ -988,6 +1086,8 @@ bool wifi_disconnect(void)
 
 bool wifi_disable_radio(void)
 {
+   if (g_wifi_wired)
+      return false;        /* the network is the cable: no radio to drive */
    if (!sdio_runtime_radio_disable())
       return false;
    wifi_lwip_disconnect();
