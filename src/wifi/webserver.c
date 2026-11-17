@@ -2734,6 +2734,8 @@ static void status_wifi_link(ws_strbuf_t *b, const status_ctx_t *ctx)
                (unsigned long)n.tx_frames, (unsigned long)n.rx_frames,
                (unsigned long)n.tx_dropped, (unsigned long)(n.rx_errors + n.usb_errors));
       table_row(b, "Ethernet frames", tmp);
+      if (usb_ether_error()[0] != '\0')
+         table_row(b, "Ethernet error", usb_ether_error());
       table_row(b, "Hostname",
                 (ctx->cfg != NULL && ctx->cfg->hostname[0] != '\0')
                    ? ctx->cfg->hostname : "(default)");

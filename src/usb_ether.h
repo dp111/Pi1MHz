@@ -16,6 +16,11 @@
 /* Stepped from the USB host work (usb.c), after tuh_task. */
 void usb_ether_poll(void);
 
+/* Whether the chip may be the link (wifi.c's choice).  Off - the default -
+   it is not set up, or once running it stops reading the link and asking for
+   frames, so a Pi on WiFi pays nothing for it. */
+void usb_ether_use(bool wanted);
+
 /* A supported chip is attached (it may still be setting up). */
 bool usb_ether_present(void);
 /* Set up: MAC programmed, receive and transmit running. */

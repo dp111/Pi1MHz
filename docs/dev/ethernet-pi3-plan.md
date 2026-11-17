@@ -16,8 +16,19 @@ As built, differing from the design below:
   command where the poll loop's USB task does not run.
 - Empty bulk IN answered by a zero-length packet (USB_CFG0.BIR), re-asked
   1 ms later: no NAK-polling of the endpoint.
-- Register map written from the LAN7800 datasheet as recalled, NOT checked
-  against the PDF in this session: check it before the first hardware run.
+- Register map written from memory (the datasheet would not download) and
+  checked against Circle's lib/usb/lan7800.cpp: every address and bit
+  matches.  Circle clears USB_CFG0.BIR (NAK) and runs one frame per transfer
+  (no HW_CFG.MEF) where this sets both: if receive misbehaves, try Circle's.
+- Review fixes (2026-11-17): a control transfer refused because the shared
+  pipe is busy is retried, never taken as done; the set-up has a 5 s limit;
+  the chip is set up and polled only while it may be the link
+  (`usb_ether_use`, from wifi.c), and receive is asked only with a link up;
+  a stalled receive endpoint is asked once a second and shown on /status
+  (TinyUSB's host API has no clear-halt); `network=ethernet` with no chip
+  after 8 s fails the boot (the ERROR retry tries again).
+- Behaviour change for the owner: a 3B+ with no wifi_ssid now starts the
+  network under `auto` (DHCP on the cable), where before it had none.
 
 Hardware test list (each with a control): Zero 2 W / no-chip board boots and
 joins WiFi exactly as before (control for every shared-code change); 3B+ with

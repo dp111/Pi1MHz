@@ -774,8 +774,12 @@ void wifi_init(void)
 
    wifi_debug_log("boot start state=%s", wifi_state_name(g_wifi_state));
 
-   g_wifi_boot_stage = (g_link_chosen ? g_wifi_wired : wifi_wired_possible())
-                          ? WIFI_BOOT_STAGE_CHOOSE_LINK : WIFI_BOOT_STAGE_START_SDIO;
+   {
+      bool may_be_wired = g_link_chosen ? g_wifi_wired : wifi_wired_possible();
+      usb_ether_use(may_be_wired);
+      g_wifi_boot_stage = may_be_wired ? WIFI_BOOT_STAGE_CHOOSE_LINK
+                                       : WIFI_BOOT_STAGE_START_SDIO;
+   }
    g_link_choice_start_us = RPI_GetSystemTime();
    /* Latch only now: the config loaded, validated, and the boot is
       scheduled.  Any failure above (including wifi_validate_config
@@ -831,6 +835,10 @@ void wifi_boot(void)
          } else if (ssid && g_wifi_config.link_mode != WIFI_LINK_ETHERNET
                     && (waited || usb_ether_error()[0] != '\0')) {
             wired = false;           /* the chip never came up: WiFi */
+         } else if (g_wifi_config.link_mode == WIFI_LINK_ETHERNET && waited) {
+            /* The ERROR retry runs the choice again later. */
+            wifi_boot_fail("network=ethernet, but the Ethernet chip has not come up");
+            return;
          } else {
             return;
          }
@@ -838,6 +846,7 @@ void wifi_boot(void)
          g_link_chosen = true;
          g_wifi_wired = wired;
          if (!wired) {
+            usb_ether_use(false);    /* the chip stops costing the poll loop */
             wifi_debug_log("link: WiFi");
             g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
             return;

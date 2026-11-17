@@ -3,9 +3,11 @@
  * USB ID 0424:7800, the LAN7800 register set).  See usb_ether.h and
  * docs/dev/ethernet-pi3-plan.md.
  *
- * Register addresses and bits are the LAN7800's (Microchip datasheet
- * DS00001992).  Written from the datasheet's register map - not from Linux's
- * lan78xx driver, which is GPLv2-only.
+ * Register addresses and bits are the LAN7800's.  The Microchip datasheet
+ * (DS00001992) could not be fetched when this was written: the map was
+ * written from memory and then checked, address and bit, against Circle's
+ * lib/usb/lan7800.cpp (GPLv3) - not taken from Linux's lan78xx driver, which
+ * is GPLv2-only.  Check it against the datasheet when one is to hand.
  *
  * Shape:
  *   - TinyUSB offers us each interface first (an app driver); we claim the
@@ -126,6 +128,8 @@
 #define ETHER_TX_SLOT        (TX_HDR_LEN + ETH_FRAME_MAX + 2u)
 #define ETHER_LINK_POLL_US   1000000u
 #define ETHER_WAIT_STEP_US   1000u             /* between reads of a register being waited on */
+#define ETHER_INIT_LIMIT_US  5000000u          /* the whole set-up script */
+#define ETHER_RX_STALL_US    1000000u          /* between asks of a stalled receive endpoint */
 
 typedef enum { OP_WRITE, OP_MODIFY, OP_WAIT, OP_EXPECT, OP_READ_LINK, OP_END } op_kind_t;
 
@@ -199,7 +203,7 @@ static struct {
    uint8_t  op, sub;
    bool     ctrl_busy, ctrl_ok;
    uint32_t value;              /* last register read */
-   uint32_t op_started_us, next_try_us;
+   uint32_t op_started_us, next_try_us, init_started_us;
 
    bool     link_up;
    uint32_t link_poll_us;
@@ -215,6 +219,11 @@ static struct {
 
    usb_ether_counts_t counts;
 } E;
+
+/* wifi.c's link choice: set up and run the chip only while it may be the link.
+   Outside E, so a USB re-enumeration (which clears E) keeps it. */
+static bool s_wanted;
+static const char rx_stalled[] = "receive endpoint stalled";
 
 static uint32_t ctrl_word;                        /* control transfer data stage */
 CFG_TUSB_MEM_ALIGN static uint8_t rx_buf[ETHER_RX_BUF];
@@ -263,11 +272,20 @@ static bool reg_xfer(bool read, uint16_t reg, uint32_t value)
    xfer.complete_cb = ctrl_done;
    E.ctrl_busy = true;
    if (!tuh_control_xfer(&xfer)) {
-      E.ctrl_busy = false;
-      E.counts.usb_errors++;
+      E.ctrl_busy = false;      /* not queued: the pipe is busy (see issue()) */
       return false;
    }
    return true;
+}
+
+/* Queue one register transfer and move to sub-step next.  The control pipe
+   is shared - the hub driver uses it too - and TinyUSB refuses a transfer
+   while another runs.  Then nothing changes: the same sub-step is tried
+   again on the next poll, and ctrl_ok/value still hold the last answer. */
+static void issue(bool read, uint16_t reg, uint32_t value, uint8_t next)
+{
+   if (reg_xfer(read, reg, value))
+      E.sub = next;
 }
 
 static uint32_t op_value(uint32_t v)
@@ -320,22 +338,22 @@ static bool script_step(void)
       return false;
 
    case OP_WRITE:
-      if (E.sub == 0u) { E.sub = 1; (void)reg_xfer(false, op->reg, op_value(op->a)); return true; }
+      if (E.sub == 0u) { issue(false, op->reg, op_value(op->a), 1); return true; }
       break;
 
    case OP_MODIFY:
-      if (E.sub == 0u) { E.sub = 1; (void)reg_xfer(true, op->reg, 0); return true; }
-      if (E.sub == 1u) { E.sub = 2; (void)reg_xfer(false, op->reg, (E.value & ~op->a) | op->b); return true; }
+      if (E.sub == 0u) { issue(true, op->reg, 0, 1); return true; }
+      if (E.sub == 1u) { issue(false, op->reg, (E.value & ~op->a) | op->b, 2); return true; }
       break;
 
    case OP_EXPECT:
-      if (E.sub == 0u) { E.sub = 1; (void)reg_xfer(true, op->reg, 0); return true; }
+      if (E.sub == 0u) { issue(true, op->reg, 0, 1); return true; }
       if ((E.value & op->a) != op->b)
          return script_fail("not a LAN7800");
       break;
 
    case OP_READ_LINK:
-      if (E.sub == 0u) { E.sub = 1; (void)reg_xfer(true, op->reg, 0); return true; }
+      if (E.sub == 0u) { issue(true, op->reg, 0, 1); return true; }
       E.link_up = (E.value & BMSR_LSTATUS) != 0u;
       break;
 
@@ -347,8 +365,7 @@ static bool script_step(void)
       if (E.sub == 1u) {
          if ((int32_t)(t - E.next_try_us) < 0)
             return true;
-         E.sub = 2;
-         (void)reg_xfer(true, op->reg, 0);
+         issue(true, op->reg, 0, 2);
          return true;
       }
       if ((E.value & op->a) != op->b) {
@@ -455,7 +472,7 @@ void usb_ether_poll(void)
    case ETH_WAIT_MAC:
       /* The board's MAC comes from the mailbox: ask only when nothing else
          is waiting on it, as the WiFi start does. */
-      if (!RPI_PropertyReplyWaiting())
+      if (!s_wanted || !RPI_PropertyReplyWaiting())
          return;
       if (!rpi_get_board_mac(E.mac)) {
          fail("no board MAC address from the firmware");
@@ -464,10 +481,17 @@ void usb_ether_poll(void)
       E.mac_lo = (uint32_t)E.mac[0] | (uint32_t)E.mac[1] << 8 | (uint32_t)E.mac[2] << 16 | (uint32_t)E.mac[3] << 24;
       E.mac_hi = (uint32_t)E.mac[4] | (uint32_t)E.mac[5] << 8;
       script_start(init_script);
+      E.init_started_us = now_us();
       E.state = ETH_INIT;
       return;
 
    case ETH_INIT:
+      /* A control pipe that never frees would leave the script waiting for
+         ever on one write: give the whole set-up a limit. */
+      if ((uint32_t)(now_us() - E.init_started_us) >= ETHER_INIT_LIMIT_US) {
+         fail("chip set-up timed out");
+         return;
+      }
       if (!script_step() && E.state == ETH_INIT) {
          E.state = ETH_READY;
          E.link_poll_us = now_us();          /* read the link at once */
@@ -479,11 +503,14 @@ void usb_ether_poll(void)
       t = now_us();
       if (E.script != NULL)
          (void)script_step();
-      else if ((int32_t)(t - E.link_poll_us) >= 0) {
+      else if (s_wanted && (int32_t)(t - E.link_poll_us) >= 0) {
          E.link_poll_us = t + ETHER_LINK_POLL_US;
          script_start(link_script);
       }
-      if (!E.rx_armed && E.rx_pos >= E.rx_len && (int32_t)(t - E.rx_next_us) >= 0)
+      /* Receive only while this is the link and a cable gives one: with no
+         cable every ask comes back empty, a thousand a second for nothing. */
+      if (s_wanted && E.link_up && !E.rx_armed && E.rx_pos >= E.rx_len
+          && (int32_t)(t - E.rx_next_us) >= 0)
          rx_arm();
       tx_kick();
       return;
@@ -559,8 +586,17 @@ static bool ether_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, 
       if (result != XFER_RESULT_SUCCESS) {
          E.counts.usb_errors++;
          E.rx_len = 0;
-         E.rx_next_us = now_us() + ETHER_RX_IDLE_US;
+         /* TinyUSB's host API has no clear-halt: a stalled endpoint stays
+            stalled.  Ask rarely, and say so on /status. */
+         if (result == XFER_RESULT_STALLED) {
+            E.error = rx_stalled;
+            E.rx_next_us = now_us() + ETHER_RX_STALL_US;
+         } else {
+            E.rx_next_us = now_us() + ETHER_RX_IDLE_US;
+         }
       } else {
+         if (E.error == rx_stalled)
+            E.error = "";
          E.rx_len = xferred;
          /* Data: ask again as soon as it has been read out.  Empty (the chip's
             zero-length answer): wait a little before asking again. */
@@ -606,6 +642,8 @@ usbh_class_driver_t const *usbh_app_driver_get_cb(uint8_t *driver_count)
 }
 
 /* ---- queries ------------------------------------------------------------ */
+
+void usb_ether_use(bool wanted) { s_wanted = wanted; }
 
 bool usb_ether_present(void) { return E.state != ETH_ABSENT; }
 bool usb_ether_ready(void)   { return E.state == ETH_READY; }
