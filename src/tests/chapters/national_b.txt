@@ -1,0 +1,13 @@
+# National B (BeebVFS4, CLV) chapter index.  Format: CC FFFFF  # time code
+# CLV: FFFFF = player unit = video.pvf record index + 1 = (0-based output frame index) + 1, offset 1.
+# Frame index = field index // 2 in aiv_final/v8/NationalB.xm4.tbc.json (179852 fields = 89926 frames = pvf record count,
+# so the mapping is one-to-one; verified from counts). Comment time code = CLV programme time (h:mm:ss.ff) of the chapter's first picture.
+# Chapter codes: IEC 60857 VBI (verified from data). Picture content shows a scene change ~25-40 frames after each start.
+00 00001  # 0:00:00.01
+01 00152  # 0:00:06.02
+02 10459  # 0:06:58.09
+03 21890  # 0:14:35.15
+04 38502  # 0:25:40.02
+05 51759  # 0:34:30.09
+06 64039  # 0:42:41.14
+07 77999  # 0:51:59.24

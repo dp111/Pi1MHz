@@ -310,6 +310,7 @@ set(core_files
    usb_mouse.c
    usb_storage.c
    videoplayer.c
+   chapters.c
    rpi/fileparser.c
    usb.c
    usb/board_millis.c

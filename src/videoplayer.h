@@ -45,6 +45,14 @@ void videoplayer_clear(void);        /* F-code 'X': stop/info registers */
 /* F-codes D0/D1: the player's own picture-number display */
 void videoplayer_show_picture_number(bool on);
 
+/* Chapters, from the side's chapters.txt (src/chapters.h).  Chapter
+   numbers are the disc's (0..79); pictures are 1-based, as for goto. */
+bool videoplayer_has_chapters(void);                              /* ?P */
+bool videoplayer_chapter_first(uint32_t chapter, uint32_t *picture); /* Qxx */
+int  videoplayer_chapter_at(uint32_t picture);   /* ?C: chapter, or -1 */
+/* F-codes C0/C1: the chapter number display (C1 turns D's off) */
+void videoplayer_show_chapter_number(bool on);
+
 /* F-codes A0/A1 (channel 0) and B0/B1 (channel 1) */
 void videoplayer_audio_enable(int channel, bool on);
 

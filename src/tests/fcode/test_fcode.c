@@ -54,7 +54,9 @@ void screen_dim_strips(bool on) { (void)on; }
 bool videoplayer_active(void) { return player_open; }
 bool videoplayer_seeking(void) { return false; }
 bool videoplayer_audio_enabled(int channel) { (void)channel; return true; }
-void videoplayer_goto(uint32_t picture, char op) { (void)picture; (void)op; }
+static uint32_t goto_picture;         /* last videoplayer_goto, 0 none */
+static char     goto_op;
+void videoplayer_goto(uint32_t picture, char op) { goto_picture = picture; goto_op = op; }
 void videoplayer_play_fwd(void) { }
 void videoplayer_play_rev(void) { }
 void videoplayer_halt(void) { }
@@ -70,7 +72,26 @@ void videoplayer_show_picture_number(bool on) { (void)on; }
 void videoplayer_audio_enable(int channel, bool on) { (void)channel; (void)on; }
 void videoplayer_set_video(bool on) { (void)on; }
 bool videoplayer_take_stop_reached(void) { return false; }
-uint32_t videoplayer_picture_number(void) { return 1u; }
+static uint32_t cur_picture = 1u;
+uint32_t videoplayer_picture_number(void) { return cur_picture; }
+
+/* A BGB side 2 shaped table: chapters 05 and 06, none before picture 100. */
+static bool has_chapters = true;
+static int  chapter_display = -1;     /* last C0/C1, -1 none */
+bool videoplayer_has_chapters(void) { return has_chapters; }
+bool videoplayer_chapter_first(uint32_t chapter, uint32_t *picture)
+{
+   if (!has_chapters) return false;
+   if (chapter == 5u) { *picture = 100u; return true; }
+   if (chapter == 6u) { *picture = 18327u; return true; }
+   return false;
+}
+int videoplayer_chapter_at(uint32_t picture)
+{
+   if (!has_chapters || picture < 100u) return -1;
+   return picture < 18327u ? 5 : 6;
+}
+void videoplayer_show_chapter_number(bool on) { chapter_display = on ? 1 : 0; }
 
 /* ---- helpers ------------------------------------------------------------ */
 
@@ -122,8 +143,92 @@ static void test_vpx_reports_mode(void)
          "VPX answered %c%c%c", scsiFcodeBufferRX[0], scsiFcodeBufferRX[1], scsiFcodeBufferRX[2]);
 }
 
+static bool reply_is(const char *want)
+{
+   size_t n = strlen(want);
+   return memcmp(scsiFcodeBufferRX, want, n) == 0 && scsiFcodeBufferRX[n] == 0x0D;
+}
+
+/* QxxR / QxxN: a known chapter goes to its first picture with the same op
+   and answers A6; anything else answers AN and moves nothing. */
+static void test_chapter_goto(void)
+{
+   static const struct { const char *code; uint32_t pic; char op; const char *reply; } c[] = {
+      { "Q05R",  100u,   'R', "A6" },
+      { "Q06N",  18327u, 'N', "A6" },
+      { "Q5R",   100u,   'R', "A6" },      /* one digit, as the handset */
+      { "Q07R",  0u,     0,   "AN" },      /* not on this side */
+      { "Q05",   0u,     0,   "AN" },      /* no op */
+      { "Q05X",  0u,     0,   "AN" },
+      { "QR",    0u,     0,   "AN" },      /* no digits */
+      { "Q0506S",0u,     0,   "AN" },      /* sequence: not supported */
+      { "Q005R", 0u,     0,   "AN" },      /* three digits */
+   };
+   player_open = true;
+   for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+      goto_picture = 0u;
+      goto_op = 0;
+      send(c[i].code);
+      CHECK(goto_picture == c[i].pic && goto_op == c[i].op,
+            "%s went to %u %c, want %u %c", c[i].code, goto_picture,
+            goto_op ? goto_op : '-', c[i].pic, c[i].op ? c[i].op : '-');
+      CHECK(reply_is(c[i].reply), "%s answered %c%c, want %s", c[i].code,
+            scsiFcodeBufferRX[0], scsiFcodeBufferRX[1], c[i].reply);
+   }
+   has_chapters = false;
+   send("Q05R");
+   CHECK(reply_is("AN"), "Q05R with no table answered %c%c", scsiFcodeBufferRX[0], scsiFcodeBufferRX[1]);
+   has_chapters = true;
+}
+
+/* ?C: the chapter of the picture on screen, X when there is none. */
+static void test_chapter_request(void)
+{
+   player_open = true;
+   cur_picture = 18400u;
+   send("?C");
+   CHECK(reply_is("C06"), "?C at 18400 answered %.3s", (const char *)scsiFcodeBufferRX);
+   cur_picture = 100u;
+   send("?C");
+   CHECK(reply_is("C05"), "?C at 100 answered %.3s", (const char *)scsiFcodeBufferRX);
+   cur_picture = 50u;
+   send("?C");
+   CHECK(reply_is("X"), "?C before the first chapter answered %.3s", (const char *)scsiFcodeBufferRX);
+   player_open = false;
+   cur_picture = 18400u;
+   send("?C");
+   CHECK(reply_is("X"), "?C with the player closed answered %.3s", (const char *)scsiFcodeBufferRX);
+   cur_picture = 1u;
+}
+
+/* ?P: the second status character carries "chapter numbers exist". */
+static void test_status_reports_chapters(void)
+{
+   has_chapters = true;
+   send("?P");
+   CHECK(scsiFcodeBufferRX[0] == 'P' && (scsiFcodeBufferRX[2] & 0x04u) != 0u,
+         "?P with chapters: %.6s", (const char *)scsiFcodeBufferRX);
+   has_chapters = false;
+   send("?P");
+   CHECK(scsiFcodeBufferRX[0] == 'P' && (scsiFcodeBufferRX[2] & 0x04u) == 0u,
+         "?P without chapters: %.6s", (const char *)scsiFcodeBufferRX);
+   has_chapters = true;
+}
+
+static void test_chapter_display(void)
+{
+   send("C1");
+   CHECK(chapter_display == 1, "C1 -> %d", chapter_display);
+   send("C0");
+   CHECK(chapter_display == 0, "C0 -> %d", chapter_display);
+}
+
 int main(void)
 {
+   test_chapter_goto();
+   test_chapter_request();
+   test_status_reports_chapters();
+   test_chapter_display();
    test_vp_leaves_plane0_to_the_player();
    test_vpx_reports_mode();
    printf("%d checks, %d failed\n", checks, failures);

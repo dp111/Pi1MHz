@@ -45,6 +45,7 @@
 #include "pvf.h"
 #include "videoplayer.h"
 #include "fsroute.h"
+#include "chapters.h"
 
 #define YUV_PLANE 0
 
@@ -166,6 +167,73 @@ static struct {
    touch. */
 static bool vp_video_off;
 static bool vp_stop_reached;
+
+/* ------------------------------------------------------------------ */
+/* Chapters (F-codes Qxx, ?C, C0/C1; ?P's "chapter numbers exist")     */
+/* ------------------------------------------------------------------ */
+
+/* The side's chapters.txt, read the first time something asks and kept until
+   the side changes: one small read per side, never at boot or BBC reset, and
+   a side without the file costs one failed open.  Independent of the video
+   being open - ?P asks before any goto has brought the player up. */
+#define CHAPTERS_FILENAME  "chapters.txt"
+#define CHAPTERS_FILE_MAX  4096u
+static chapter_table_t vp_chap;
+static int32_t vp_chap_dir = -1;     /* the VFS directory vp_chap is for; -1 = stale */
+static bool    vp_show_chapter;      /* C1: chapter number overlay */
+
+static const chapter_table_t *vp_chapters(void)
+{
+    int32_t dir = (int32_t)filesystemGetLunDirectoryVFS();
+    if (dir == vp_chap_dir)
+        return &vp_chap;
+
+    static FIL  f;
+    static char text[CHAPTERS_FILE_MAX];
+    char path[sizeof(pvf_path)];
+    UINT n = 0;
+
+    vp_chap_dir = dir;
+    vp_chap.count = 0;
+    filesystemVFSFilePath((uint8_t)dir, CHAPTERS_FILENAME, path, sizeof path);
+    if (fsr_open(&f, path, FA_READ) != FR_OK)
+        return &vp_chap;                     /* no chapters on this side */
+    FRESULT fr = fsr_read(&f, text, sizeof text, &n);
+    (void)fsr_close(&f);
+    if (fr != FR_OK || n == sizeof text) {
+        LOG_DEBUG("videoplayer: %s: unreadable or over %u bytes - no chapters\n",
+                  path, CHAPTERS_FILE_MAX - 1u);
+        return &vp_chap;
+    }
+    unsigned bad = 0;
+    if (!chapters_parse(text, n, &vp_chap, &bad)) {
+        LOG_DEBUG("videoplayer: %s line %u is not \"CC FFFFF\" in order - no chapters\n",
+                  path, bad);
+    }
+    return &vp_chap;
+}
+
+bool videoplayer_has_chapters(void)
+{
+    return vp_chapters()->count != 0u;
+}
+
+bool videoplayer_chapter_first(uint32_t chapter, uint32_t *picture)
+{
+    const chapter_table_t *t = vp_chapters();
+    int i = chapters_find(t, chapter);
+    if (i < 0)
+        return false;
+    *picture = t->first[i];
+    return true;
+}
+
+int videoplayer_chapter_at(uint32_t picture)
+{
+    const chapter_table_t *t = vp_chapters();
+    int i = chapters_at(t, picture);
+    return i < 0 ? -1 : (int)t->number[i];
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -311,18 +379,19 @@ static void frame_decoded(uint32_t phys, int64_t pts, bool eos)
    picture number - one font in the image, not two. */
 extern const uint8_t fontbbc[];
 
-/* Draw the 5-digit picture number into a frame's Y plane, 2x scaled, at
-   the top left - the frame buffers are in the VC heap (uncached), so the
-   HVS sees the pixels immediately. Chroma is left alone: white text. */
-static void draw_picture_number(uint32_t phys, uint32_t picture)
+/* Draw a number of 'digits' digits (the picture number: 5, the chapter: 2)
+   into a frame's Y plane, 2x scaled, at the top left - the frame buffers are
+   in the VC heap (uncached), so the HVS sees the pixels immediately. Chroma
+   is left alone: white text. */
+static void draw_number(uint32_t phys, uint32_t value, int digits)
 {
     uint8_t *y = (uint8_t *)(uintptr_t)phys;
     uint32_t w = vp.hdr.width;
     uint32_t x0 = 32, y0 = 28;
 
-    for (int digit = 4; digit >= 0; digit--) {
-        uint32_t d = picture % 10u;
-        picture /= 10u;
+    for (int digit = digits - 1; digit >= 0; digit--) {
+        uint32_t d = value % 10u;
+        value /= 10u;
         uint32_t dx = x0 + (uint32_t)digit * 20u;
         const uint8_t *glyph = &fontbbc[(uint32_t)('0' + d) * 8u];
         for (uint32_t row = 0; row < 8; row++) {
@@ -405,8 +474,16 @@ static void arm_flip(void)
     if (!phys)
         return;
     vp.pending_phys = 0;
-    if (vp.show_picture)
-        draw_picture_number(phys, (uint32_t)vp.pending_pts + 1u);
+    if (vp_show_chapter) {
+        /* Nothing before the first chapter, as a picture with no chapter
+           code shows none. */
+        const chapter_table_t *t = vp_chapters();
+        int c = chapters_at(t, (uint32_t)vp.pending_pts + 1u);
+        if (c >= 0)
+            draw_number(phys, t->number[c], 2);
+    } else if (vp.show_picture) {
+        draw_number(phys, (uint32_t)vp.pending_pts + 1u, 5);
+    }
     vp.armed_pts = vp.pending_pts;
     vp.flip_wait_since = RPI_GetSystemTime();
     vp.flip_wait_vsync = screen_vsync_count();
@@ -704,6 +781,7 @@ void videoplayer_media_changed(void)
        note it; the poll task does the file work. */
     vp.reopen = true;
     vp_failed_dir = -1;          /* a new side is worth trying again */
+    vp_chap_dir = -1;            /* and its chapters read again */
 }
 
 /* SD card eject (filesystemEject): the file is going, so the poll drops it
@@ -1120,15 +1198,35 @@ void videoplayer_clear(void)
     vp.stop_picture = 0;
 }
 
-void videoplayer_show_picture_number(bool on)
+/* On a still the digits are already burnt into the displayed buffer (or
+   missing from it): re-decode the current picture to repaint. */
+static void overlay_repaint(void)
 {
-    if (vp.show_picture == on)
-        return;
-    vp.show_picture = on;
-    /* On a still the digits are already burnt into the displayed buffer
-       (or missing from it): re-decode the current picture to repaint. */
     if (vp.open && vp.mode == VP_STILL && vp.cur_picture)
         videoplayer_goto(vp.cur_picture, 'R');
+}
+
+/* D0 and D1 both switch the chapter number display off (VP415 manual). */
+void videoplayer_show_picture_number(bool on)
+{
+    if (vp.show_picture == on && !vp_show_chapter)
+        return;
+    vp.show_picture = on;
+    vp_show_chapter = false;
+    overlay_repaint();
+}
+
+/* C1 switches the picture number display off; C0 leaves it off. */
+void videoplayer_show_chapter_number(bool on)
+{
+    if (vp_show_chapter == on)
+        return;
+    if (on) {
+        vp.show_picture = false;
+        (void)vp_chapters();     /* read now, not in the flip path */
+    }
+    vp_show_chapter = on;
+    overlay_repaint();
 }
 
 void videoplayer_audio_enable(int channel, bool on)

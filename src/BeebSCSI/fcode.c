@@ -411,11 +411,24 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				}
 				break;
 
-				case 'C': // response C xx X if not available O if open
-				/* No reply: the ROM uses 'X' for ?F and ?D only, and ?P
-				   already reports "chapter numbers exist" = 0, which is how
-				   the host is meant to know not to ask. */
+				case 'C': // response Cxx, X if not available (O if open: fcodeReadBuffer)
 				FCdebugString_P(PSTR(" = Chapter number request\r\n"));
+				{
+					/* The chapter of the picture on screen, from the side's
+					   chapters.txt; X with no picture, no table, or a
+					   picture before the first chapter. */
+					int chapter = videoplayer_active()
+					            ? videoplayer_chapter_at(videoplayer_picture_number()) : -1;
+					if (chapter >= 0) {
+						scsiFcodeBufferRX[0] = 'C';
+						scsiFcodeBufferRX[1] = (uint8_t)('0' + chapter / 10);
+						scsiFcodeBufferRX[2] = (uint8_t)('0' + chapter % 10);
+						scsiFcodeBufferRX[3] = 0x0D;
+					} else {
+						scsiFcodeBufferRX[0] = 'X';
+						scsiFcodeBufferRX[1] = 0x0D;
+					}
+				}
 				break;
 
 				case 'D':
@@ -427,8 +440,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				case 'P':
 				/* Five status characters, each '@' with bits OR-ed in, per
 				   the VP415 ROM's command set. Replay is reported off and
-				   the picture always frame-locked (owner's call); chapters
-				   and CLV do not apply - our discs are CAV. */
+				   the picture always frame-locked (owner's call); CLV does
+				   not apply - our discs are CAV.  Chapters exist when the
+				   side has a chapters.txt. */
 				FCdebugString_P(PSTR(" = Player status request\r\n"));
 				{
 					uint8_t st[5];
@@ -440,7 +454,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					         notes record no encoding for it, so this
 					         asserts only "a goto is outstanding" */
 					      | (videoplayer_seeking() ? 0x01u : 0u));
-					st[1] = (uint8_t)('@' | 0x01u);                /* CAV, no chapters */
+					st[1] = (uint8_t)('@' | 0x01u                  /* CAV */
+					      | (loaded && videoplayer_has_chapters() ? 0x04u : 0u));
 					st[2] = (uint8_t)('@' | 0x01u);                /* frame lock, replay off */
 					st[3] = (uint8_t)('@'
 					      | (fc_delay_on    ? 0x10u : 0u)
@@ -584,10 +599,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Chapter number display off\r\n"));
+				videoplayer_show_chapter_number(false);
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Chapter number display on\r\n"));
+				videoplayer_show_chapter_number(true);
 				break;
 
 				default:
@@ -782,6 +799,28 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x51: // Q // VFS sends this
 			FCdebugString_P(PSTR(" = Goto chapter and halt/play\r\n"));
+			{
+				/* QxxR: to the chapter's first picture and halt; QxxN:
+				   and play.  A6 either way, AN when this side has no such
+				   chapter.  One or two digits, as the handset takes them.
+				   The play-a-list form QxxyyzzS is not supported: AN. */
+				uint32_t chapter = 0, picture = 0;
+				int digits = 0;
+				while (digits < 2 && scsiFcodeBuffer[1 + digits] >= '0'
+				       && scsiFcodeBuffer[1 + digits] <= '9') {
+					chapter = chapter * 10u + (uint32_t)(scsiFcodeBuffer[1 + digits] - '0');
+					digits++;
+				}
+				char op = (char)scsiFcodeBuffer[1 + digits];
+				bool ok = digits > 0 && (op == 'R' || op == 'N')
+				          && scsiFcodeBuffer[2 + digits] == 0x0D
+				          && videoplayer_chapter_first(chapter, &picture);
+				if (ok)
+					videoplayer_goto(picture, op);
+				scsiFcodeBufferRX[0] = 'A';
+				scsiFcodeBufferRX[1] = ok ? '6' : 'N';
+				scsiFcodeBufferRX[2] = 0x0D;
+			}
 			break;
 
 			case 0x52: // R // VFS sends this

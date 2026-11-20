@@ -146,6 +146,29 @@ To use it you need three things:
    and friends. Sound follows `Audio_out` in `Pi1MHz.cfg`: the Beeb
    (default) or `hdmi`.
 
+4. **Chapters (optional): a `chapters.txt`** beside `video.pvf` lists
+   the disc's chapters, one per line, in order:
+
+   ```
+   # British Garden Birds side 2
+   05 00001
+   06 18327
+   07 28479
+   08 42221
+   ```
+
+   The first number is the chapter as the disc numbers it (00-79), the
+   second the picture it starts on - the number `Fxxxxx` takes, which is
+   the video.pvf record + 1 (on a CLV side too). A chapter runs to the
+   picture before the next one starts. `#` starts a comment. With it the
+   player answers the chapter F-codes: `QxxR` (go to chapter xx and
+   halt), `QxxN` (go and play), `?C` (which chapter is on screen),
+   `C0`/`C1` (on-screen chapter number, which replaces the picture
+   number), and `?P` reports that the disc has chapters. A line the
+   player cannot read rejects the whole file, so a mistake shows up as
+   "no chapters" rather than a goto to the wrong place. The play-a-list
+   form `QxxyyzzS` is not supported.
+
 Without the full firmware or without `video.pvf`, the video plane
 simply stays off and the Beeb display is unaffected. A missing `vd_use_vpu0=1`
 is the one setting that does *not* fall back: the decoder starts

@@ -1,0 +1,10 @@
+# BGB S1 (BeebVFS19) chapter index.  Format: CC FFFFF  # comment
+# FFFFF = player unit = video.pvf record index + 1 = CAV picture number (offset 0).
+# CAV mapping (INFERRED, not byte-verified against the pvf images): the pvf has 53450 records = disc pictures 1-53450,
+# and the v8 stack frame table has frame 0 = picture 1, contiguous to 53450. The current pvf predates the v8 MKV.
+# Chapter codes: IEC 60857 VBI from aiv_final/v8/BGB_S1.xm4.tbc.json (verified from data).
+00 00001  # last 3092
+01 03093  # last 22847
+02 22848  # last 34797
+03 34798  # last 44565
+04 44566  # last 53450

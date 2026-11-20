@@ -1,0 +1,11 @@
+# BGB S2 (BeebVFS20) chapter index.  Format: CC FFFFF  # comment
+# FFFFF = player unit = video.pvf record index + 1 = CAV picture number (offset 0).
+# CAV mapping (INFERRED): the pvf has 53474 records = disc pictures 1-53474. Chapter codes read from per-capture
+# v8 decodes (BGB_S2_ds4/ds3/ds1 .tbc.json; chapters 6-8 boundaries identical in all three, verified from data).
+# Chapter 5's code first appears at picture 418/557/86 depending on capture; it is taken to start at picture 1 (inferred).
+# CAUTION: the current v8 S2 stack (aiv_final/v8/BGB_S2.xm4.tbc) has only 46464 frames and an empty .tbc.db;
+# if the pvf is rebuilt from it, chapter 8 (42221-53474) would be cut short at picture 46464.
+05 00001  # last 18326
+06 18327  # last 28478
+07 28479  # last 42220
+08 42221  # last 53474
