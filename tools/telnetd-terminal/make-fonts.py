@@ -214,19 +214,24 @@ def ttf_only(grid, with_pieces):
     return out
 
 
-# The teletext advance keeps the SAA5050's own cell: "the character period is 1 us ... each character rectangle is
-# 6 dots wide by 10 TV lines high" (Philips SAA5050 data, August 1978), 20 lines of an interlaced 625-line picture.
-# On a 4:3 screen (52 us active line, 575 active lines) that is (1 x 4/52) : (20 x 3/575) = 0.737, 755 units of 1024
-# (ITU-R BT.601's 59:54 pixel gives the same); 40 x 25 cells then make the 1.18:1 page a Beeb shows.
-TTX_ADVANCE = round(1024 * (1 * 4 / 52) / (20 * 3 / 575))
+# Each font's cell has the shape its MODE's characters have on a 4:3 625-line screen: a character's time on the line
+# by the lines of the picture it covers, with ITU-R BT.601's pixel (13.5 MHz samples, 59:54 on a 4:3 picture).
+#   MODE 7: the SAA5050's "character period is 1 us ... each character rectangle is 6 dots wide by 10 TV lines high"
+#           (Philips SAA5050 data, August 1978): 1 us by 20 interlaced lines, 59:80.  40 x 25 make a 1.18:1 page.
+#   MODE 0-6: 8 pixels at 16 MHz (MODE 0, 3), 8 MHz (1, 4, 6) or 4 MHz (2, 5) - 0.5, 1 or 2 us - by 8 lines a field,
+#           16 of the picture: 59:128, 59:64, 59:32.  80 x 32 make a 1.15:1 screen.
+def cell_advance(char_us, picture_lines):
+    """The advance, in units of the 1024-unit cell height, of a character char_us wide and picture_lines high."""
+    return round(1024 * 13.5 * char_us * 59 / 54 / picture_lines)
+
 
 # name, console font cell (w, h), dots of a glyph's row and column, TrueType advance (units of 1024 per em), the
 # glyph grid, whether it carries the telnetd_font=bbc pieces, and its TrueType-only drawn characters
 FONT_SET = [
-    ("BBCMicroTeletext", "BBC Micro Teletext", teletext_font, 12, 20, 1, 1, TTX_ADVANCE, (12, 20), False, teletext_ttf_extra),
-    ("BBCMicroMOS", "BBC Micro MOS", mos_font, 8, 16, 1, 2, 512, (8, 8), True, dict),
-    ("BBCMicroMOS40", "BBC Micro MOS 40", mos_font, 16, 16, 2, 2, 1024, (8, 8), False, dict),
-    ("BBCMicroMOS20", "BBC Micro MOS 20", mos_font, 32, 16, 4, 2, 2048, (8, 8), False, dict),
+    ("BBCMicroTeletext", "BBC Micro Teletext", teletext_font, 12, 20, 1, 1, cell_advance(1, 20), (12, 20), False, teletext_ttf_extra),
+    ("BBCMicroMOS", "BBC Micro MOS", mos_font, 8, 16, 1, 2, cell_advance(0.5, 16), (8, 8), True, dict),
+    ("BBCMicroMOS40", "BBC Micro MOS 40", mos_font, 16, 16, 2, 2, cell_advance(1, 16), (8, 8), False, dict),
+    ("BBCMicroMOS20", "BBC Micro MOS 20", mos_font, 32, 16, 4, 2, cell_advance(2, 16), (8, 8), False, dict),
 ]
 
 

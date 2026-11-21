@@ -19,13 +19,17 @@ have on a 4:3 screen:
 | Font | File | For | Window | Cell (w:h) |
 |---|---|---|---|---|
 | BBC Micro Teletext | `BBCMicroTeletext.ttf` | MODE 7 | 40 x 25 | 59:80 |
-| BBC Micro MOS | `BBCMicroMOS.ttf` | MODE 0 and 3 | 80 x 32 | 1:2 |
-| BBC Micro MOS 40 | `BBCMicroMOS40.ttf` | MODE 1, 4 and 6 | 40 x 32 | 1:1 |
-| BBC Micro MOS 20 | `BBCMicroMOS20.ttf` | MODE 2 and 5 | 20 x 32 | 2:1 |
+| BBC Micro MOS | `BBCMicroMOS.ttf` | MODE 0 and 3 | 80 x 32 | 59:128 |
+| BBC Micro MOS 40 | `BBCMicroMOS40.ttf` | MODE 1, 4 and 6 | 40 x 32 | 59:64 |
+| BBC Micro MOS 20 | `BBCMicroMOS20.ttf` | MODE 2 and 5 | 20 x 32 | 59:32 |
 
-MODE 7's cell is the teletext chip's own: the SAA5050 data sheet gives a character
-1 µs of the line wide and 10 TV lines (20 interlaced) high, which on a 4:3 screen is
-59:80, and makes the 40 x 25 page the Beeb's 1.18:1.
+Each cell is a character's time on the TV line by the picture lines it covers, on
+a 4:3 625-line screen (BT.601's 59:54 pixel). MODE 7's is the teletext chip's own:
+the SAA5050 data sheet gives a character 1 µs of the line wide and 10 TV lines
+(20 interlaced) high, so 59:80, and the 40 x 25 page is the Beeb's 1.18:1. In
+MODE 0-6 a character is 8 pixels at 16, 8 or 4 MHz (0.5, 1 or 2 µs) by 8 lines a
+field (16 of the picture), so the screen is 1.15:1. Neither fills a 4:3 screen:
+the Beeb leaves a border.
 
 The Beeb starts in MODE 7, so MODE 7 is the default everywhere. A window opened for
 one mode still shows the others, in its own font.
