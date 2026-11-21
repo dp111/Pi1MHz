@@ -214,10 +214,16 @@ def ttf_only(grid, with_pieces):
     return out
 
 
+# The teletext advance keeps the SAA5050's own cell: "the character period is 1 us ... each character rectangle is
+# 6 dots wide by 10 TV lines high" (Philips SAA5050 data, August 1978), 20 lines of an interlaced 625-line picture.
+# On a 4:3 screen (52 us active line, 575 active lines) that is (1 x 4/52) : (20 x 3/575) = 0.737, 755 units of 1024
+# (ITU-R BT.601's 59:54 pixel gives the same); 40 x 25 cells then make the 1.18:1 page a Beeb shows.
+TTX_ADVANCE = round(1024 * (1 * 4 / 52) / (20 * 3 / 575))
+
 # name, console font cell (w, h), dots of a glyph's row and column, TrueType advance (units of 1024 per em), the
 # glyph grid, whether it carries the telnetd_font=bbc pieces, and its TrueType-only drawn characters
 FONT_SET = [
-    ("BBCMicroTeletext", "BBC Micro Teletext", teletext_font, 12, 20, 1, 1, 864, (12, 20), False, teletext_ttf_extra),
+    ("BBCMicroTeletext", "BBC Micro Teletext", teletext_font, 12, 20, 1, 1, TTX_ADVANCE, (12, 20), False, teletext_ttf_extra),
     ("BBCMicroMOS", "BBC Micro MOS", mos_font, 8, 16, 1, 2, 512, (8, 8), True, dict),
     ("BBCMicroMOS40", "BBC Micro MOS 40", mos_font, 16, 16, 2, 2, 1024, (8, 8), False, dict),
     ("BBCMicroMOS20", "BBC Micro MOS 20", mos_font, 32, 16, 4, 2, 2048, (8, 8), False, dict),
