@@ -18,6 +18,7 @@
 #include "rpi/base.h"
 #include "rpi/info.h"
 #include "rpi/systimer.h"
+#include "rpi/sdcard.h"
 #include "config.h"
 
 // Power device IDs for mailbox
@@ -305,16 +306,33 @@ static bool usb_choose_host(void)
    in slave mode the receive FIFO is still emptied promptly. */
 
 #define USB_HOST_POLL_US 250u
+/* While wired Ethernet moves frames: the LAN7515's 12 KB FIFO lasts ~100 us at
+   1 Gbit/s, and each slave-mode step empties at most the controller's receive
+   FIFO.  MEASURED on a 3B+ 2026-11-21: PUT 1.4 -> 4 MB/s, GET 8.7 -> 12.6 MB/s.
+   It costs a quarter of an idle main loop, so only while frames move. */
+#define USB_HOST_POLL_BUSY_US 50u
 static uint32_t s_host_last_us;    /* the last host step, from either caller below */
+static bool s_in_host_task;        /* inside tuh_task: the SD wait hook must not re-enter it */
+
+static inline uint32_t usb_host_poll_us(uint32_t now) {
+    return usb_ether_busy(now) ? USB_HOST_POLL_BUSY_US : USB_HOST_POLL_US;
+}
+
+static void usb_sd_wait_hook(void);
+
 static void usb_host_work(void) {
+    s_in_host_task = true;
     tuh_int_handler(BOARD_TUH_RHPORT, false);
     tuh_task();
+    s_in_host_task = false;
     usb_ether_poll();      /* a Pi 3B+'s Ethernet chip: set-up steps, link, frames */
     usb_storage_poll();    /* FatFs work for a drive that came or went */
+    /* Keep draining the Ethernet chip through SD writes while it is the link */
+    sdcard_wait_hook = usb_ether_wired() ? usb_sd_wait_hook : NULL;
 }
 
 static void usb_host_task(void) {
-    if ((uint32_t)(Pi1MHz_now_us - s_host_last_us) < USB_HOST_POLL_US)
+    if ((uint32_t)(Pi1MHz_now_us - s_host_last_us) < usb_host_poll_us(Pi1MHz_now_us))
         return;
     s_host_last_us = Pi1MHz_now_us;
     usb_host_work();
@@ -423,12 +441,30 @@ void usb_host_step(void)
   if (!s_usb_host)
     return;
   uint32_t t = RPI_GetSystemTime();
-  if ((uint32_t)(t - s_host_last_us) < USB_HOST_POLL_US)
+  if ((uint32_t)(t - s_host_last_us) < usb_host_poll_us(t))
     return;
   s_host_last_us = t;
+  s_in_host_task = true;
   tuh_int_handler(BOARD_TUH_RHPORT, false);
   tuh_task();
+  s_in_host_task = false;
   usb_ether_poll();
+}
+
+/* The SD driver's wait hook (sdcard.h), installed by usb_host_work while wired
+   Ethernet is the link: a WebDAV PUT writes the card from inside lwIP's
+   receive callback, 10-100 ms at a time, and without this the chip's FIFO
+   overflows meanwhile (MEASURED 2026-11-21: the first PUT of a new file fell to
+   0.26 MB/s).  The step is usb_host_step's - no FatFs work, so nothing here
+   touches the card - and never from inside the host's own work. */
+static void usb_sd_wait_hook(void)
+{
+  static bool s_in_hook;
+  if (s_in_hook || s_in_host_task)
+    return;
+  s_in_hook = true;
+  usb_host_step();
+  s_in_hook = false;
 }
 
 void usb_init(uint8_t instance , uint8_t address) {

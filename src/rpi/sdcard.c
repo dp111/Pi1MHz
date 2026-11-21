@@ -34,6 +34,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include "block.h"
+#include "sdcard.h"
 #include "base.h"
 #include "arm-start.h"
 #include "gpio.h"
@@ -208,13 +209,13 @@ static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD
    "AUTO_CMD12", "ADMA", "TUNING", "RSVD" };
 #endif
 
-size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
-size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no);
-
 static uint32_t sdhost_read(uint32_t reg);
 static void sdhost_write(uint32_t reg, uint32_t value);
 static uint32_t sdhost_translate_error(uint32_t status, bool is_data);
 static int sdhost_wait_for_data_idle(bool is_read);
+
+void (*sdcard_wait_hook)(void);           /* sdcard.h */
+#define SD_WAIT_HOOK() do { if (sdcard_wait_hook != NULL) sdcard_wait_hook(); } while (0)
 static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write);
 static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t timeout, uint32_t *response0, bool has_data, uint32_t *error_out);
 static void sdhost_probe_firmware_clock_mode(void);
@@ -865,6 +866,7 @@ static int sdhost_wait_for_data_idle(bool is_read)
             sdhost_write(SDEDM, edm | SDEDM_FORCE_DATA_MODE);
             return 0;
         }
+        SD_WAIT_HOOK();
         usleep(1);
     }
 
@@ -922,6 +924,7 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
 
                 if ((++wait_spins & 4095u) == 0u)
                 {
+                    SD_WAIT_HOOK();              /* the card is busy: the FIFO has no room or no data */
                     uint32_t now = RPI_GetSystemTime() | 1u;
                     if (first_stall_us == 0u)
                         first_stall_us = now;
@@ -1012,6 +1015,7 @@ static int sdhost_wait_for_request_ready(uint32_t timeout)
         if ((fsm == SDEDM_FSM_IDENTMODE) || (fsm == SDEDM_FSM_DATAMODE))
             return 0;
 
+        SD_WAIT_HOOK();
         usleep(1);
     }
 

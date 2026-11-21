@@ -25,6 +25,11 @@ void usb_ether_use(bool wanted);
 bool usb_ether_present(void);
 /* Set up: MAC programmed, receive and transmit running. */
 bool usb_ether_ready(void);
+/* Ready and the chosen link: frames go through it. */
+bool usb_ether_wired(void);
+/* Frames have moved in the 20 ms before now (the caller's clock reading:
+   usb.c asks on every main-loop pass) - usb.c then steps the host faster. */
+bool usb_ether_busy(uint32_t now);
 /* The PHY reports a link (read about once a second). */
 bool usb_ether_link_up(void);
 /* The address the chip was given (the board's own, from the firmware). */

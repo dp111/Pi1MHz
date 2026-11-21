@@ -1,3 +1,10 @@
+STATUS (2026-11-21): HARDWARE-TESTED on dp111's 3B+ (gigabit switch, same SD
+card, 3 MB file, md5-checked): PUT 3.7-4.4 MB/s, GET 12.5-12.7 MB/s, no chip
+RX FIFO overflow.  WiFi on master, same card: PUT 2.0-2.8, GET 2.3-2.7.  The
+throughput work is in "Performance (2026-11-21)" at the end.  Not yet tested:
+cable pull, auto with no cable, network=wifi on the branch, the USB mouse and
+a USB drive with the new host FIFO split.
+
 STATUS (2026-11-16): stages 1-5 BUILT for the Pi 3B+ (LAN7515) on branch
 ethernet-3bplus, NOT hardware-tested (no bench that week).  Compiles
 warning-free in rpi, rpi2, rpi3 (release + debug).  Owner chose the 3B+ first.
@@ -195,3 +202,38 @@ Do the chip on the bench board first and the other one second.
 2. `network=` key name and default (`auto`?).
 3. Single active link (proposed) vs both at once.
 4. Rename `wifi_lwip_*` now or later.
+
+## Performance (2026-11-21)
+
+First hardware run (5267d7d1): GET 2.45 MB/s, PUT 0.30 MB/s.  Each limit was
+found by measurement and each fix checked by taking it out again (MEASURED,
+3B+, 3 MB, md5 ok, three runs each):
+
+| Fix | Where | Without it |
+|---|---|---|
+| Host FIFO split: non-periodic TX and RX 1536 words each (12 packets); the default gave 2 | TinyUSB `hcd_dwc2.c` `dfifo_host_init`, set in `dwc2_bcm.h` | GET 2.85 (slave mode refills the FIFO once per host step) |
+| Host stepped every 50 us while frames move (`usb_ether_busy`, 20 ms), else 250 us | `usb.c` | PUT 1.4, GET 8.7 |
+| Receive ring of 48 x 8 KB, re-armed from the completion callback | `usb_ether.c` | first PUT 0.28, chip overflow |
+| Host stepped inside the SD driver's waits (`sdcard_wait_hook`) | `sdcard.c`, installed by `usb.c` | first PUT 0.26, chip overflow |
+| PAUSE frames, longest pause (0xFFFF), ANAR advertising pause | `usb_ether.c` init script | PUT 0.3 |
+| TX frames packed into two 16 KB bulk OUT buffers | `usb_ether.c` | GET 2.4 |
+
+Why the receive side needed three of these: the WebDAV PUT writes the card
+inside lwIP's receive callback (`ws_recv` -> `dav_put_flush` -> `f_write`),
+10-100 ms at a time; at 1 Gbit/s the LAN7515's 12 KB FIFO lasts ~100 us, and
+USB 2.0 cannot drain a 64 KB TCP window's burst at all - so PAUSE frames are
+needed, and they only resume promptly (XON) when the FIFO is drained fast.  A
+short pause time (256 quanta) was tried: overflow on every burst, PUT 0.13.
+
+Cost: the idle main loop runs 800-840k passes/s against 886k with 250 us
+polling (broadcast traffic on the LAN keeps the fast rate on now and then).
+The first version read the system timer on every pass and cost 25%.
+
+Host DMA (`CFG_TUH_DWC2_DMA_ENABLE`) was tried and left off.  Two genuine
+fixes went into TinyUSB for it (Broadcom bus alias, cleaning an IN buffer
+before the core writes it - the A53 runs an invalidate as clean+invalidate in
+Non-secure state - and `dsb` after maintenance), but with DMA on the LAN7800
+NAKs control transfers forever when they run back to back, and a NAK
+throttle fought TinyUSB's abort paths.  Slave mode reached the numbers above.
+Also found: a weak power supply looked exactly like a hung kernel (the Pi
+locked up when the WiFi chip's ARM started) - check the PSU first.

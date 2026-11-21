@@ -15,14 +15,24 @@
  *   - Setting the chip up is a table of register operations (init_script),
  *     each a non-blocking control transfer, stepped from usb_ether_poll(): a
  *     reset that takes 100 ms costs the main loop nothing.
- *   - Receive: one bulk IN transfer is kept queued while the previous one has
- *     been read out.  The chip is told to answer an empty IN with a zero-length
- *     packet rather than NAK (USB_CFG0.BIR), so the polled host controller is
- *     not left retrying a NAKing endpoint; after an empty answer the next one is
- *     asked for ETHER_RX_IDLE_US later.  One transfer can hold several frames
- *     (HW_CFG.MEF, burst cap), each behind a 10-byte header.
- *   - Transmit: a small ring of frames, each behind an 8-byte command header,
- *     sent one bulk OUT transfer at a time.
+ *   - Receive: a ring of ETHER_RX_BUFS transfer buffers.  The next bulk IN is
+ *     asked for the moment one completes, into the next free buffer, while the
+ *     frames of the earlier ones wait for lwIP: a WebDAV PUT writes the SD card
+ *     from inside lwIP's receive callback for 10-100 ms at a time, and at
+ *     1 Gbit/s the chip's 12 KB FIFO lasts ~100 us.  (The USB host is stepped
+ *     during those SD waits too - usb.c - and faster while frames move.)  The
+ *     chip is told to answer an empty IN with a zero-length packet rather than
+ *     NAK (USB_CFG0.BIR), so the polled host controller is not left retrying a
+ *     NAKing endpoint; after an empty answer the next one is asked for
+ *     ETHER_RX_IDLE_US later.  One transfer can hold several frames (HW_CFG.MEF,
+ *     burst cap), each behind a 10-byte header - or only one, so the ring is
+ *     sized in transfers, not bytes.
+ *   - Transmit: frames are packed, each behind an 8-byte command header and
+ *     4-aligned, into one of two ETHER_TX_AGG buffers while the other is on
+ *     the wire as a single bulk OUT: one frame per transfer held a GET to
+ *     ~2.4 MB/s.
+ *   - Flow control: the chip sends PAUSE frames as its RX FIFO fills, which
+ *     the gigabit link needs - USB 2.0 cannot drain a TCP window's burst.
  *   - Link: the internal PHY's status register, read about once a second.
  */
 #include <stdbool.h>
@@ -104,6 +114,7 @@
 #define  BMCR_ANRESTART      (1u << 9)
 #define MII_BMSR             1u
 #define  BMSR_LSTATUS        (1u << 2)
+#define MII_ANAR             4u                /* auto-negotiation advertisement (IEEE 802.3 clause 22) */
 
 #define MII_CMD(reg, write)  ((PHY_ADDR << MII_ACC_PHY_SHIFT) | ((uint32_t)(reg) << MII_ACC_REG_SHIFT) \
                               | ((write) ? MII_ACC_WRITE : 0u) | MII_ACC_BUSY)
@@ -122,10 +133,11 @@
 /* ---- our side ----------------------------------------------------------- */
 
 #define ETHER_RX_BUF         (8u * 1024u)      /* one bulk IN transfer */
+#define ETHER_RX_BUFS        48u               /* the receive ring (384 KB): a TCP window even at one frame a transfer */
 #define ETHER_BURST_CAP      (ETHER_RX_BUF / 512u)   /* in high-speed packets */
 #define ETHER_RX_IDLE_US     1000u             /* after an empty answer */
-#define ETHER_TX_SLOTS       16u               /* a TCP burst: lwIP sends a window at once */
-#define ETHER_TX_SLOT        (TX_HDR_LEN + ETH_FRAME_MAX + 2u)
+#define ETHER_TX_AGG         (16u * 1024u)     /* frames packed into one bulk OUT; there are two */
+#define ETHER_BUSY_US        20000u            /* "frames are moving" lasts this long after the last one */
 #define ETHER_LINK_POLL_US   1000000u
 #define ETHER_WAIT_STEP_US   1000u             /* between reads of a register being waited on */
 #define ETHER_INIT_LIMIT_US  5000000u          /* the whole set-up script */
@@ -162,8 +174,14 @@ static const reg_op_t init_script[] = {
    { OP_WRITE,  FCT_RX_FIFO_END, (FIFO_SIZE - 512u) / 512u, 0, 0 },
    { OP_WRITE,  FCT_TX_FIFO_END, (FIFO_SIZE - 512u) / 512u, 0, 0 },
    { OP_WRITE,  INT_STS,  0xFFFFFFFFu, 0, 0 },
-   { OP_WRITE,  FLOW,     0, 0, 0 },
-   { OP_WRITE,  FCT_FLOW, 0, 0, 0 },
+   /* PAUSE frames: send them (FLOW_CR TX_FCEN, bit 30) for the longest pause,
+      0xFFFF quanta, when the RX FIFO is above 8.7 KB, and resume (XON) below
+      1 KB (FCT_FLOW, 512-byte units: ON in bits 6-0, OFF in 14-8).  The bit
+      layout is from memory, not the datasheet; MEASURED on a 3B+ 2026-11-21:
+      PUT 0.3 -> 1 MB/s with it, and a short pause time (256 quanta) lost
+      frames on every burst. */
+   { OP_WRITE,  FLOW,     (1u << 30) | 0xFFFFu, 0, 0 },
+   { OP_WRITE,  FCT_FLOW, ((8704u + 511u) / 512u) | (((1024u + 511u) / 512u) << 8), 0, 0 },
    { OP_MODIFY, RFE_CTL,  0, RFE_CTL_BCAST_EN | RFE_CTL_MCAST_EN | RFE_CTL_DA_PERFECT, 0 },
    { OP_MODIFY, PMT_CTL,  0, PMT_CTL_PHY_RST, 0 },
    { OP_WAIT,   PMT_CTL,  PMT_CTL_PHY_RST | PMT_CTL_READY, PMT_CTL_READY, 1000 },
@@ -173,6 +191,12 @@ static const reg_op_t init_script[] = {
    { OP_MODIFY, MAC_RX,   MAC_RX_MAX_SIZE_MASK, (MAC_RX_MAX_FRAME << MAC_RX_MAX_SIZE_SHIFT) | MAC_RX_RXEN, 0 },
    { OP_MODIFY, FCT_RX_CTL, 0, FCT_RX_CTL_EN, 0 },
    /* Autonegotiate: the PHY advertises everything it can after its reset. */
+   { OP_WAIT,   MII_ACC,  MII_ACC_BUSY, 0, 100 },
+   /* Advertise pause, symmetric and asymmetric, with 10/100 (ANAR 0x0DE1): the
+      PHY's reset value does not, and a partner that has not seen it may ignore
+      the chip's PAUSE frames. */
+   { OP_WRITE,  MII_DATA, 0x0DE1u, 0, 0 },
+   { OP_WRITE,  MII_ACC,  MII_CMD(MII_ANAR, true), 0, 0 },
    { OP_WAIT,   MII_ACC,  MII_ACC_BUSY, 0, 100 },
    { OP_WRITE,  MII_DATA, BMCR_ANENABLE | BMCR_ANRESTART, 0, 0 },
    { OP_WRITE,  MII_ACC,  MII_CMD(MII_BMCR, true), 0, 0 },
@@ -204,18 +228,23 @@ static struct {
    bool     ctrl_busy, ctrl_ok;
    uint32_t value;              /* last register read */
    uint32_t op_started_us, next_try_us, init_started_us;
+   uint32_t data_us;            /* the last frame in or out: usb_ether_busy() */
 
    bool     link_up;
    uint32_t link_poll_us;
 
    /* receive */
    bool     rx_armed;
-   uint32_t rx_len, rx_pos, rx_next_us;
+   uint8_t  rx_arm_idx;                  /* the buffer armed, or to arm next */
+   uint8_t  rx_read_idx;                 /* the buffer being read out */
+   bool     rx_full[ETHER_RX_BUFS];      /* a completed transfer waits in it */
+   uint16_t rx_lens[ETHER_RX_BUFS];
+   uint32_t rx_len, rx_pos, rx_next_us;  /* the buffer being read */
 
    /* transmit */
    bool     tx_busy;
-   uint8_t  tx_head, tx_tail, tx_count;
-   uint16_t tx_len[ETHER_TX_SLOTS];
+   uint8_t  tx_fill;                     /* the buffer frames are being added to */
+   uint16_t tx_fill_len, tx_fill_frames, tx_inflight_frames;
 
    usb_ether_counts_t counts;
 } E;
@@ -226,8 +255,8 @@ static bool s_wanted;
 static const char rx_stalled[] = "receive endpoint stalled";
 
 static uint32_t ctrl_word;                        /* control transfer data stage */
-CFG_TUSB_MEM_ALIGN static uint8_t rx_buf[ETHER_RX_BUF];
-CFG_TUSB_MEM_ALIGN static uint8_t tx_buf[ETHER_TX_SLOTS][(ETHER_TX_SLOT + 3u) & ~3u];
+CFG_TUSB_MEM_ALIGN static uint8_t rx_buf[ETHER_RX_BUFS][ETHER_RX_BUF];
+CFG_TUSB_MEM_ALIGN static uint8_t tx_buf[2][ETHER_TX_AGG];
 
 static inline uint32_t now_us(void) { return RPI_GetSystemTime(); }
 static inline uint32_t le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -387,9 +416,11 @@ static bool script_step(void)
 
 static void rx_arm(void)
 {
+   if (E.rx_full[E.rx_arm_idx])
+      return;                                /* the ring is full: wait for lwIP to read one out */
    if (!usbh_edpt_claim(E.daddr, E.ep_in))
       return;
-   if (!usbh_edpt_xfer(E.daddr, E.ep_in, rx_buf, (uint16_t)sizeof rx_buf)) {
+   if (!usbh_edpt_xfer(E.daddr, E.ep_in, rx_buf[E.rx_arm_idx], (uint16_t)sizeof rx_buf[0])) {
       (void)usbh_edpt_release(E.daddr, E.ep_in);
       E.counts.usb_errors++;
       E.rx_next_us = now_us() + ETHER_RX_IDLE_US;
@@ -400,8 +431,20 @@ static void rx_arm(void)
 
 bool usb_ether_next_frame(const uint8_t **frame, uint16_t *len)
 {
-   while (E.state == ETH_READY && E.rx_pos + RX_HDR_LEN <= E.rx_len) {
-      const uint8_t *h = &rx_buf[E.rx_pos];
+   while (E.state == ETH_READY) {
+      if (E.rx_pos + RX_HDR_LEN > E.rx_len) {   /* this buffer is read out: on to the next */
+         if (E.rx_len != 0u) {
+            E.rx_full[E.rx_read_idx] = false;
+            E.rx_read_idx = (uint8_t)((E.rx_read_idx + 1u) % ETHER_RX_BUFS);
+            E.rx_len = 0u;
+         }
+         E.rx_pos = 0u;
+         if (!E.rx_full[E.rx_read_idx])
+            break;
+         E.rx_len = E.rx_lens[E.rx_read_idx];
+         continue;
+      }
+      const uint8_t *h = &rx_buf[E.rx_read_idx][E.rx_pos];
       uint32_t cmd_a = le32(h);
       uint32_t size = cmd_a & RX_CMD_A_LEN_MASK;
       uint32_t data = E.rx_pos + RX_HDR_LEN;
@@ -416,7 +459,7 @@ bool usb_ether_next_frame(const uint8_t **frame, uint16_t *len)
          E.counts.rx_errors++;
          continue;
       }
-      *frame = &rx_buf[data];
+      *frame = &rx_buf[E.rx_read_idx][data];
       *len = (uint16_t)(size - 4u);          /* the chip leaves the FCS on */
       E.counts.rx_frames++;
       return true;
@@ -428,32 +471,41 @@ bool usb_ether_next_frame(const uint8_t **frame, uint16_t *len)
 
 static void tx_kick(void)
 {
-   if (E.tx_busy || E.tx_count == 0u || E.state != ETH_READY)
+   if (E.tx_busy || E.tx_fill_len == 0u || E.state != ETH_READY)
       return;
    if (!usbh_edpt_claim(E.daddr, E.ep_out))
       return;
-   if (!usbh_edpt_xfer(E.daddr, E.ep_out, tx_buf[E.tx_tail], E.tx_len[E.tx_tail])) {
+   if (!usbh_edpt_xfer(E.daddr, E.ep_out, tx_buf[E.tx_fill], E.tx_fill_len)) {
       (void)usbh_edpt_release(E.daddr, E.ep_out);
       E.counts.usb_errors++;
       return;
    }
    E.tx_busy = true;
+   E.data_us = now_us();
+   E.tx_inflight_frames = E.tx_fill_frames;
+   E.tx_fill ^= 1u;                          /* new frames go into the other buffer */
+   E.tx_fill_len = 0;
+   E.tx_fill_frames = 0;
 }
 
 bool usb_ether_send(const uint8_t *frame, uint16_t len)
 {
+   /* Each frame behind its command header, starting 4-aligned (the alignment
+      is from memory, not the datasheet; md5-checked transfers pass with it). */
+   uint32_t at = ((uint32_t)E.tx_fill_len + 3u) & ~3u;
    if (E.state != ETH_READY || len == 0u || len > ETH_FRAME_MAX
-       || E.tx_count == ETHER_TX_SLOTS) {
+       || at + TX_HDR_LEN + len > ETHER_TX_AGG) {
       E.counts.tx_dropped++;
       return false;
    }
-   uint8_t *slot = tx_buf[E.tx_head];
+   uint8_t *slot = &tx_buf[E.tx_fill][at];
+   while (E.tx_fill_len < at)
+      tx_buf[E.tx_fill][E.tx_fill_len++] = 0u;
    put_le32(slot, (uint32_t)len | TX_CMD_A_FCS);
    put_le32(slot + 4, 0u);
    memcpy(slot + TX_HDR_LEN, frame, len);
-   E.tx_len[E.tx_head] = (uint16_t)(TX_HDR_LEN + len);
-   E.tx_head = (uint8_t)((E.tx_head + 1u) % ETHER_TX_SLOTS);
-   E.tx_count++;
+   E.tx_fill_len = (uint16_t)(at + TX_HDR_LEN + len);
+   E.tx_fill_frames++;
    tx_kick();
    return true;
 }
@@ -509,7 +561,7 @@ void usb_ether_poll(void)
       }
       /* Receive only while this is the link and a cable gives one: with no
          cable every ask comes back empty, a thousand a second for nothing. */
-      if (s_wanted && E.link_up && !E.rx_armed && E.rx_pos >= E.rx_len
+      if (s_wanted && E.link_up && !E.rx_armed && !E.rx_full[E.rx_arm_idx]
           && (int32_t)(t - E.rx_next_us) >= 0)
          rx_arm();
       tx_kick();
@@ -582,10 +634,8 @@ static bool ether_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, 
       return false;
    if (ep_addr == E.ep_in) {
       E.rx_armed = false;
-      E.rx_pos = 0;
       if (result != XFER_RESULT_SUCCESS) {
          E.counts.usb_errors++;
-         E.rx_len = 0;
          /* TinyUSB's host API has no clear-halt: a stalled endpoint stays
             stalled.  Ask rarely, and say so on /status. */
          if (result == XFER_RESULT_STALLED) {
@@ -597,21 +647,27 @@ static bool ether_xfer_cb(uint8_t daddr, uint8_t ep_addr, xfer_result_t result, 
       } else {
          if (E.error == rx_stalled)
             E.error = "";
-         E.rx_len = xferred;
-         /* Data: ask again as soon as it has been read out.  Empty (the chip's
+         if (xferred != 0u) {
+            E.data_us = now_us();
+            E.rx_lens[E.rx_arm_idx] = (uint16_t)xferred;
+            E.rx_full[E.rx_arm_idx] = true;
+            E.rx_arm_idx = (uint8_t)((E.rx_arm_idx + 1u) % ETHER_RX_BUFS);
+         }
+         /* Data: ask again at once, into the next buffer.  Empty (the chip's
             zero-length answer): wait a little before asking again. */
          E.rx_next_us = now_us() + (xferred == 0u ? ETHER_RX_IDLE_US : 0u);
+         if (xferred != 0u && E.state == ETH_READY)
+            rx_arm();
       }
       return true;
    }
    if (ep_addr == E.ep_out) {
       E.tx_busy = false;
       if (result == XFER_RESULT_SUCCESS)
-         E.counts.tx_frames++;
+         E.counts.tx_frames += E.tx_inflight_frames;
       else
          E.counts.usb_errors++;
-      E.tx_tail = (uint8_t)((E.tx_tail + 1u) % ETHER_TX_SLOTS);
-      E.tx_count--;
+      E.tx_inflight_frames = 0;
       tx_kick();
       return true;
    }
@@ -647,6 +703,11 @@ void usb_ether_use(bool wanted) { s_wanted = wanted; }
 
 bool usb_ether_present(void) { return E.state != ETH_ABSENT; }
 bool usb_ether_ready(void)   { return E.state == ETH_READY; }
+bool usb_ether_wired(void)   { return E.state == ETH_READY && s_wanted; }
+bool usb_ether_busy(uint32_t now)
+{
+   return E.state == ETH_READY && (uint32_t)(now - E.data_us) < ETHER_BUSY_US;
+}
 bool usb_ether_link_up(void) { return E.state == ETH_READY && E.link_up; }
 const char *usb_ether_error(void) { return E.error != NULL ? E.error : ""; }
 
