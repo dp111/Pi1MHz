@@ -56,7 +56,12 @@ bool videoplayer_seeking(void) { return false; }
 bool videoplayer_audio_enabled(int channel) { (void)channel; return true; }
 static uint32_t goto_picture;         /* last videoplayer_goto, 0 none */
 static char     goto_op;
-void videoplayer_goto(uint32_t picture, char op) { goto_picture = picture; goto_op = op; }
+static uint32_t stop_register;        /* last videoplayer_goto(x, 'S') */
+void videoplayer_goto(uint32_t picture, char op)
+{
+   if (op == 'S') { stop_register = picture; return; }
+   goto_picture = picture; goto_op = op;
+}
 void videoplayer_play_fwd(void) { }
 void videoplayer_play_rev(void) { }
 void videoplayer_halt(void) { }
@@ -71,7 +76,8 @@ void videoplayer_clear(void) { }
 void videoplayer_show_picture_number(bool on) { (void)on; }
 void videoplayer_audio_enable(int channel, bool on) { (void)channel; (void)on; }
 void videoplayer_set_video(bool on) { (void)on; }
-bool videoplayer_take_stop_reached(void) { return false; }
+static bool stop_reached;              /* the player reached the stop register */
+bool videoplayer_take_stop_reached(void) { bool r = stop_reached; stop_reached = false; return r; }
 static uint32_t cur_picture = 1u;
 uint32_t videoplayer_picture_number(void) { return cur_picture; }
 
@@ -84,6 +90,13 @@ bool videoplayer_chapter_first(uint32_t chapter, uint32_t *picture)
    if (!has_chapters) return false;
    if (chapter == 5u) { *picture = 100u; return true; }
    if (chapter == 6u) { *picture = 18327u; return true; }
+   return false;
+}
+bool videoplayer_chapter_last(uint32_t chapter, uint32_t *picture)
+{
+   if (!has_chapters) return false;
+   if (chapter == 5u) { *picture = 18326u; return true; }
+   if (chapter == 6u) { *picture = UINT32_MAX; return true; }   /* the last */
    return false;
 }
 int videoplayer_chapter_at(uint32_t picture)
@@ -161,7 +174,8 @@ static void test_chapter_goto(void)
       { "Q05",   0u,     0,   "AN" },      /* no op */
       { "Q05X",  0u,     0,   "AN" },
       { "QR",    0u,     0,   "AN" },      /* no digits */
-      { "Q0506S",0u,     0,   "AN" },      /* sequence: not supported */
+      { "Q0506S",0u,     0,   "AN" },      /* list: not supported */
+      { "Q07S",  0u,     0,   "AN" },      /* not on this side */
       { "Q005R", 0u,     0,   "AN" },      /* three digits */
    };
    player_open = true;
@@ -179,6 +193,47 @@ static void test_chapter_goto(void)
    send("Q05R");
    CHECK(reply_is("AN"), "Q05R with no table answered %c%c", scsiFcodeBufferRX[0], scsiFcodeBufferRX[1]);
    has_chapters = true;
+}
+
+/* QxxS, as Domesday National A's FILM drives it: VP1, a read to drop any
+   stale reply, QxxS, *AUDIO n (A then B, never read), E1, then a read every
+   tick until one starts with A - "film over".  No A may be waiting until the
+   player reaches the chapter's last picture.  Also VFS *CHAPTER n (QnS). */
+static void test_chapter_play(void)
+{
+   static const struct { const char *code; uint32_t first, stop; } c[] = {
+      { "Q05S", 100u,   18326u },          /* ends before chapter 06 */
+      { "Q6S",  18327u, UINT32_MAX },      /* the last: to the disc's end */
+   };
+   static const char *audio[][2] = { { "A0", "B0" }, { "A1", "B0" }, { "A0", "B1" }, { "A1", "B1" } };
+   player_open = true;
+   for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+      for (unsigned a = 0; a < 4; a++) {
+         goto_picture = 0u; goto_op = 0; stop_register = 0u; stop_reached = false;
+         send("VP1");
+         fcodeReadBuffer(); fcodeClearBuffer();
+         send(c[i].code);
+         send(audio[a][0]);
+         send(audio[a][1]);
+         send("E1");
+         CHECK(goto_picture == c[i].first && goto_op == 'N' && stop_register == c[i].stop,
+               "%s went to %u %c stop %u, want %u N stop %u", c[i].code, goto_picture,
+               goto_op ? goto_op : '-', stop_register, c[i].first, c[i].stop);
+         for (int tick = 0; tick < 3; tick++) {
+            fcodePoll();
+            fcodeReadBuffer();
+            CHECK(scsiFcodeBufferRX[0] != 'A', "%s + *AUDIO %u: tick %d read %c before the chapter ended",
+                  c[i].code, a, tick, scsiFcodeBufferRX[0]);
+            fcodeClearBuffer();
+         }
+         stop_reached = true;              /* the player reaches the stop */
+         fcodePoll();
+         fcodeReadBuffer();
+         CHECK(reply_is("A2"), "%s + *AUDIO %u: at the chapter end read %.2s, want A2",
+               c[i].code, a, (const char *)scsiFcodeBufferRX);
+         fcodeClearBuffer();
+      }
+   }
 }
 
 /* ?C: the chapter of the picture on screen, X when there is none. */
@@ -226,6 +281,7 @@ static void test_chapter_display(void)
 int main(void)
 {
    test_chapter_goto();
+   test_chapter_play();
    test_chapter_request();
    test_status_reports_chapters();
    test_chapter_display();

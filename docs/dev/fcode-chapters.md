@@ -1,8 +1,10 @@
 # F-code chapters
 
-STATUS (2026-11-20): BUILT on branch `fcode-chapters`, host-tested (with a
-control: the new F-code checks fail 20/48 on master's fcode.c), NOT
-hardware-tested.  All six configs build warning-free.
+STATUS (2026-11-21): QxxR/N, ?C, ?P, C0/C1 on master a9fcb8d0.  QxxS and
+the A1/B1 reply change BUILT on branch `fcode-qxxs`, host-tested with
+controls (the FILM-sequence test fails 24/90 checks on master's fcode.c, and
+6 - exactly *AUDIO 1/2/3 - with QxxS but the old A1/B1 reply).  NOT
+hardware-tested.  All configs build warning-free.
 
 ## What
 
@@ -13,12 +15,30 @@ The VP415's chapter F-codes, from a per-side `chapters.txt` beside
 |---|---|---|
 | `QxxR` | `A6` / `AN` | goto the chapter's first picture, halt (`videoplayer_goto(p,'R')`) |
 | `QxxN` | `A6` / `AN` | the same, then play (`'N'`) |
+| `QxxS` | `A2` at the end / `AN` | play the chapter: goto its first picture and play, stop register at its last (next chapter's first - 1, or past the disc's end for the last chapter, which the register clamps). No reply until the stop is reached, as `FxxxxxS` |
 | `?C` | `Cxx` / `X` | chapter of the picture on screen; `X` with no player, no table, or before the first chapter; `O` while the tray is open comes from `fcodeReadBuffer` as for every reply |
 | `?P` | | 2nd status character bit 2 = "chapter numbers exist" when the side has a table |
 | `C0`/`C1` | | the player's 2-digit chapter overlay; `C1` turns the picture number off, `D0`/`D1` turn the chapter number off (VP415 manual) |
 
-`AN` also answers a malformed `Q`, three digits, and the play-sequence form
-`QxxyyzzS` (not built: nothing known sends it).
+`AN` also answers a malformed `Q`, three digits, and a list of several
+chapters `QxxyyzzS` (not built: nothing known sends one).
+
+### Who sends QxxS (domsday-95's decode, 2026-11-21)
+
+- VFS 2.02 `*CHAPTER n` (&AB63) appends `S` when no R/N/S is given, then
+  sends E1 without reading a reply: plain `*CHAPTER 3` is `Q3S`.
+- Domesday National A's FILM overlay (routine G612) plays a National B
+  sequence with VP1, a read that drops any stale reply, `QxxS`, `*AUDIO n`,
+  `E1`; then reads without blocking every tick and takes the first reply
+  starting with `A` (any digit) as "film over", sending `X` and `/`.
+
+So nothing may leave an `A` reply waiting before the chapter ends.  VFS
+`*AUDIO n` sends `A<n&1>` then `B<n>>1>` and never reads a reply, and A1/B1
+used to post `A`: every film with sound would have ended on the first poll.
+A1/B1 now post nothing, like A0/B0.  FILM was written against a real VP415,
+so the real player cannot have answered A1/B1 with an A (INFERRED - no
+manual text found; the service guide has no command set).  The `A2` digit
+at the chapter end is ours (as FxxxxxS); FILM does not look at it.
 
 ## Where
 

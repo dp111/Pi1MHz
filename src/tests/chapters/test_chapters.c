@@ -57,6 +57,9 @@ static void test_real_tables(void)
       int i = chapters_find(&t, 7u);
       CHECK(i >= 0 && t.first[i] == 77999u, "National B chapter 07 starts at 77999");
       CHECK(t.number[chapters_at(&t, 89926u)] == 7u, "National B's last picture is in 07");
+      CHECK(chapters_last(&t, chapters_find(&t, 0u)) == 151u
+            && chapters_last(&t, chapters_find(&t, 6u)) == 77998u
+            && chapters_last(&t, chapters_find(&t, 7u)) == 0u, "National B chapter ends");
    }
 }
 
@@ -103,6 +106,8 @@ static void test_lookup(void)
    CHECK(chapters_at(&t, 100u) == 0 && chapters_at(&t, 199u) == 0
          && chapters_at(&t, 200u) == 1 && chapters_at(&t, 999999u) == 1, "ranges");
    CHECK(chapters_find(&t, 4u) == 1 && chapters_find(&t, 5u) == -1, "find");
+   CHECK(chapters_last(&t, 0) == 199u && chapters_last(&t, 1) == 0u
+         && chapters_last(&t, -1) == 0u, "last picture");
 }
 
 int main(void)

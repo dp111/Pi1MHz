@@ -81,3 +81,10 @@ int chapters_at(const chapter_table_t *t, uint32_t picture)
       at = (int)i;
    return at;
 }
+
+uint32_t chapters_last(const chapter_table_t *t, int i)
+{
+   if (i < 0 || (unsigned)i + 1u >= t->count)
+      return 0u;
+   return t->first[i + 1] - 1u;
+}

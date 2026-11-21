@@ -44,4 +44,8 @@ int chapters_find(const chapter_table_t *t, uint32_t number);
 /* The index of the chapter holding 'picture', or -1 (before the first). */
 int chapters_at(const chapter_table_t *t, uint32_t picture);
 
+/* The last picture of the chapter at index i: one before the next chapter's
+   first, or 0 for the last chapter, which runs to the end of the disc. */
+uint32_t chapters_last(const chapter_table_t *t, int i);
+
 #endif

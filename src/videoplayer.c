@@ -228,6 +228,17 @@ bool videoplayer_chapter_first(uint32_t chapter, uint32_t *picture)
     return true;
 }
 
+bool videoplayer_chapter_last(uint32_t chapter, uint32_t *picture)
+{
+    const chapter_table_t *t = vp_chapters();
+    int i = chapters_find(t, chapter);
+    if (i < 0)
+        return false;
+    uint32_t last = chapters_last(t, i);
+    *picture = last ? last : UINT32_MAX;
+    return true;
+}
+
 int videoplayer_chapter_at(uint32_t picture)
 {
     const chapter_table_t *t = vp_chapters();

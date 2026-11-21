@@ -565,8 +565,11 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-1 on\r\n"));
 				videoplayer_audio_enable(0, true);
-                    scsiFcodeBufferRX[0] = 'A';
-                    scsiFcodeBufferRX[1] = 0x0D;
+				/* No reply, as A0/B0: VFS *AUDIO sends A then B and never
+				   reads one, so an A left here was the next poll's answer -
+				   Domesday's FILM sends *AUDIO after QxxS and took it for
+				   "film over" at once.  FILM ran on a real VP415, so the
+				   player cannot have answered (INFERRED: no manual text). */
 				break;
 
 				default:
@@ -585,8 +588,11 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-2 on\r\n"));
 				videoplayer_audio_enable(1, true);
-                    scsiFcodeBufferRX[0] = 'A';
-                    scsiFcodeBufferRX[1] = 0x0D;
+				/* No reply, as A0/B0: VFS *AUDIO sends A then B and never
+				   reads one, so an A left here was the next poll's answer -
+				   Domesday's FILM sends *AUDIO after QxxS and took it for
+				   "film over" at once.  FILM ran on a real VP415, so the
+				   player cannot have answered (INFERRED: no manual text). */
 				break;
 
 				default:
@@ -801,10 +807,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			FCdebugString_P(PSTR(" = Goto chapter and halt/play\r\n"));
 			{
 				/* QxxR: to the chapter's first picture and halt; QxxN:
-				   and play.  A6 either way, AN when this side has no such
+				   and play.  A6 either way.  QxxS: play the chapter and
+				   halt on its last picture - the next chapter's first
+				   minus one, or the disc's end - with the stop register
+				   that FxxxxxS loads, so the ack is owed when the chapter
+				   ends, not now: Domesday's FILM sends QxxS and takes the
+				   first A reply as "film over", as does VFS *CHAPTER n,
+				   whose default is S.  AN when this side has no such
 				   chapter.  One or two digits, as the handset takes them.
-				   The play-a-list form QxxyyzzS is not supported: AN. */
-				uint32_t chapter = 0, picture = 0;
+				   A list of several chapters (QxxyyzzS) is not supported:
+				   AN - nothing known sends one. */
+				uint32_t chapter = 0, picture = 0, last = 0;
 				int digits = 0;
 				while (digits < 2 && scsiFcodeBuffer[1 + digits] >= '0'
 				       && scsiFcodeBuffer[1 + digits] <= '9') {
@@ -812,14 +825,23 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					digits++;
 				}
 				char op = (char)scsiFcodeBuffer[1 + digits];
-				bool ok = digits > 0 && (op == 'R' || op == 'N')
+				bool ok = digits > 0 && (op == 'R' || op == 'N' || op == 'S')
 				          && scsiFcodeBuffer[2 + digits] == 0x0D
-				          && videoplayer_chapter_first(chapter, &picture);
-				if (ok)
-					videoplayer_goto(picture, op);
-				scsiFcodeBufferRX[0] = 'A';
-				scsiFcodeBufferRX[1] = ok ? '6' : 'N';
-				scsiFcodeBufferRX[2] = 0x0D;
+				          && videoplayer_chapter_first(chapter, &picture)
+				          && (op != 'S' || videoplayer_chapter_last(chapter, &last));
+				if (ok && op == 'S') {
+					/* The goto opens the player; the stop register is loaded
+					   after it so it is clamped against an open file. */
+					videoplayer_goto(picture, 'N');
+					videoplayer_goto(last, 'S');
+					fcode_ack_when(FC_ACK_STOP, 'A', '2');
+				} else {
+					if (ok)
+						videoplayer_goto(picture, op);
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = ok ? '6' : 'N';
+					scsiFcodeBufferRX[2] = 0x0D;
+				}
 			}
 			break;
 
