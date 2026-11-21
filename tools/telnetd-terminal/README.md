@@ -18,7 +18,7 @@ have on a 4:3 screen:
 
 | Font | File | For | Window | Cell (w:h) |
 |---|---|---|---|---|
-| BBC Micro Teletext | `BBCMicroTeletext.ttf` | MODE 7 | 40 x 25 | 5:6 |
+| BBC Micro Teletext | `BBCMicroTeletext.ttf` | MODE 7 | 40 x 25 | 27:32 |
 | BBC Micro MOS | `BBCMicroMOS.ttf` | MODE 0 and 3 | 80 x 32 | 1:2 |
 | BBC Micro MOS 40 | `BBCMicroMOS40.ttf` | MODE 1, 4 and 6 | 40 x 32 | 1:1 |
 | BBC Micro MOS 20 | `BBCMicroMOS20.ttf` | MODE 2 and 5 | 20 x 32 | 2:1 |
@@ -56,6 +56,92 @@ Each font also comes as a PSF2 console font for the Linux console (`*.psf`): 12 
 for MODE 7, and 8 x 16, 16 x 16 and 32 x 16 for the others. The Linux console
 supports only the Basic Multilingual Plane, so the console fonts have no sextants.
 On the console a mosaic is shown as the nearest block character instead.
+
+## Another set of fonts: `telnetd-fonts/`
+
+`telnetd-fonts/` holds a second set of the four TrueType fonts, made by its own
+generator, `make-fonts-telnetd.py`. It has the same file and family names as the
+set above, so it installs the same way: copy its four `.ttf` files over the ones
+in this folder before running an installer, or install them by hand. The console
+fonts (`*.psf`) are the ones above; this set has none of its own. `make-fonts.py`
+and its fonts are not changed by it.
+
+This set carries the characters that the coming TelnetD changes send (the line
+and shell modes, the characters a program defines, and one window for every MODE
+with `telnetd_font=bbc`). Today's TelnetD sends none of these, so for it the two
+sets show the same thing. The set is here to compare with the one above.
+
+| Font | `make-fonts.py` | `make-fonts-telnetd.py` | What the second set adds |
+|---|---|---|---|
+| BBC Micro Teletext | 159 | 245 | separated sextants (63), quadrants (12), U+2592, `[ \ ] ^ _ { \| } ~` and `` ` `` (10) |
+| BBC Micro MOS | 169 | 2,805 | separated sextants, quadrants, U+2592, and 2,560 private-use pieces for `telnetd_font=bbc` |
+| BBC Micro MOS 40 | 169 | 245 | separated sextants, quadrants, U+2592 |
+| BBC Micro MOS 20 | 169 | 245 | separated sextants, quadrants, U+2592 |
+
+What they are for:
+
+- **Separated sextants** (U+1CE51-1CE8F, Unicode 16): MODE 7's separated graphics,
+  which today go out as contiguous ones.
+- **Quadrants** (U+2580, U+2584, U+2596-259F): a character a program defines with
+  VDU 23, drawn as 2 x 2 blocks when the terminal has no BBC font.
+- **U+2592**, the medium shade: the marker for a graphics colour code in shell mode.
+- **The ten ASCII characters in the teletext font**: the chip shows its own symbols
+  in their place, but a teletext window also shows the other MODEs.
+- **Private-use pieces** (BBC Micro MOS only): with `telnetd_font=bbc`, TelnetD draws
+  each Beeb character as 1, 2 or 4 cells of an 80-column window, so every MODE keeps
+  its own shape in one window. The pieces are the MODE 1/4/6 halves (U+E900), the
+  MODE 2/5 quarters (U+E100), and the MODE 7 halves for normal, top and bottom
+  double height (U+E300). The VDU 23 characters are 2 x 4 blocks (U+EA00). Nothing
+  is at U+E000-E0FF, where terminals draw the Powerline symbols themselves.
+
+Where the shared glyphs differ:
+
+- **The shapes are the same.** On each glyph's own grid (8 x 8 for MOS, 12 x 20 for
+  teletext) all 169 MOS glyphs and all 159 teletext glyphs match `make-fonts.py`'s
+  dot for dot.
+  - The MOS table in `make-fonts-telnetd.py` is the MOS 1.20 ROM's character set.
+    `--check` confirms it is the same as `bbc.fnt.h`.
+  - Its teletext characters were measured from a real BBC Micro's screen. They come
+    out the same as the SAA5050 table after rounding, which is an independent check
+    of that table.
+- **The teletext cell is wider**: 922 units, against 864: a 9:10 cell against 27:32, as
+  measured on a real Beeb's screen.
+- **The outlines are built differently.** `make-fonts-telnetd.py` draws each row's
+  runs of dots separately. Where the row below is lit, a run reaches 8 units (1/128
+  em) into that row. This stops the hairline seam between rows that some terminals
+  show when they draw a font anti-aliased at a fractional size. `make-fonts.py`
+  merges rows into taller rectangles instead.
+  - Because of this, the outline points differ in 147 of 169 glyphs in each MOS font
+    and in 158 of 159 teletext glyphs.
+  - The overlap also reaches under dots that are not lit in the row below. On a fine
+    grid (96 x 160 a cell), that shows as a sliver of at most 1/128 em in 92 MOS and
+    83 teletext glyphs.
+  - `telnetd-fonts/sheets/diff-*.png` shows each of those glyphs as three cells:
+    `make-fonts.py`'s, `make-fonts-telnetd.py`'s, and the difference. The other
+    sheets show the added groups.
+
+Where every glyph comes from: the data tables in `make-fonts-telnetd.py` are
+marked MEASURED or INFERRED.
+
+- MEASURED: the MOS ROM's characters, and the MODE 7 characters measured on a real
+  Beeb.
+- INFERRED: MODE 7's own symbols drawn in the MOS style, and the ten ASCII
+  characters drawn in the chip's style.
+
+Everything else comes from rules in the script: the rounding, the sextants and the
+separated sextants (in the proportions measured on the Beeb), the quadrants, the
+shade, the VDU 23 blocks, and the pieces cut from the base glyphs.
+
+    python3 make-fonts-telnetd.py           # writes telnetd-fonts/*.ttf
+    python3 make-fonts-telnetd.py --check   # fails if they are out of date
+
+Which to choose:
+
+- For today's TelnetD the two sets look alike. The only visible difference is the
+  slightly wider MODE 7 cell.
+- With the coming TelnetD changes, a terminal using the set above shows missing
+  characters for the groups in the table. Using `telnetd-fonts/` shows them all.
+- A third way is to take the new groups into `make-fonts.py` from its own tables.
 
 ## Windows
 
