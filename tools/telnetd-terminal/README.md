@@ -18,7 +18,7 @@ have on a 4:3 screen:
 
 | Font | File | For | Window | Cell (w:h) |
 |---|---|---|---|---|
-| BBC Micro Teletext | `BBCMicroTeletext.ttf` | MODE 7 | 40 x 25 | 5:6 |
+| BBC Micro Teletext | `BBCMicroTeletext.ttf` | MODE 7 | 40 x 25 | 27:32 |
 | BBC Micro MOS | `BBCMicroMOS.ttf` | MODE 0 and 3 | 80 x 32 | 1:2 |
 | BBC Micro MOS 40 | `BBCMicroMOS40.ttf` | MODE 1, 4 and 6 | 40 x 32 | 1:1 |
 | BBC Micro MOS 20 | `BBCMicroMOS20.ttf` | MODE 2 and 5 | 20 x 32 | 2:1 |
@@ -33,7 +33,7 @@ session shows the same characters as the Pi's screen:
   (`src/framebuffer/fonts/bbc.fnt.h`), dot for dot. They include ASCII, the pound
   sign, and the characters TelnetD sends for MODE 7's special ones:
   `← → ↑ ½ ¼ ¾ ‖ ― ÷` and the solid block. The MOS has no glyphs for these, so
-  `make-fonts.py` draws them itself, the only glyphs it does.
+  `make-fonts.py` draws them itself.
 - The teletext font is the framebuffer's teletext chip (SAA5050) character set
   (`src/framebuffer/fonts/saa5050.fnt.h`). Each 6 x 10 dot character is smoothed to
   12 x 20 pixels by the chip's "character rounding", which adds a half dot wherever
@@ -45,12 +45,35 @@ full and half blocks, filling the whole cell. TelnetD uses these to draw MODE 7'
 mosaic graphics, so in Windows Terminal, PuTTY or a desktop terminal the graphics
 join up as on the Beeb. They are the chip's own mosaics, from the same table.
 
+The TrueType fonts also carry the characters TelnetD's line, shell and font modes
+send (made by rule from the same tables, except where noted):
+
+- **Separated sextants** (U+1CE51-1CE8F, Unicode 16), in every font: MODE 7's
+  separated graphics, the chip's own from `saa5050.fnt.h`.
+- **Quadrants** (U+2580, U+2584, U+2596-259F), in every font: a character a program
+  defines with VDU 23, drawn as 2 x 2 blocks when the terminal has no BBC font.
+- **U+2592**, the medium shade, in every font: the marker for a graphics colour code.
+- **The ten ASCII characters** `[` `\` `]` `^` `_` `` ` `` `{` `|` `}` `~` in the teletext font: the chip shows its own symbols
+  in their place, but a teletext window also shows the other MODEs. No chip has
+  these, so `make-fonts.py` draws them in the chip's style and rounds them as the
+  chip would (drawn by Mark Usher).
+- **Private-use pieces**, in BBC Micro MOS only: with `telnetd_font=bbc`, TelnetD
+  draws each Beeb character as 1, 2 or 4 cells of an 80-column window, so every MODE
+  keeps its own shape in one window. The pieces are the MODE 1/4/6 halves (U+E900),
+  the MODE 2/5 quarters (U+E100), the MODE 7 halves for normal, top and bottom
+  double height (U+E300), and the VDU 23 characters as 2 x 4 blocks (U+EA00).
+  Nothing is at U+E000-E0FF, where terminals draw the Powerline symbols themselves.
+
+Where a lit dot has a lit dot below it, the shape reaches 1/128 em into the row
+below, over those dots only. Without that, a terminal drawing the font anti-aliased
+at a fractional size can show a hairline seam between rows.
+
 `make-fonts.py` writes all eight font files from those tables (the TrueType fonts
 need `fontTools`: `apt install python3-fonttools` or `pip install fonttools`). The
 font files are committed, so installing them needs neither. After a change to
 either table, run `python3 make-fonts.py`. `python3 make-fonts.py --check` fails if
 the committed fonts are out of date (a different fontTools version can write the
-same glyphs to a different `.ttf` file; these were made with fontTools 4.67).
+same glyphs to a different `.ttf` file; these were made with fontTools 4.68).
 
 Each font also comes as a PSF2 console font for the Linux console (`*.psf`): 12 x 20
 for MODE 7, and 8 x 16, 16 x 16 and 32 x 16 for the others. The Linux console
