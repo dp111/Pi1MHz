@@ -9,8 +9,10 @@ name: "CodeQL"
 # Compiler: arm-none-eabi-gcc 16.2 (CodeQL supports GNU extensions up to
 # GCC 16; the local gcc17 build is newer than that).  Neither Arm nor xPack
 # ships a 16.x tarball, so the job runs in an Arch Linux container and
-# installs Arch's 16.2.0-1 package, pinned from the Arch Linux Archive so a
-# repo update cannot move it.
+# installs Arch's package from the repository (mirrored) while that is
+# 16.2.0; only when the repository has moved on does it fetch 16.2.0-1 from
+# the Arch Linux Archive - a single host, down for a whole day on 2026-11-21,
+# which failed every run while the repository had the same package.
 
 on:
   push:
@@ -36,11 +38,13 @@ jobs:
     steps:
     - name: Toolchain (arm-none-eabi-gcc 16.2.0) and build tools
       run: |
-        pacman -Syu --noconfirm --needed git patch cmake make python
-        pacman -U --noconfirm \
-          https://archive.archlinux.org/packages/a/arm-none-eabi-gcc/arm-none-eabi-gcc-16.2.0-1-x86_64.pkg.tar.zst
-        pacman -S --noconfirm --needed arm-none-eabi-newlib
+        pacman -Syu --noconfirm --needed git patch cmake make python arm-none-eabi-gcc arm-none-eabi-newlib
+        if ! arm-none-eabi-gcc -dumpfullversion | grep -qx '16[.]2[.]0'; then
+          pacman -U --noconfirm \
+            https://archive.archlinux.org/packages/a/arm-none-eabi-gcc/arm-none-eabi-gcc-16.2.0-1-x86_64.pkg.tar.zst
+        fi
         arm-none-eabi-gcc --version | head -1
+        arm-none-eabi-gcc -dumpfullversion | grep -qx '16[.]2[.]0'
 
     - name: Checkout repository
       uses: actions/checkout@v5
